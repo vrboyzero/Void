@@ -1,0 +1,4 @@
+# Bundle layer for @void/void-entry. Applied when a profile lists this bundle.
+- insert:
+    - id: void-entry
+      name: "@void/void-entry"

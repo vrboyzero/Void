@@ -1,0 +1,4 @@
+# Bundle layer for @void/void-legion. Applied when a profile lists this bundle.
+- insert:
+    - id: void-legion
+      name: "@void/void-legion/service"

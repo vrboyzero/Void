@@ -1,0 +1,5 @@
+- id: void-greeter-provider
+  name: ../../lib/provider.js
+  disabled: true
+- id: void-greeter-consumer
+  name: ../../lib/consumer.js

@@ -1,0 +1,12 @@
+# Void composition bundle: memory + tools + legion in one profile layer.
+- insert:
+    - id: void-memory-sqlite
+      name: "@void/void-memory/sqlite"
+    - id: void-memory-tool
+      name: "@void/void-memory/tool"
+    - id: void-tools-contracts
+      name: "@void/void-tools/registry"
+    - id: void-tools-policy
+      name: "@void/void-tools/policy"
+    - id: void-legion
+      name: "@void/void-legion/service"

@@ -1,0 +1,6 @@
+# Bundle layer for @void/void-memory. Applied when a profile lists this bundle.
+- insert:
+    - id: void-memory-sqlite
+      name: "@void/void-memory/sqlite"
+    - id: void-memory-tool
+      name: "@void/void-memory/tool"

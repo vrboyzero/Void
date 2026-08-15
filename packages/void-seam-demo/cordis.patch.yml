@@ -1,0 +1,10 @@
+# Bundle layer for @void/void-seam-demo. Applied when a profile lists this
+# bundle; rows reference the package by name so Node resolution finds the
+# installed (built) code.
+- insert:
+    - id: void-greeter-provider
+      name: "@void/void-seam-demo/provider"
+    - id: void-greeter-consumer
+      name: "@void/void-seam-demo/consumer"
+    - id: void-greeter-tool
+      name: "@void/void-seam-demo/tool"

@@ -1,0 +1,18 @@
+# Bundle layer for @void/void-tools. Applied when a profile lists this bundle.
+- insert:
+    - id: void-tools-contracts
+      name: "@void/void-tools/registry"
+    - id: void-tools-policy
+      name: "@void/void-tools/policy"
+      config:
+        contracts:
+          - name: void_exec
+            family: command-exec
+            isReadOnly: false
+            needsPermission: true
+            riskLevel: high
+        rolePolicy:
+          role: researcher
+          allowedToolFamilies:
+            - workspace-read
+          maxToolRiskLevel: medium

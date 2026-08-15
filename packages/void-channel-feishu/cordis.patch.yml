@@ -1,0 +1,4 @@
+# Bundle layer for @void/void-channel-feishu. Applied when a profile lists this bundle.
+- insert:
+    - id: void-channels
+      name: "@void/void-channel-feishu/service"

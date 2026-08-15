@@ -1,0 +1,10 @@
+node_modules/
+lib/
+dist/
+.tmp/
+*.tsbuildinfo
+*.log
+
+# dsh 基座与参考项目（外部、只读，不属于 Void 仓库）
+deepseek-harness-master/
+参考项目/
