@@ -55,7 +55,7 @@ Void 遵守 dsh 的契约：不替换 agent-loop、不双写 session，记忆作
 cd E:\project\star-sanctuary\Void
 pnpm install      # 安装所有 workspace 依赖（含 native）
 pnpm build        # tsc 编译所有包
-pnpm test         # 跑全部测试（当前 22 个，全绿）
+pnpm test         # 跑全部测试（当前 29 个，全绿）
 ```
 
 > ⚠️ **native 依赖**：`better-sqlite3` 需要运行 build script 下载/编译二进制。仓库根 `package.json` 已配 `pnpm.onlyBuiltDependencies: ["better-sqlite3"]`；若安装后仍报 `Could not locate the bindings file`，手动执行：
