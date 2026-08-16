@@ -3393,7 +3393,7 @@
       "starVariable": "TAILSCALE_AUTH_KEY",
       "classification": "adapter_credential",
       "owner": null,
-      "sensitive": false,
+      "sensitive": true,
       "dshEquivalent": null,
       "note": ""
     },

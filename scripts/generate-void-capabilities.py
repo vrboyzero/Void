@@ -151,7 +151,7 @@ PREFIX_MAP = [
     ("BELLDANDY_TOKEN_USAGE_", "legacy_or_omit", None),
 ]
 
-SENSITIVE_SUFFIX = re.compile(r"(API_KEY|TOKEN|SECRET|PASSWORD)$")
+SENSITIVE_SUFFIX = re.compile(r"(API_KEY|AUTH_KEY|TOKEN|SECRET|PASSWORD)$")
 
 
 def classify(name: str):
@@ -167,6 +167,16 @@ def is_sensitive(name: str):
     return bool(SENSITIVE_SUFFIX.search(name)) or name.endswith("_PASS")
 
 
+# .env.local 独有、.env.example 未记录但代码现役的 5 项（硬编码固化，不读临时文件）
+EXTRA_VARS = [
+    "BELLDANDY_IMAGE_UNDERSTAND_MAX_WIDTH",
+    "BELLDANDY_STARWEAVER_ACTIVE_NOTIFY_ENABLED",
+    "BELLDANDY_STARWEAVER_ACTIVE_NOTIFY_POLL_INTERVAL_MS",
+    "BELLDANDY_WEBCHAT_COST_BUDGET_USD",
+    "BELLDANDY_WEBCHAT_COST_BUDGET_WARN_FRACTION",
+]
+
+
 def main():
     # 母清单 = .env.example 全集（含注释行 # VAR=，全部现役能力面）
     vars_all = []
@@ -174,11 +184,7 @@ def main():
         m = re.match(r"^[ \t]*#?[ \t]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
         if m:
             vars_all.append(m.group(1))
-    # 合并 .env.local 独有的变量（.env.example 未记录但代码现役的）
-    for line in open(ENV_LOCAL, encoding="utf-8"):
-        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.+)$", line)
-        if m:
-            vars_all.append(m.group(1))
+    vars_all.extend(EXTRA_VARS)
     vars_all = sorted(set(vars_all))
 
     caps = []
