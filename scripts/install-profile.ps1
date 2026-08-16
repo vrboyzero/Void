@@ -10,6 +10,17 @@ if ($DshHome) { $env:DSH_HOME = $DshHome }
 # headless 务必显式 rc.6（勿用 latest，见 FAQ）
 dsh plugin --profile $Profile add @deepseek-ai/dsh-headless@0.1.0-rc.6
 
+# 干净 profile 安装 @void/void-memory 前，允许 better-sqlite3 的 install script；
+# 否则 dsh 转发的 pnpm 会忽略 native build，导致 "Could not locate the bindings file"。
+$profileDir = Join-Path $env:DSH_HOME "profiles\$Profile"
+$workspaceYaml = Join-Path $profileDir "pnpm-workspace.yaml"
+if (Test-Path $workspaceYaml) {
+  $workspaceText = Get-Content -Raw -Path $workspaceYaml
+  if ($workspaceText -notmatch 'onlyBuiltDependencies') {
+    Add-Content -Path $workspaceYaml -Value "`nonlyBuiltDependencies:`n  - better-sqlite3`n"
+  }
+}
+
 # 逐个 link Void 包（绝对路径），bundle 会被自动识别并加入 bundles
 # 注意：只装 4 个独立插件包；组合 bundle @void/void 依赖这些包（workspace:*），
 # 本地 link 时其内部依赖无法解析，故本地开发直接装独立包即可（等价于组合层）。

@@ -14,7 +14,7 @@
 ## 首版明确排除（未做 / 待后续）
 
 - **真实 Feishu 集成**：`void-channel-feishu` 已有 mock 传输 seam；真实 Lark SDK + webhook + app 凭据未接入（外部依赖）。接入清单：① 依赖 `@larksuiteoapi/node-sdk`；② Feishu 应用 `app_id`/`app_secret` + 事件订阅 webhook URL；③ 实现 `VoidChannel`（webhook 收消息 → `onMessage` ingress → Lark SDK 回消息），源码参考 `belldandy-channels/src/feishu-http-transport.ts`（脱耦 BelldandyAgent 后复用传输形状）。
-- **dream/摄取链路**：`void-memory` 的 dream-* / external-memory-ingest 未快照（待"全量快照"决策）。
+- **dream/摄取链路**：dream-* / external-memory-ingest 源码已随全量快照内嵌，但首版未暴露为 `ctx.voidMemory` seam / 工具，待后续接入。
 - **军团执行引擎**：`void-legion` 的 `launch` 已实现"依赖序派发 + 可注入 worker + 失败传播"；接 `ctx.subagents`（真实子代理 spawn）待后续。
 - **UI 深改**：壳 B（Tauri 2）属阶段 4；壳 A（dsh 薄 UI）属阶段 2/3/5 插件 client 半边，首版未做。
 
@@ -59,6 +59,7 @@ dsh --profile demo "任务"
 
 ## 已知分叉
 
-1. **全量快照已定案并落地**：`vendor/star/belldandy-memory/`（101 文件 + protocol shim）已快照、编译、运行；`openai→ctx.llm` 补丁已实现 chat-completion 路径（`void-memory/src/llm.ts`），embedding 仍走 openai（dsh 无 embedding seam）。
+1. **全量快照已定案并按方案 B 内嵌**：Star 记忆快照位于 `packages/void-memory/src/star/`（101 文件 + protocol shim），已随 `@void/void-memory` 一起编译、运行；校验命令 `pnpm run verify:star-memory-snapshot`。`openai→ctx.llm` 补丁已实现 chat-completion 路径（`void-memory/src/llm.ts`），embedding 仍走 openai（dsh 无 embedding seam）。
 2. **Include 并发装载竞态**：多 entry 经 `Promise.allSettled` 并发装载会丢 provider fiber；当前用顺序 `loader.create()` 规避，需在真实 `ctx.tools` 消费前确认是否够用。
 3. **`dsh-headless` 的 `latest` 标签悬空**：`latest`=`0.0.1-rc.1` 依赖改名前的 `dsh-code-runtime-worker`（未发布）；需显式 `@0.1.0-rc.6`（`next`）安装。
+4. **干净 dsh profile 需放行 `better-sqlite3` build**：dsh 转发的 pnpm 默认忽略 install scripts，`@void/void-memory` 安装后可能报 `Could not locate the bindings file`。`scripts/install-profile.ps1` 已自动在 profile 的 `pnpm-workspace.yaml` 写入 `onlyBuiltDependencies: [better-sqlite3]`；手动安装时按 `Void使用指南.md` 2.3 的 2b 步骤配置。

@@ -2,7 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib"
+    "outDir": "lib",
+    // Star 快照按上游原样编译；上游 local-provider.ts 存在一处 type import，
+    // 若沿用根配置的 verbatimModuleSyntax 会报 TS1484，故本包关闭该开关。
+    "verbatimModuleSyntax": false
   },
   "include": ["src"]
 }

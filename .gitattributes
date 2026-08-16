@@ -1,0 +1,6 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Star snapshot files must stay diff-stable against upstream regardless of host checkout style.
+vendor/star/** text eol=lf
+packages/void-memory/src/star/** text eol=lf

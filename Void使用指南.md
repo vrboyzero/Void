@@ -37,7 +37,7 @@ Void 遵守 dsh 的契约：不替换 agent-loop、不双写 session，记忆作
 | `@void/void-channel-feishu` | `ctx.voidChannels` 渠道注册表 + mock 飞书传输 |
 | `@void/void` | 组合 bundle（memory + tools + legion 合到一个 profile 层） |
 | `@void/void-seam-demo` | 阶段 1 的最小 seam 模板（Service Definition + Provider + Consumer） |
-| `vendor/star/belldandy-memory` | Star 记忆的全量源码快照（`@void/star-belldandy-memory`） |
+| `@void/void-memory` 内嵌 `src/star/` | Star 记忆的全量源码快照（方案 B 合并后随插件包分发） |
 
 ---
 
@@ -75,6 +75,13 @@ $env:DSH_HOME = "E:\project\star-sanctuary\Void\.dsh-demo"
 # 2. 装 dsh headless（务必显式 rc.6，勿用 latest，见 FAQ）
 dsh plugin --profile demo add @deepseek-ai/dsh-headless@0.1.0-rc.6
 
+# 2b. 允许 better-sqlite3 的 install script（干净 profile 必须；否则 native binding 缺失）
+$profileDir = Join-Path $env:DSH_HOME "profiles\demo"
+$workspaceYaml = Join-Path $profileDir "pnpm-workspace.yaml"
+if ((Get-Content -Raw $workspaceYaml) -notmatch 'onlyBuiltDependencies') {
+  Add-Content -Path $workspaceYaml -Value "`nonlyBuiltDependencies:`n  - better-sqlite3`n"
+}
+
 # 3. 逐个 link Void 包（绝对路径，bundle 自动识别）
 $base = "E:\project\star-sanctuary\Void\packages"
 dsh plugin --profile demo add "$base\void-memory"
@@ -96,7 +103,8 @@ dsh --profile demo "你的任务"
 
 ### 2.4 发行方式
 
-- **打包**：`.\scripts\pack-all.ps1` 把所有包 `pnpm pack` 到 `dist/`（`workspace:*` 会自动重写为版本号）。
+- **打包**：`.\scripts\pack-all.ps1` 把所有包 `pnpm pack` 到 `dist/`（`workspace:*` 会自动重写为版本号），打包前会清理上一轮 tarball。
+- **干净 profile smoke**：`.\scripts\smoke-clean-profile.ps1 -ApiKey "你的key"` 会用全新 `DSH_HOME` 安装 `dsh-headless` + `distoid-void-memory-0.1.0.tgz`，放行 `better-sqlite3` build，打印 dump-config，并让模型真实调用一次 `memory_search`；完整输出在 `%TEMP%\dsh-void-smoke.log`。
 - **正式发行**：`pnpm publish` 到 npm（或私有 registry）后，`dsh plugin add @void/void`（组合 bundle 作为单一入口，其 `@void/void-*` 依赖从 registry 解析）。
 - **已知限制**：本地 tarball 互装时，包之间的相互依赖仍去 npm 解析（404），故 tarball 只适合无相互依赖的单包分发。
 
@@ -106,7 +114,7 @@ dsh --profile demo "你的任务"
 
 ### 3.1 记忆（void-memory）
 
-**能力**：把内容写入知识层（FTS5 全文 + sqlite-vec 向量），按关键词或向量检索。底层是 Star `belldandy-memory` 的全量快照。
+**能力**：把内容写入知识层（FTS5 全文 + sqlite-vec 向量），按关键词或向量检索。底层是 Star `belldandy-memory` 的全量快照，内嵌于本包 `src/star/`（快照校验：`pnpm run verify:star-memory-snapshot`）。
 
 **数据目录**：环境变量 `VOID_MEMORY_PATH` 指定 SQLite 文件；缺省 `:memory:`（测试用）。
 

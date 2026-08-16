@@ -12,16 +12,17 @@
 
 ## 每插件复用记录
 
-复用方式：**最小重实现**（PoC 阶段验证 seam 形状，非全量源码快照）。全量/选择性快照待 seam 稳定后再决策（见 `虚空寄生实施方案计划.md` §11.5 与阶段 2 样本 ① 结论）。
+复用方式：`void-memory` 已按方案 B 采用“插件包内嵌全量源码快照”（`packages/void-memory/src/star/`）；其余插件当前仍以最小重实现/小型纯函数快照为主。快照校验统一走 `pnpm run verify:star-memory-snapshot`。
 
 | Void 插件 | Star 来源（提交 064de90） | 复用范围 | Void 补丁/差异 | 测试 |
 | --- | --- | --- | --- | --- |
-| `@void/void-memory` | `packages/belldandy-memory/`（全量快照，见 `vendor/star/belldandy-memory/SOURCE.md`） | 全量快照 101 文件 + protocol shim，`VoidMemorySqlite` 薄封装 `MemoryStore` | 全量快照；`openai→ctx.llm` 补丁已实现 chat-completion 路径（`src/llm.ts`），embedding 保留 openai | `memory-composition.spec.ts`（4）+ `llm.spec.ts`（2） |
+| `@void/void-memory` | `packages/belldandy-memory/`（全量快照，见 `packages/void-memory/SOURCE.md`） | `src/star/` 内嵌全量快照 101 文件 + protocol shim，`VoidMemorySqlite` 薄封装 `MemoryStore` | 全量快照；`openai→ctx.llm` 补丁已实现 chat-completion 路径（`src/llm.ts`），embedding 保留 openai；本包已携带快照原生/外部依赖 | `memory-composition.spec.ts`（4）+ `llm.spec.ts`（2） |
 | `@void/void-tools` | `packages/belldandy-skills/src/tool-contract.ts`、`runtime-policy.ts`、`security-matrix.ts`、`faqi.ts` | ToolContract 词汇 + `evaluateRolePolicy` 纯函数 | 纯类型/纯函数快照；映射到 dsh `ctx.tools.guard`（非 Star 自有 executor） | `contract.spec.ts`（4）+ `policy-composition.spec.ts`（2） |
 | `@void/void-legion` | `packages/belldandy-skills/src/delegation-protocol.ts`、`packages/belldandy-core/src/team-identity-governance.ts` | `DelegationTeamMetadata`/`Member` + 权威关系 | 拓扑类型快照；执行引擎（orchestrator/launch-spec）未复用，留待 MVP 后续 | `team-composition.spec.ts`（2） |
 | `@void/void-channel-feishu` | `packages/belldandy-channels/src/types.ts`（Channel 接口）+ `feishu-http-transport.ts`（传输） | 渠道 transport/receive/send 形状（脱耦 BelldandyAgent） | mock 传输；真实 Lark SDK + webhook 未接入（需 Feishu 凭据） | `channel-composition.spec.ts`（2） |
 
 ## 同步状态
 
-- 当前为 PoC 最小重实现，与 Star 源码**无逐文件同步**关系；若后续转为全量快照，需重建 SOURCE.md + 逐文件来源提交 + 同步测试。
-- 同步触发点：Star 对应模块的 family/risk/拓扑类型契约变更。
+- `@void/void-memory`：`src/star/` 与 Star `packages/belldandy-memory/src` 逐文件同步；`verify-star-memory-snapshot.mjs` 归一化行尾后比较，只允许 `SOURCE.md` 记录的白名单补丁与 protocol shim extras。
+- 其余插件：当前为 PoC 最小重实现，与 Star 源码无逐文件同步关系；后续转入全量快照时按 `void-memory` 同一套 SOURCE.md + 校验脚本规则办理。
+- 同步触发点：Star 对应模块的 family/risk/拓扑类型/记忆 schema 契约变更。

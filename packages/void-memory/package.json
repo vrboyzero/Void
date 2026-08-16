@@ -1,7 +1,7 @@
 {
   "name": "@void/void-memory",
   "version": "0.1.0",
-  "description": "Void knowledge seam: FTS5 + sqlite-vec hybrid retrieval (snapshot of Star belldandy-memory)",
+  "description": "Void knowledge seam: FTS5 + sqlite-vec hybrid retrieval (embedded Star belldandy-memory snapshot)",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -31,7 +31,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@void/star-belldandy-memory": "workspace:*"
+    "better-sqlite3": "^11.9.1",
+    "chokidar": "^5.0.0",
+    "ipaddr.js": "2.4.0",
+    "openai": "^4.24.0",
+    "sqlite-vec": "0.1.7-alpha.2"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -39,8 +43,12 @@
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-invariants": { "optional": true },
-    "@deepseek-ai/dsh-tools": { "optional": true }
+    "@deepseek-ai/dsh-invariants": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
@@ -53,5 +61,8 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "optionalDependencies": {
+    "fastembed": "^2.1.0"
   }
 }

@@ -1,12 +1,15 @@
-# 打包所有 Void 包 + Star 快照到 dist/（pnpm pack 会把 workspace:* 重写为版本号）
+# 打包所有 Void 包到 dist/（pnpm pack 会把 workspace:* 重写为版本号）
+# @void/void-memory 已按方案 B 内嵌 Star 快照，无需再单独打包快照包。
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force $dist | Out-Null
 
-# 依赖顺序：先快照，再各插件，最后组合 bundle
+# 清掉上一轮 tarball，避免旧两包方案的 star 快照包残留并误导安装。
+Get-ChildItem $dist -Filter '*.tgz' | Remove-Item -Force
+
+# 依赖顺序：先基础插件，再组合 bundle
 $packages = @(
-  "vendor/star/belldandy-memory",
   "packages/void-memory",
   "packages/void-tools",
   "packages/void-legion",

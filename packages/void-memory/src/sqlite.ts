@@ -1,4 +1,4 @@
-import { MemoryStore } from "@void/star-belldandy-memory";
+import { MemoryStore } from "./star/store.js";
 import type { Context } from "@deepseek-ai/cordis";
 import { VoidMemory, type MemorySearchResult } from "./service.js";
 
