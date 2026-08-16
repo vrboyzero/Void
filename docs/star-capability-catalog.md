@@ -6,12 +6,13 @@
 
 | 指标 | 值 |
 | --- | --- |
-| 现役配置（`.env.local` 实际生效） | **347 项** |
-| 能力面（`.env.example` 模板） | 418 项（含 77 项 `.env.local` 未配置） |
-| 覆盖 | 347/347，无缺漏、无未匹配 |
-| 敏感凭据 | 20 项（已标记，不回显值） |
+| 现役全集 | **425 项**（`.env.example` 420 含注释行 + `.env.local` 独有 5） |
+| `.env.example` 能力面 | 420 个变量名（全部现役，含注释行 = 代码有默认值或待配置） |
+| `.env.local` 显式配置 | 347 项（其余用代码默认值） |
+| 覆盖 | 425/425，无缺漏、无未匹配 |
+| 敏感凭据 | 26 项（已标记，不回显值） |
 
-> ⚠️ 早前误把 `.env.example` 的「注释行」当作「不现役」，得出 56 个现役的错误结论。实际 `.env.example` 是模板（注释行 = 变量存在但默认留空待配置），真实现役以 `.env.local` 的 347 项为准。
+> ⚠️ 修正记录：`.env.example` 中所有变量在 Star 里都是现役的；`.env.local` 里没配的只是「代码有默认值所以不必显式配」，不代表不现役。现役全集 = `.env.example` 全部 + `.env.local` 独有的 5 个 = 425 项。
 
 ## 七类分类定义
 
@@ -25,16 +26,16 @@
 | `legacy_or_omit` | 历史/兼容占位/Void 不需要，不迁移 |
 | `defer` | 方向成立但当前阶段不实施 |
 
-## 现役变量分类分布（347 项）
+## 现役变量分类分布（425 项）
 
 | 分类 | 数量 | 说明 |
 | --- | ---: | --- |
-| `void_native` | 230 | 记忆/军团/渠道/安全/浏览器/媒体/核心/UI 差异化 |
-| `dsh_mapped` | 85 | 模型/会话/压缩/workflow/goal/prompt/mcp，dsh 已有等价 |
-| `adapter_credential` | 20 | 各类 API key / token / secret / password |
-| `legacy_or_omit` | 8 | office.goddess.ai 专属 + Docker 别名/镜像 + CLI bridge |
+| `void_native` | 282 | 记忆/军团/渠道/安全/浏览器/媒体/核心/UI 差异化 |
+| `dsh_mapped` | 99 | 模型/会话/压缩/workflow/goal/prompt/mcp，dsh 已有等价 |
+| `adapter_credential` | 26 | 各类 API key / token / secret / password |
+| `legacy_or_omit` | 11 | office.goddess.ai 专属 + Docker 别名/镜像 + CLI bridge + Tailscale |
 | `defer` | 3 | heartbeat（先做 dsh 覆盖审计） |
-| `development_only` | 1 | MV3 测试专用 |
+| `development_only` | 4 | MV3 测试 / setup 向导 / 自动开浏览器 / dev dist guard |
 
 ## 按 Void Module 归属（前缀 → Module）
 
@@ -52,16 +53,16 @@
 | `BELLDANDY_WEBCHAT_*` / `WEB_*` | void-entry | WebChat UI/成本预算/治理模式 |
 | `BELLDANDY_OPENAI_*` / `AGENT_PROVIDER` / `AGENT_PROTOCOL` / `AGENT_TIMEOUT` / `MODEL_*` / `PROMPT_*` / `INJECT_*` / `PRIMARY_*` / `DEEPSEEK_ROUTE` / `COMPACTION_*` / `COMPRESSION_*` / `PREFLIGHT_*` / `BUDGET_PROTECT*` / `STABLE_PREFIX` / `MAX_*` / `TOOL_LOOP_*` / `WORKFLOW_*` / `GOAL_*` / `MCP_*` / `CONVERSATION_ALLOWED_KINDS` / `RESPONSES_SANITIZE` / `TOOLS_ENABLED` | dsh（dsh_mapped） | 模型/会话/压缩/workflow/goal/prompt/mcp 等 dsh 已有等价 |
 
-## 敏感凭据清单（20 项，分类 adapter_credential）
+## 敏感凭据清单（26 项，分类 adapter_credential）
 
-`BELLDANDY_OPENAI_API_KEY`、`BELLDANDY_COMPACTION_API_KEY`、`BELLDANDY_EMBEDDING_OPENAI_API_KEY`、`BELLDANDY_MEMORY_SUMMARY_API_KEY`、`BELLDANDY_MEMORY_EVOLUTION_API_KEY`、`BELLDANDY_TASK_SUMMARY_API_KEY`、`BELLDANDY_IMAGE_OPENAI_API_KEY`、`BELLDANDY_IMAGE_UNDERSTAND_OPENAI_API_KEY`、`BELLDANDY_VIDEO_UNDERSTAND_OPENAI_API_KEY`、`BELLDANDY_VIDEO_FILE_API_KEY`、`BELLDANDY_STT_OPENAI_API_KEY`、`BELLDANDY_STT_GROQ_API_KEY`、`BELLDANDY_TTS_OPENAI_API_KEY`、`BELLDANDY_FEISHU_APP_SECRET`、`BELLDANDY_QQ_APP_SECRET`、`BELLDANDY_EMAIL_SMTP_PASS`、`BELLDANDY_EMAIL_IMAP_PASS`、`BELLDANDY_DISCORD_BOT_TOKEN`、`BELLDANDY_AGENT_TOOL_CONTROL_CONFIRM_PASSWORD`、`DASHSCOPE_API_KEY`
+`BELLDANDY_OPENAI_API_KEY`、`BELLDANDY_COMPACTION_API_KEY`、`BELLDANDY_EMBEDDING_OPENAI_API_KEY`、`BELLDANDY_MEMORY_SUMMARY_API_KEY`、`BELLDANDY_MEMORY_EVOLUTION_API_KEY`、`BELLDANDY_TASK_SUMMARY_API_KEY`、`BELLDANDY_IMAGE_OPENAI_API_KEY`、`BELLDANDY_IMAGE_UNDERSTAND_OPENAI_API_KEY`、`BELLDANDY_VIDEO_UNDERSTAND_OPENAI_API_KEY`、`BELLDANDY_VIDEO_FILE_API_KEY`、`BELLDANDY_STT_OPENAI_API_KEY`、`BELLDANDY_STT_GROQ_API_KEY`、`BELLDANDY_TTS_OPENAI_API_KEY`、`BELLDANDY_FEISHU_APP_SECRET`、`BELLDANDY_QQ_APP_SECRET`、`BELLDANDY_EMAIL_SMTP_PASS`、`BELLDANDY_EMAIL_IMAP_PASS`、`BELLDANDY_DISCORD_BOT_TOKEN`、`BELLDANDY_AGENT_TOOL_CONTROL_CONFIRM_PASSWORD`、`BELLDANDY_AUTH_TOKEN`、`BELLDANDY_AUTH_PASSWORD`、`BELLDANDY_COMMUNITY_API_TOKEN`、`BELLDANDY_TOKEN_USAGE_UPLOAD_TOKEN`、`SETUP_TOKEN`、`DASHSCOPE_API_KEY`、`TAILSCALE_AUTH_KEY`
 
-## legacy_or_omit（8 项，不迁移）
+## legacy_or_omit（11 项，不迁移）
 
-`BELLDANDY_IMAGE`（Docker 镜像）、`BELLDANDY_GATEWAY_PORT`（Docker 别名）、`BELLDANDY_COMMUNITY_API_ENABLED` + `BELLDANDY_TOKEN_USAGE_*`（office.goddess.ai 专属）、`BELLDANDY_AGENT_BRIDGE_ENABLED`（CLI/IDE bridge 专属）
+`BELLDANDY_IMAGE`（Docker 镜像）、`BELLDANDY_GATEWAY_PORT`（Docker 别名）、`BELLDANDY_COMMUNITY_API_ENABLED` + `BELLDANDY_TOKEN_USAGE_*`（office.goddess.ai 专属）、`BELLDANDY_AGENT_BRIDGE_ENABLED`（CLI/IDE bridge 专属）、`TAILSCALE_EXTRA_ARGS`（Tailscale Docker 部署专属）
 
 ## 后续计划（P0 剩余）
 
-1. **交叉核对**：读 Star 源码/Settings/Doctor/项目地图，验证 85 项 `dsh_mapped` 的 dsh 等价能力确凿 + 补无环境变量能力 + 标失效项。
-2. **`void-core` Schema**：把 230 项 `void_native` 收敛成结构化 `config-schema.ts`（配置合同 + 优先级 + 错误分类）。
+1. **交叉核对**：读 Star 源码/Settings/Doctor/项目地图，验证 99 项 `dsh_mapped` 的 dsh 等价能力确凿 + 补无环境变量能力 + 标失效项。
+2. **`void-core` Schema**：把 282 项 `void_native` 收敛成结构化 `config-schema.ts`（配置合同 + 优先级 + 错误分类）。
 3. **校验 Gate**：`scripts/verify-config-contract.mjs` 检查缺项/重复/未知/敏感回显 + Star 只读约束。

@@ -1,10 +1,18 @@
 {
-  "schemaVersion": 2,
-  "source": "参考项目/环境变量设置参考/.env.local",
+  "schemaVersion": 3,
+  "source": "/mnt/e/project/star-sanctuary/.env.example",
   "sourceReadOnly": true,
   "generatedAt": "2026-08-16",
-  "note": "以 .env.local 实际配置的现役变量为准（347 项）；.env.example 是能力模板（418 项，含 77 项 .env.local 未配置）。分类由 scripts/generate-void-capabilities.py 前缀映射批量生成，unmatched 项需人工核对。",
+  "note": "现役全集 = .env.example 全部变量（含注释行，能力模板）+ .env.local 独有变量，共 425 项。.env.local 未配置的项表示代码有默认值、仍现役。分类由 scripts/generate-void-capabilities.py 前缀映射批量生成，unmatched 项需人工核对。",
   "capabilities": [
+    {
+      "starVariable": "AUTO_OPEN_BROWSER",
+      "classification": "development_only",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
     {
       "starVariable": "BELLDANDY_AGENT_BRIDGE_ENABLED",
       "classification": "legacy_or_omit",
@@ -14,7 +22,23 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_AGENT_CONFIG_FILE",
+      "classification": "void_native",
+      "owner": "void-legion",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_AGENT_PROTOCOL",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_AGENT_PROVIDER",
       "classification": "dsh_mapped",
       "owner": null,
       "sensitive": false,
@@ -118,6 +142,22 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_AUTH_PASSWORD",
+      "classification": "adapter_credential",
+      "owner": "void-security",
+      "sensitive": true,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_AUTH_TOKEN",
+      "classification": "adapter_credential",
+      "owner": "void-security",
+      "sensitive": true,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_AUTO_RECALL_ENABLED",
       "classification": "void_native",
       "owner": "void-memory",
@@ -167,6 +207,14 @@
     },
     {
       "starVariable": "BELLDANDY_BROWSER_DENIED_DOMAINS",
+      "classification": "void_native",
+      "owner": "void-browser",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_BROWSER_OUTBOUND_PROFILE",
       "classification": "void_native",
       "owner": "void-browser",
       "sensitive": false,
@@ -310,6 +358,62 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_CHANNEL_INGRESS_MAX_CONCURRENT",
+      "classification": "void_native",
+      "owner": "void-channel",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_CHANNEL_INGRESS_MAX_CONCURRENT_PER_CHANNEL",
+      "classification": "void_native",
+      "owner": "void-channel",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_CHANNEL_INGRESS_MAX_PAYLOAD_BYTES",
+      "classification": "void_native",
+      "owner": "void-channel",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_CHANNEL_INGRESS_MAX_PENDING_PER_SESSION",
+      "classification": "void_native",
+      "owner": "void-channel",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_CHANNEL_INGRESS_MAX_QUEUED",
+      "classification": "void_native",
+      "owner": "void-channel",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_CHANNEL_INGRESS_MAX_QUEUED_PAYLOAD_BYTES",
+      "classification": "void_native",
+      "owner": "void-channel",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_CHANNEL_INGRESS_MAX_WAIT_MS",
+      "classification": "void_native",
+      "owner": "void-channel",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_CHANNEL_ROUTER_CONFIG_PATH",
       "classification": "void_native",
       "owner": "void-channel",
@@ -334,6 +438,30 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_CODE_INTEL_GOPLS_COMMAND",
+      "classification": "void_native",
+      "owner": "void-tools",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_CODE_INTEL_GO_COMMAND",
+      "classification": "void_native",
+      "owner": "void-tools",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_CODE_INTEL_GO_ENABLED",
+      "classification": "void_native",
+      "owner": "void-tools",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_COMMANDER_AGENT_ID",
       "classification": "void_native",
       "owner": "void-legion",
@@ -353,6 +481,30 @@
       "starVariable": "BELLDANDY_COMMANDER_MODE",
       "classification": "void_native",
       "owner": "void-legion",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_COMMAND_SANDBOX_BACKEND",
+      "classification": "void_native",
+      "owner": "void-tools",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_COMMAND_SANDBOX_OCI_IMAGE",
+      "classification": "void_native",
+      "owner": "void-tools",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_COMMAND_SANDBOX_OCI_RUNTIME",
+      "classification": "void_native",
+      "owner": "void-tools",
       "sensitive": false,
       "dshEquivalent": null,
       "note": ""
@@ -390,6 +542,14 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_COMMUNITY_API_TOKEN",
+      "classification": "adapter_credential",
+      "owner": null,
+      "sensitive": true,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_COMPACTION_API_KEY",
       "classification": "adapter_credential",
       "owner": null,
@@ -407,6 +567,14 @@
     },
     {
       "starVariable": "BELLDANDY_COMPACTION_BASE_URL",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_COMPACTION_BLOCKING_THRESHOLD",
       "classification": "dsh_mapped",
       "owner": null,
       "sensitive": false,
@@ -455,6 +623,14 @@
     },
     {
       "starVariable": "BELLDANDY_COMPACTION_MODEL",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_COMPACTION_MODEL_ROUTE",
       "classification": "dsh_mapped",
       "owner": null,
       "sensitive": false,
@@ -622,6 +798,22 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_DISCORD_REST_MAX_RESPONSE_BYTES",
+      "classification": "void_native",
+      "owner": "void-channel-discord",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_DISCORD_REST_TIMEOUT_MS",
+      "classification": "void_native",
+      "owner": "void-channel-discord",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_DREAM_AUTO_CRON_ENABLED",
       "classification": "void_native",
       "owner": "void-memory",
@@ -663,6 +855,14 @@
     },
     {
       "starVariable": "BELLDANDY_DREAM_OPENAI_MAX_TOKENS",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_DREAM_OPENAI_REASONING_EFFORT",
       "classification": "void_native",
       "owner": "void-memory",
       "sensitive": false,
@@ -950,6 +1150,14 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_ENV_DIR",
+      "classification": "void_native",
+      "owner": "void-core",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_EXPERIENCE_AUTO_METHOD_ENABLED",
       "classification": "void_native",
       "owner": "void-memory",
@@ -998,9 +1206,41 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_EXTENSION_HOST_BACKEND",
+      "classification": "void_native",
+      "owner": "void-tools",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_EXTENSION_HOST_OCI_IMAGE",
+      "classification": "void_native",
+      "owner": "void-tools",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_EXTENSION_HOST_OCI_RUNTIME",
+      "classification": "void_native",
+      "owner": "void-tools",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_EXTERNAL_OUTBOUND_REQUIRE_CONFIRMATION",
       "classification": "void_native",
       "owner": "void-security",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_EXTRA_WORKSPACE_ROOTS",
+      "classification": "void_native",
+      "owner": "void-core",
       "sensitive": false,
       "dshEquivalent": null,
       "note": ""
@@ -1034,6 +1274,30 @@
       "classification": "adapter_credential",
       "owner": "void-channel-feishu",
       "sensitive": true,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_FEISHU_HTTP_IDLE_TIMEOUT_MS",
+      "classification": "void_native",
+      "owner": "void-channel-feishu",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_FEISHU_JSON_MAX_RESPONSE_BYTES",
+      "classification": "void_native",
+      "owner": "void-channel-feishu",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_FEISHU_RESOURCE_MAX_RESPONSE_BYTES",
+      "classification": "void_native",
+      "owner": "void-channel-feishu",
+      "sensitive": false,
       "dshEquivalent": null,
       "note": ""
     },
@@ -1094,7 +1358,31 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_IMAGE",
+      "classification": "legacy_or_omit",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_IMAGE_ASSET_ALLOWED_HOSTS",
+      "classification": "void_native",
+      "owner": "void-media",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_IMAGE_ENABLED",
+      "classification": "void_native",
+      "owner": "void-media",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_IMAGE_MAX_OUTPUT_BYTES",
       "classification": "void_native",
       "owner": "void-media",
       "sensitive": false,
@@ -1350,7 +1638,23 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_MAX_RUN_WALL_TIME_MS",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_MAX_SYSTEM_PROMPT_CHARS",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MAX_TOOL_CALLS",
       "classification": "dsh_mapped",
       "owner": null,
       "sensitive": false,
@@ -1374,7 +1678,47 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_MEMORY_BACKGROUND_MAX_RUNS",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MEMORY_BACKGROUND_MAX_TOKEN_UNITS",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MEMORY_BACKGROUND_WINDOW_MS",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MEMORY_DB",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_MEMORY_DEEP_RETRIEVAL",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MEMORY_DURABLE_EXTRACTION_CLOSE_DEADLINE_MS",
       "classification": "void_native",
       "owner": "void-memory",
       "sensitive": false,
@@ -1391,6 +1735,30 @@
     },
     {
       "starVariable": "BELLDANDY_MEMORY_DURABLE_EXTRACTION_FAILURE_BACKOFF_MS",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MEMORY_DURABLE_EXTRACTION_MAX_INPUT_BYTES",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MEMORY_DURABLE_EXTRACTION_MAX_MESSAGES",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MEMORY_DURABLE_EXTRACTION_MAX_MESSAGE_BYTES",
       "classification": "void_native",
       "owner": "void-memory",
       "sensitive": false,
@@ -1502,6 +1870,22 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_MEMORY_PRIVATE_SUMMARY_REDACTOR",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MEMORY_PRIVATE_SUMMARY_TRUSTED_HOSTS",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_MEMORY_SESSION_DIGEST_MAX_RUNS",
       "classification": "void_native",
       "owner": "void-memory",
@@ -1606,7 +1990,23 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_MODEL_CACHE_CREATION_USD_PER_1M",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_MODEL_CACHE_READ_USD_PER_1M",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MODEL_CONFIG_FILE",
       "classification": "dsh_mapped",
       "owner": null,
       "sensitive": false,
@@ -1641,6 +2041,22 @@
       "starVariable": "BELLDANDY_MODEL_PREFERRED_PROVIDERS",
       "classification": "dsh_mapped",
       "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_MV3_CHROME_PATH",
+      "classification": "development_only",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_OFFICE_MAX_DOWNLOAD_BYTES",
+      "classification": "void_native",
+      "owner": "void-media",
       "sensitive": false,
       "dshEquivalent": null,
       "note": ""
@@ -1998,6 +2414,14 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_REMOTE_DELIVERY_TARGETS_JSON",
+      "classification": "void_native",
+      "owner": "void-tools",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_RERANKER_LENGTH_NORM_ANCHOR",
       "classification": "void_native",
       "owner": "void-memory",
@@ -2038,6 +2462,38 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_RUNTIME_RESOURCE_EVENT_LOOP_RESOLUTION_MS",
+      "classification": "void_native",
+      "owner": "void-core",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_RUNTIME_RESOURCE_MAX_SAMPLES",
+      "classification": "void_native",
+      "owner": "void-core",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_RUNTIME_RESOURCE_OBSERVABILITY_ENABLED",
+      "classification": "void_native",
+      "owner": "void-core",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_RUNTIME_RESOURCE_SAMPLE_INTERVAL_MS",
+      "classification": "void_native",
+      "owner": "void-core",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_SCREEN_CAPTURE_AUTO_UNDERSTAND",
       "classification": "void_native",
       "owner": "void-media",
@@ -2065,6 +2521,14 @@
       "starVariable": "BELLDANDY_SKILL_PUBLISH_CONFIRM_REQUIRED",
       "classification": "void_native",
       "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_SKIP_REAL_BROWSER_RELAY_TESTS",
+      "classification": "development_only",
+      "owner": null,
       "sensitive": false,
       "dshEquivalent": null,
       "note": ""
@@ -2182,6 +2646,14 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_SUB_AGENT_MAX_COST_USD",
+      "classification": "void_native",
+      "owner": "void-legion",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_SUB_AGENT_MAX_DEPTH",
       "classification": "void_native",
       "owner": "void-legion",
@@ -2191,6 +2663,14 @@
     },
     {
       "starVariable": "BELLDANDY_SUB_AGENT_MAX_QUEUE_SIZE",
+      "classification": "void_native",
+      "owner": "void-legion",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_SUB_AGENT_MAX_VERIFIERS",
       "classification": "void_native",
       "owner": "void-legion",
       "sensitive": false,
@@ -2350,6 +2830,22 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_TOKEN_USAGE_UPLOAD_TOKEN",
+      "classification": "adapter_credential",
+      "owner": null,
+      "sensitive": true,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_TOKEN_USAGE_UPLOAD_TRUSTED_PRIVATE_ENDPOINT",
+      "classification": "legacy_or_omit",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_TOKEN_USAGE_UPLOAD_URL",
       "classification": "legacy_or_omit",
       "owner": null,
@@ -2369,6 +2865,14 @@
       "starVariable": "BELLDANDY_TOOLS_POLICY_FILE",
       "classification": "void_native",
       "owner": "void-tools",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_TOOL_AGENT_STREAMING_ENABLED",
+      "classification": "dsh_mapped",
+      "owner": null,
       "sensitive": false,
       "dshEquivalent": null,
       "note": ""
@@ -2398,6 +2902,14 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_TOOL_RESULT_EVENT_OUTPUT_CHAR_LIMIT",
+      "classification": "void_native",
+      "owner": "void-memory",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_TOOL_RESULT_TRANSCRIPT_CHAR_LIMIT",
       "classification": "void_native",
       "owner": "void-memory",
@@ -2407,6 +2919,14 @@
     },
     {
       "starVariable": "BELLDANDY_TTS_ENABLED",
+      "classification": "void_native",
+      "owner": "void-media",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_TTS_MAX_OUTPUT_BYTES",
       "classification": "void_native",
       "owner": "void-media",
       "sensitive": false,
@@ -2447,6 +2967,30 @@
     },
     {
       "starVariable": "BELLDANDY_TTS_VOICE",
+      "classification": "void_native",
+      "owner": "void-media",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_UNDERSTANDING_CACHE_MAX_BYTES",
+      "classification": "void_native",
+      "owner": "void-media",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_UNDERSTANDING_CACHE_MAX_ENTRIES",
+      "classification": "void_native",
+      "owner": "void-media",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_UNDERSTANDING_CACHE_TTL_MS",
       "classification": "void_native",
       "owner": "void-media",
       "sensitive": false,
@@ -2734,6 +3278,30 @@
       "note": ""
     },
     {
+      "starVariable": "BELLDANDY_WORKFLOW_MAX_BATCH_ITEMS",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_WORKFLOW_MAX_BATCH_OUTPUT_BYTES",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_WORKFLOW_MAX_BATCH_QUEUED_BYTES",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
       "starVariable": "BELLDANDY_WORKFLOW_MAX_CONCURRENT",
       "classification": "dsh_mapped",
       "owner": null,
@@ -2751,6 +3319,30 @@
     },
     {
       "starVariable": "BELLDANDY_WORKFLOW_MAX_QUEUE_SIZE",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_WORKFLOW_MAX_RETRIES",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_WORKFLOW_MAX_SCRIPT_BYTES",
+      "classification": "dsh_mapped",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "BELLDANDY_WORKFLOW_MAX_TOKENS",
       "classification": "dsh_mapped",
       "owner": null,
       "sensitive": false,
@@ -2778,6 +3370,38 @@
       "classification": "adapter_credential",
       "owner": "void-media",
       "sensitive": true,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "SETUP_TOKEN",
+      "classification": "adapter_credential",
+      "owner": null,
+      "sensitive": true,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "STAR_SANCTUARY_ENV_DIR",
+      "classification": "void_native",
+      "owner": "void-core",
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "TAILSCALE_AUTH_KEY",
+      "classification": "adapter_credential",
+      "owner": null,
+      "sensitive": false,
+      "dshEquivalent": null,
+      "note": ""
+    },
+    {
+      "starVariable": "TAILSCALE_EXTRA_ARGS",
+      "classification": "legacy_or_omit",
+      "owner": null,
+      "sensitive": false,
       "dshEquivalent": null,
       "note": ""
     }

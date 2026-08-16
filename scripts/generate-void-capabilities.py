@@ -14,6 +14,16 @@ ENV_LOCAL = "参考项目/环境变量设置参考/.env.local"
 ENV_EXAMPLE = "/mnt/e/project/star-sanctuary/.env.example"
 OUT = "config/void-capabilities.json"
 
+# 非 BELLDANDY_ 前缀变量的映射（.env.example 全集里的 6 个）
+NON_BELLDANDY_MAP = {
+    "AUTO_OPEN_BROWSER": ("development_only", None),
+    "SETUP_TOKEN": ("development_only", None),
+    "STAR_SANCTUARY_ENV_DIR": ("void_native", "void-core"),
+    "TAILSCALE_AUTH_KEY": ("adapter_credential", None),
+    "TAILSCALE_EXTRA_ARGS": ("legacy_or_omit", None),
+    "DASHSCOPE_API_KEY": ("adapter_credential", "void-media"),
+}
+
 # 前缀 → (classification, owner)。按列表顺序匹配，先命中者胜（最长前缀放前面）。
 PREFIX_MAP = [
     # ── void-memory：记忆/检索/经验/dream/embedding/reranker/task ──
@@ -105,6 +115,10 @@ PREFIX_MAP = [
     ("BELLDANDY_CONTEXT_INJECTION", "void_native", "void-memory"),
     ("BELLDANDY_TOOLS_ENABLED", "dsh_mapped", None),
     ("BELLDANDY_TOOL_RESULT_", "void_native", "void-memory"),
+    ("BELLDANDY_ENV_DIR", "void_native", "void-core"),
+    ("BELLDANDY_OFFICE_MAX_DOWNLOAD_BYTES", "void_native", "void-media"),
+    ("BELLDANDY_SKIP_REAL_BROWSER_RELAY_TESTS", "development_only", None),
+    ("BELLDANDY_TOOL_AGENT_STREAMING_ENABLED", "dsh_mapped", None),
     # ── dsh_mapped：模型/会话/压缩/workflow/goal/prompt/mcp ──
     ("BELLDANDY_OPENAI_", "dsh_mapped", None),
     ("BELLDANDY_AGENT_PROVIDER", "dsh_mapped", None),
@@ -141,6 +155,8 @@ SENSITIVE_SUFFIX = re.compile(r"(API_KEY|TOKEN|SECRET|PASSWORD)$")
 
 
 def classify(name: str):
+    if name in NON_BELLDANDY_MAP:
+        return NON_BELLDANDY_MAP[name]
     for prefix, cls, owner in PREFIX_MAP:
         if name.startswith(prefix):
             return cls, owner
@@ -152,16 +168,22 @@ def is_sensitive(name: str):
 
 
 def main():
-    vars_local = []
+    # 母清单 = .env.example 全集（含注释行 # VAR=，全部现役能力面）
+    vars_all = []
+    for line in open(ENV_EXAMPLE, encoding="utf-8"):
+        m = re.match(r"^[ \t]*#?[ \t]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
+        if m:
+            vars_all.append(m.group(1))
+    # 合并 .env.local 独有的变量（.env.example 未记录但代码现役的）
     for line in open(ENV_LOCAL, encoding="utf-8"):
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.+)$", line)
         if m:
-            vars_local.append(m.group(1))
-    vars_local = sorted(set(vars_local))
+            vars_all.append(m.group(1))
+    vars_all = sorted(set(vars_all))
 
     caps = []
     unmatched = []
-    for v in vars_local:
+    for v in vars_all:
         cls, owner = classify(v)
         if cls is None:
             unmatched.append(v)
@@ -179,11 +201,11 @@ def main():
         })
 
     out = {
-        "schemaVersion": 2,
-        "source": ENV_LOCAL,
+        "schemaVersion": 3,
+        "source": ENV_EXAMPLE,
         "sourceReadOnly": True,
         "generatedAt": "2026-08-16",
-        "note": "以 .env.local 实际配置的现役变量为准（347 项）；.env.example 是能力模板（418 项，含 77 项 .env.local 未配置）。分类由 scripts/generate-void-capabilities.py 前缀映射批量生成，unmatched 项需人工核对。",
+        "note": "现役全集 = .env.example 全部变量（含注释行，能力模板）+ .env.local 独有变量，共 425 项。.env.local 未配置的项表示代码有默认值、仍现役。分类由 scripts/generate-void-capabilities.py 前缀映射批量生成，unmatched 项需人工核对。",
         "capabilities": caps,
     }
     json.dump(out, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
