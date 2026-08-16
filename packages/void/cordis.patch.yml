@@ -10,3 +10,5 @@
       name: "@void/void-tools/policy"
     - id: void-legion
       name: "@void/void-legion/service"
+    - id: void-legion-tool
+      name: "@void/void-legion/tool"
