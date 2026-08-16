@@ -15,3 +15,7 @@ export {
   type LaneResult,
   type LaunchResult,
 } from "./service.js";
+export {
+  createSubagentWorker,
+  type SubagentWorkerOptions,
+} from "./subagent-worker.js";
