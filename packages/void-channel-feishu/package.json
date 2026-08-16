@@ -13,6 +13,7 @@
     "./channel": "./lib/channel.js",
     "./service": "./lib/service.js",
     "./feishu": "./lib/feishu.js",
+    "./real-feishu": "./lib/real-feishu.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -28,6 +29,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.71.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
