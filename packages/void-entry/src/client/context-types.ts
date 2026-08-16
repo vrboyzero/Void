@@ -5,6 +5,7 @@
  * the slots face structurally (mirror of @deepseek-ai/dsh-client-ui-slots).
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { VoidWidgetsService } from './widgets.ts'
 
 export interface VoidSlotRegisterOptions {
   name: string
@@ -24,6 +25,8 @@ export interface VoidSlotsService {
 declare module '@deepseek-ai/cordis' {
   interface Context {
     slots: VoidSlotsService
+    /** 壳 A widget 注册表（由 void-entry client 半 `ctx.provide` 发布）。 */
+    voidWidgets: VoidWidgetsService
   }
 }
 

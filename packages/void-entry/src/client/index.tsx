@@ -1,5 +1,6 @@
 import { createElement, useEffect, useState } from 'react'
 import type { Context } from './context-types.ts'
+import { createVoidWidgetsService } from './widgets.js'
 
 export const inject = ['slots']
 
@@ -12,16 +13,30 @@ interface PluginState {
 }
 
 /**
- * Client half：把「Void 套装」入口挂进 DSH 设置 shell 的 settings.section slot，
- * 渲染各插件的独立开关 + 一键整套开关，经 /void/api/* 路由读写 host 侧状态。
+ * Client half：壳 A 的薄 UI 入口。
+ *
+ * 1. 发布 `ctx.voidWidgets` 服务（借鉴 dsh-better-sidebar 的 `ctx.betterSidebar`：
+ *    在挂载任何 panel 之前 `ctx.provide`，消费者 `inject = ["voidWidgets"]` 时已就绪）。
+ *    这是壳 A 的服务化扩展点：void-legion 组织图 / 各插件进度视图通过
+ *    `ctx.voidWidgets.registerWidget(...)` 注册，与内置 widget 能力对等。
+ * 2. 把「Void 套装」开关挂进 DSH 设置 shell 的 settings.section slot（原有）。
+ *
+ * 注意：widget 的可见渲染容器（组织图 / 进度视图面板）不在本轮落地——它属于壳 A
+ * 完整面板，等 host voidTeam → client 的数据路由定型后，按文档 11.10「复杂 widget
+ * 优先 Web Component」再实现。本轮只验证「树外插件能暴露 ctx.* 服务 + 类型合并 +
+ * 返回 disposer 的注册 API」这条 P1 关键路径。
  */
 export function apply(ctx: Context): void {
+  // 服务化扩展点：先于一切 UI 发布。
+  ctx.provide('voidWidgets', createVoidWidgetsService());
+
+  // 设置页开关（原有，保持不回归）。
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'void-entry',
     order: 100,
     label: () => 'Void 套装',
-  }, VoidSection))
+  }, VoidSection));
 }
 
 function VoidSection(): React.ReactNode {
