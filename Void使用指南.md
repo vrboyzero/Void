@@ -37,6 +37,7 @@ Void 遵守 dsh 的契约：不替换 agent-loop、不双写 session，记忆作
 | `@void/void-channel-feishu` | `ctx.voidChannels` 渠道注册表 + mock 飞书传输 |
 | `@void/void` | 组合 bundle（memory + tools + legion 合到一个 profile 层） |
 | `@void/void-seam-demo` | 阶段 1 的最小 seam 模板（Service Definition + Provider + Consumer） |
+| `@void/void-dsh-control` | 灵榜控制面：MCP Streamable HTTP 端点，让外部 AI（Codex 等）指挥**正在运行的** DSH Web profile。**独立 workspace + tarball 安装，见 2.5** |
 | `@void/void-memory` 内嵌 `src/star/` | Star 记忆的全量源码快照（方案 B 合并后随插件包分发） |
 
 ---
@@ -107,6 +108,40 @@ dsh --profile demo "你的任务"
 - **干净 profile smoke**：`.\scripts\smoke-clean-profile.ps1 -ApiKey "你的key"` 会用全新 `DSH_HOME` 安装 `dsh-headless` + `distoid-void-memory-0.1.0.tgz`，放行 `better-sqlite3` build，打印 dump-config，并让模型真实调用一次 `memory_search`；完整输出在 `%TEMP%\dsh-void-smoke.log`。
 - **正式发行**：`pnpm publish` 到 npm（或私有 registry）后，`dsh plugin add @void/void`（组合 bundle 作为单一入口，其 `@void/void-*` 依赖从 registry 解析）。
 - **已知限制**：本地 tarball 互装时，包之间的相互依赖仍去 npm 解析（404），故 tarball 只适合无相互依赖的单包分发。
+
+### 2.5 灵榜控制面（void-dsh-control）单独安装
+
+这个包**与 2.3 的其余 Void 包形态不同**：它是**独立 workspace**（根 `pnpm-workspace.yaml` 显式排除），
+面向 dsh `0.1.5-rc.2`，并且**必须用 tarball 安装**。
+
+```powershell
+# 1. 构建 + 装配 + 打包（独立脚本，不是 pack-all.ps1）
+pwsh -File scripts\pack-lingbang.ps1
+
+# 2. 装进 profile —— 必须用 .tgz，不能用目录路径
+dsh plugin --profile <profile> add "E:\project\star-sanctuary\Void\dist\lingbang\void-void-dsh-control-0.1.0.tgz"
+
+# 3. 设 token（仓库规范：环境变量统一 VOID_*）
+$env:VOID_DSH_CONTROL_TOKEN = "<长随机串>"
+
+# 4. 构建 / 测试（根 pnpm -r 不覆盖该包）
+pnpm --dir packages\void-dsh-control run typecheck
+pnpm --dir packages\void-dsh-control test
+```
+
+**两个必须知道的坑**：
+
+1. `dsh plugin add <目录>` 只装成 `link:`，Node 按真实路径解析 bare import 时够不到 profile 的
+   `node_modules`，启动会报 `Cannot find package '@deepseek-ai/cordis'`。**用 `.tgz`。**
+2. 重新打包后要**先 remove 再 add**，否则 pnpm 按包名 + 版本复用旧解析，打印
+   `Already up to date` 并继续跑旧代码。
+
+**为什么不并入主 workspace**：把 rc.2 与 rc.6 放进同一个 workspace，pnpm 会把既有包自动安装的
+peer 提升到 rc.2，`void-tools` / `void-legion` / `void-memory` 的测试会直接报
+`does not provide an export named 'CallId' / 'isJsonValue'`。
+
+完整说明见 `packages/void-dsh-control/README.md`；面向普通用户的安装、配置与操作指南见
+`docs/灵榜会话功能实现方案计划.md` 第 25 节。
 
 ---
 
@@ -293,6 +328,9 @@ dsh --profile demo "请调用 memory_search 工具搜索 'hello'，然后报告�
 | 变量 | 用途 | 说明 |
 |---|---|---|
 | `VOID_MEMORY_PATH` | 记忆 SQLite 文件路径 | 缺省 `:memory:`；独立于 `DSH_HOME` / `~/.star_sanctuary` |
+| `VOID_FEISHU_APP_ID` / `VOID_FEISHU_APP_SECRET` | 真实飞书渠道凭据 | 缺凭据 fail-closed 抛错，绝不硬编码/回显/落库 |
+| `VOID_DSH_CONTROL_TOKEN` | 灵榜控制面机器 token | 只从环境变量读；未设置时所有请求 401 |
+| `VOID_DSH_CONTROL_CALLBACK_SECRET` | 灵榜回调 webhook 的 HMAC 共享密钥 | 仅在 `callback.enabled: true` 时需要 |
 | `DEEPSEEK_API_KEY` | 跑 headless 任务的模型 key | 仅运行时传入，勿写入仓库 |
 | `DSH_HOME` | dsh 数据目录 | 本地开发建议隔离（见 2.3） |
 

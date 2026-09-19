@@ -9,6 +9,7 @@
 - `@void/void-legion`：`ctx.voidTeam` 军团 seam（roster + 权威关系 + checkpoint）。
 - `@void/void`：组合 bundle（三 seam 合到一个 profile 层）。
 - `@void/void-channel-feishu`：渠道 seam（`ctx.voidChannels` 注册表 + mock Feishu 传输，receive→ingress→reply 形状）。
+- `@void/void-dsh-control`：灵榜控制面（MCP Streamable HTTP，让外部 AI 指挥正在运行的 DSH Web profile）。**独立 workspace + tarball 安装，见下节。**
 - 三 seam 纵向闭环（集成测试 `packages/void/tests/vertical-closure.spec.ts`）。
 
 ## 首版明确排除（未做 / 待后续）
@@ -47,9 +48,39 @@ dsh --profile demo "任务"
 - **打包**：`.\scripts\pack-all.ps1` 把所有包 `pnpm pack` 到 `dist/`（`workspace:*` 会自动重写为版本号）。
 - **本地 tarball 互装受限**：`pnpm add <多个 tarball>` 时，包之间的相互依赖仍会去 npm 解析（404）。故**正式发行需 `pnpm publish` 到 npm（或私有 registry）后 `dsh plugin add @void/void`**；tarball 只适用于无相互依赖的单包分发。
 
+## `@void/void-dsh-control`（灵榜控制面）单独说明
+
+这个包**与上面 5 个包形态不同**，不要用同一套步骤：
+
+| 维度 | 其余 Void 包 | `void-dsh-control` |
+|---|---|---|
+| workspace | 主 workspace 成员 | **独立 workspace**（根 `pnpm-workspace.yaml` 显式排除，见下） |
+| 目标 dsh 版本 | `0.1.0-rc.6` | **`0.1.5-rc.2`**（面向当前全局 dsh CLI） |
+| 安装方式 | `dsh plugin add <目录>` | **必须 `dsh plugin add <tarball>`** |
+| 打包脚本 | `scripts/pack-all.ps1` | **`scripts/pack-lingbang.ps1`** |
+| 构建/测试 | 根 `pnpm -r build/test` 覆盖 | 根 `pnpm -r` **不覆盖**，要 `pnpm --dir packages/void-dsh-control ...` |
+
+**为什么独立 workspace**：把 rc.2 与 rc.6 放进同一个 workspace 后，pnpm 会把既有包自动安装的 peer 提升到 rc.2，`void-tools` / `void-legion` / `void-memory` 的测试会直接报 `does not provide an export named 'CallId' / 'isJsonValue'`。
+
+**为什么必须用 tarball**：`dsh plugin add <目录>` 只装成 `link:`；Node 按真实路径解析该包的 bare import，父级查找到不了 profile 的 `node_modules`，peer 解析失败、profile 启动报 `Cannot find package '@deepseek-ai/cordis'`。
+
+```powershell
+# 构建 + 装配 + 打包
+pwsh -File scripts/pack-lingbang.ps1
+
+# 装进 profile（必须用 .tgz）
+dsh plugin --profile <profile> add "E:\project\star-sanctuary\Void\dist\lingbang\void-void-dsh-control-0.1.0.tgz"
+
+# 重新打包后必须先删再装（否则 pnpm 复用旧解析，打印 "Already up to date"）
+dsh plugin --profile <profile> remove "@void/void-dsh-control"
+```
+
+完整说明见 `packages/void-dsh-control/README.md`，以及
+`docs/灵榜会话功能实现方案计划.md` 第 25 节（普通用户版安装、配置与操作指南）。
+
 ## 命名空间与数据目录（完成标准 #7）
 
-- 环境变量统一 `VOID_*`（当前已用 `VOID_MEMORY_PATH`，其余随功能补齐）。
+- 环境变量统一 `VOID_*`（当前已用 `VOID_MEMORY_PATH`、`VOID_FEISHU_APP_ID` / `VOID_FEISHU_APP_SECRET`、`VOID_DSH_CONTROL_TOKEN` / `VOID_DSH_CONTROL_CALLBACK_SECRET`）。
 - 数据目录独立于 `DSH_HOME` / `~/.star_sanctuary`，默认 `:memory:`（测试）或 `VOID_MEMORY_PATH` 指定文件。
 
 ## 升级方式
