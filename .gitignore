@@ -5,6 +5,10 @@ dist/
 *.tsbuildinfo
 *.log
 
+# vite/vitest 加载配置时在仓库根落下的临时 ESM 副本
+vitest.config.ts.timestamp-*.mjs
+vite.config.ts.timestamp-*.mjs
+
 # Void 本地配置与凭据（Git 忽略，不落库；敏感值走 .env.local）
 .env.local
 .env
