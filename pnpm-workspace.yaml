@@ -1,2 +1,6 @@
 packages:
   - "packages/*"
+  # lingbang 控制插件单独解析依赖：它面向 dsh 0.1.5-rc.2，而其余 Void 包仍锁 0.1.0-rc.6。
+  # 放进同一个 workspace 会让 pnpm 把既有包的自动安装 peer 提升到 rc.2，破坏现有测试。
+  # 该包自带 pnpm-workspace.yaml + pnpm-lock.yaml，依赖与构建相互隔离。
+  - "!packages/void-dsh-control"

@@ -1,0 +1,551 @@
+/**
+ * `@void/void-dsh-control` — Lingbang (灵榜) control plane.
+ *
+ * A Cordis function plugin that runs inside the DeepSeek Harness Web profile and
+ * exposes that same profile's Workspace, Session and Agent capability to external
+ * agents over an MCP Streamable HTTP endpoint.
+ *
+ * Composition order (plan §12):
+ * 1. resolve configuration, tokens, allowed roots and the caller policy;
+ * 2. open the control-plane ledger;
+ * 3. build the host ports, orchestrator and control service;
+ * 4. subscribe to the host events that drive task status;
+ * 5. register the MCP route on the existing `webServer`.
+ *
+ * Everything is registered as one Cordis effect, so unloading the plugin stops
+ * new requests, quiesces the orchestrator and removes the route.
+ *
+ * @module @void/void-dsh-control
+ */
+import { type Context } from "@deepseek-ai/cordis";
+// Type-only side-effect imports: they load the `declare module` augmentations
+// that put `webServer` / `settings` on `Context`.
+import type {} from "@deepseek-ai/dsh-host-webserver";
+import type {} from "@deepseek-ai/dsh-settings";
+import z from "@deepseek-ai/schemastery";
+import { Authenticator, readTokenGrants, type TokenGrant } from "./auth.js";
+import { WebhookCallbackDispatcher, resolveCallbackUrl } from "./callback.js";
+import { CONTROL_OPERATIONS, ControlError, type ControlOperation } from "./protocol.js";
+import { compilePolicy, EMPTY_CALLER_POLICY, type CallerPolicy, type CompiledCallerPolicy } from "./policy.js";
+import { MemoryControlLedger, StorageControlLedger, type ControlLedger } from "./ledger.js";
+import { controlDomainSpec } from "./ledger.js";
+import { createHostPorts } from "./hosts.js";
+import { ControlOrchestrator } from "./orchestrator.js";
+import { createMcpHttpHandler } from "./mcp.js";
+import { DshControl } from "./service.js";
+import { resolveAllowedRoots, type PathGuard } from "./workspace.js";
+import {
+  isNewerSessionSeq,
+  signalFromAgentError,
+  signalFromAgentStatus,
+  signalsFromSessionEvent,
+  type SessionEventLike,
+} from "./events.js";
+
+/** Runtime name of the plugin. */
+export const name = "void-dsh-control";
+
+/** Services that must be present before the control plane can start. */
+export const inject = ["webServer", "sessionController", "workspaceController"];
+
+/** One configured machine token. */
+export interface TokenConfig {
+  /** Stable caller identity used for idempotency scoping and auditing. */
+  callerId: string;
+  /** Environment variable holding the raw token. Never inline the value here. */
+  tokenEnv: string;
+  /** Operations this token may perform. */
+  operations: string[];
+}
+
+/** One required-document rule. */
+export interface DocumentRuleConfig {
+  id: string;
+  description?: string;
+  required?: boolean;
+  /** Empty string means "any path satisfies this rule". */
+  pathPattern?: string;
+}
+
+/** Optional HMAC-signed callback webhook (plan §9.2). Disabled by default. */
+export interface CallbackConfig {
+  enabled: boolean;
+  url?: string;
+  secretEnv?: string;
+  events?: string[];
+  timeoutMs?: number;
+  maxAttempts?: number;
+  /** Host allowlist; empty means "accept the configured URL as written". */
+  allowedHosts?: string[];
+  /** Whether the payload may carry model-produced assistant text. */
+  includeAssistantSummary?: boolean;
+}
+
+/** Plugin configuration, as written in a profile's `cordis.patch.yml`. */
+export interface Config {
+  /** Master switch. `false` keeps the plugin inert so rollback is one line. */
+  enabled: boolean;
+  /** Transport; only Streamable HTTP is implemented. */
+  transport: string;
+  /** Absolute endpoint path registered on the existing WebServer. */
+  path: string;
+  /** Machine tokens. An empty list plus `allowAnonymous: false` refuses every caller. */
+  tokens: TokenConfig[];
+  /** Grant every configured operation without a token. Loopback smoke tests only. */
+  allowAnonymous: boolean;
+  /** Roots a caller may address by path. Empty disables path addressing entirely. */
+  allowedRoots: string[];
+  /** Operations granted when a token omits its own list. */
+  allowedOperations: string[];
+  /** Ledger backend. `memory` loses task history on restart and is not for production. */
+  ledger: "storage" | "memory";
+  /** Free-form instructions returned by `dsh_control_info`. */
+  callerInstructions: string;
+  /** Metadata fields every dispatch must supply non-empty. */
+  requiredFields: string[];
+  /** Document requirements every dispatch must satisfy. */
+  requiredDocumentRules: DocumentRuleConfig[];
+  /** Regular expressions whose match anywhere in caller text is rejected. */
+  forbiddenPatterns: string[];
+  /** Monotonic version the user bumps when the rules change. */
+  instructionsVersion: number;
+  /** Optional callback webhook; disabled by default. */
+  callback: CallbackConfig;
+}
+
+/** Schemastery schema for {@link Config}. */
+export const Config: z<Config> = z.object({
+  enabled: z.boolean().default(true).description("主开关。设为 false 时插件完全不注册端点，回滚只需改这一行。"),
+  transport: z.string().default("streamable-http").description("传输方式，目前只实现 Streamable HTTP。"),
+  path: z.string().default("/mcp/dsh-agent-control").description("挂到现有 WebServer 上的精确路径。"),
+  tokens: z
+    .array(
+      z.object({
+        callerId: z.string().required().description("调用方身份，用于幂等作用域与审计。"),
+        tokenEnv: z.string().required().description("保存 token 的环境变量名；不要把 token 本身写进配置。"),
+        operations: z.array(z.string()).default([]).description("该 token 允许的操作；留空则用 allowedOperations。"),
+      }),
+    )
+    .default([])
+    .description("机器调用凭据。token 只从环境变量读取。"),
+  allowAnonymous: z.boolean().default(false).description("允许无 token 调用。仅用于本机 smoke 测试，默认关闭。"),
+  allowedRoots: z.array(z.string()).default([]).description("允许按路径寻址的根目录。留空则完全禁用路径寻址。"),
+  allowedOperations: z
+    .array(z.string())
+    .default(["workspace.read", "workspace.open", "session.list", "session.create", "session.prompt", "session.observe"])
+    .description("token 未显式声明 operations 时使用的默认授权集合。"),
+  ledger: z.union([z.const("storage"), z.const("memory")]).default("storage").description("账本后端。memory 重启即丢，不用于生产。"),
+  callerInstructions: z.string().default("").description("dsh_control_info 返回给外部 Agent 的调用约束正文。"),
+  requiredFields: z.array(z.string()).default([]).description("每次下单必须非空提供的 metadata 字段。"),
+  requiredDocumentRules: z
+    .array(
+      z.object({
+        id: z.string().required(),
+        description: z.string().default(""),
+        required: z.boolean().default(true),
+        pathPattern: z.string().default("").description("匹配工作区相对路径的正则；留空表示任意路径都满足。"),
+      }),
+    )
+    .default([])
+    .description("任务文档要求。"),
+  forbiddenPatterns: z.array(z.string()).default([]).description("命中即拒绝的正则；用于禁止密钥等内容进入会话。"),
+  instructionsVersion: z.natural().default(0).description("规则版本号，用户改动规则时递增。"),
+  callback: z
+    .object({
+      enabled: z.boolean().default(false),
+      url: z.string().default(""),
+      secretEnv: z.string().default("VOID_DSH_CONTROL_CALLBACK_SECRET"),
+      events: z.array(z.string()).default(["completed", "failed", "cancelled"]),
+      timeoutMs: z.natural().default(10_000),
+      maxAttempts: z.natural().default(5),
+      allowedHosts: z.array(z.string()).default([]).description("回调 URL 主机白名单；留空表示接受配置里写的地址。"),
+      includeAssistantSummary: z.boolean().default(false).description("是否把模型产出的助手摘要放进回调负载（默认不发送）。"),
+    })
+    .default({
+      enabled: false,
+      url: "",
+      secretEnv: "VOID_DSH_CONTROL_CALLBACK_SECRET",
+      events: ["completed", "failed", "cancelled"],
+      timeoutMs: 10_000,
+      maxAttempts: 5,
+      allowedHosts: [],
+      includeAssistantSummary: false,
+    })
+    .description("可选回调 webhook，默认关闭。"),
+});
+
+/**
+ * Parse a configured operation list, failing loud on an unknown name.
+ *
+ * @param values - Configured operation names.
+ * @param what - Configuration field name, for the error message.
+ * @returns The validated operations.
+ * @throws ControlError `dsh-control/internal` on an unknown operation.
+ */
+function parseOperations(values: readonly string[], what: string): ControlOperation[] {
+  const known = new Set<string>(CONTROL_OPERATIONS);
+  const out: ControlOperation[] = [];
+  for (const value of values) {
+    if (!known.has(value)) {
+      throw new ControlError("dsh-control/internal", `${what} names an unknown operation`, { operation: value });
+    }
+    out.push(value as ControlOperation);
+  }
+  return out;
+}
+
+/**
+ * Build the caller policy from configuration.
+ *
+ * @param config - Plugin configuration.
+ * @returns The policy as written by the user.
+ */
+function policyFromConfig(config: Config): CallerPolicy {
+  return {
+    callerInstructions: config.callerInstructions,
+    requiredFields: config.requiredFields,
+    requiredDocumentRules: config.requiredDocumentRules.map((rule) => ({
+      id: rule.id,
+      description: rule.description ?? "",
+      required: rule.required ?? true,
+      ...(rule.pathPattern === undefined || rule.pathPattern === "" ? {} : { pathPattern: rule.pathPattern }),
+    })),
+    forbiddenPatterns: config.forbiddenPatterns,
+    instructionsVersion: config.instructionsVersion,
+  };
+}
+
+/**
+ * Resolved shape of the `dsh-agent-control` settings section.
+ *
+ * Distinct from {@link CallerPolicy} because a settings document always carries
+ * every field (schema defaults fill the gaps), while the policy type models an
+ * omitted `pathPattern` as absent.
+ */
+interface PolicySection {
+  callerInstructions: string;
+  requiredFields: string[];
+  requiredDocumentRules: { id: string; description: string; required: boolean; pathPattern: string }[];
+  forbiddenPatterns: string[];
+  instructionsVersion: number;
+}
+
+/**
+ * Create a live policy accessor.
+ *
+ * When `ctx.settings` is present the namespace `dsh-agent-control` becomes the
+ * user layer, so the policy hot-reloads from `$DSH_HOME/settings.yaml` and
+ * `dsh_control_info` always reports the current rules (plan §9.1). Otherwise the
+ * composition entry is authoritative.
+ *
+ * @param ctx - Plugin context.
+ * @param entry - Policy from the composition entry.
+ * @returns An accessor plus the settings-registration disposer, when registered.
+ */
+function createPolicySource(
+  ctx: Context,
+  entry: CallerPolicy,
+): { policy: () => CompiledCallerPolicy; registered: boolean } {
+  const settings = ctx.get("settings");
+  let read: () => CallerPolicy = () => entry;
+  let registered = false;
+
+  if (settings !== undefined) {
+    const schema: z<PolicySection> = z.object({
+      callerInstructions: z.string().default(entry.callerInstructions),
+      requiredFields: z.array(z.string()).default([...entry.requiredFields]),
+      requiredDocumentRules: z
+        .array(
+          z.object({
+            id: z.string().required(),
+            description: z.string().default(""),
+            required: z.boolean().default(true),
+            pathPattern: z.string().default(""),
+          }),
+        )
+        .default(
+          entry.requiredDocumentRules.map((rule) => ({
+            id: rule.id,
+            description: rule.description,
+            required: rule.required,
+            pathPattern: rule.pathPattern ?? "",
+          })),
+        ),
+      forbiddenPatterns: z.array(z.string()).default([...entry.forbiddenPatterns]),
+      instructionsVersion: z.natural().default(entry.instructionsVersion),
+    });
+    const scope = settings.register("dsh-agent-control", schema, {
+      base: {
+        callerInstructions: entry.callerInstructions,
+        requiredFields: [...entry.requiredFields],
+        requiredDocumentRules: entry.requiredDocumentRules.map((rule) => ({
+          id: rule.id,
+          description: rule.description,
+          required: rule.required,
+          pathPattern: rule.pathPattern ?? "",
+        })),
+        forbiddenPatterns: [...entry.forbiddenPatterns],
+        instructionsVersion: entry.instructionsVersion,
+      },
+    });
+    read = () => {
+      const value = scope.get();
+      return {
+        callerInstructions: value.callerInstructions,
+        requiredFields: value.requiredFields,
+        requiredDocumentRules: value.requiredDocumentRules.map((rule) => ({
+          id: rule.id,
+          description: rule.description,
+          required: rule.required,
+          ...(rule.pathPattern === "" ? {} : { pathPattern: rule.pathPattern }),
+        })),
+        forbiddenPatterns: value.forbiddenPatterns,
+        instructionsVersion: value.instructionsVersion,
+      };
+    };
+    registered = true;
+  }
+
+  // Compilation is memoized on the raw policy so an unchanged settings document
+  // never recompiles its regular expressions on a hot path.
+  let lastRaw = "";
+  let lastCompiled = compilePolicy(entry);
+  const policy = (): CompiledCallerPolicy => {
+    const current = read();
+    const raw = JSON.stringify(current);
+    if (raw !== lastRaw) {
+      lastCompiled = compilePolicy(current);
+      lastRaw = raw;
+    }
+    return lastCompiled;
+  };
+
+  return { policy, registered };
+}
+
+/**
+ * Open the control-plane ledger.
+ *
+ * @param ctx - Plugin context.
+ * @param config - Plugin configuration.
+ * @returns The opened ledger.
+ * @throws ControlError when `ledger: 'storage'` is requested but no storage domain is mounted.
+ */
+async function openLedger(ctx: Context, config: Config): Promise<ControlLedger> {
+  const facility = ctx.get("storageDomain");
+  if (config.ledger === "memory" || facility === undefined) {
+    if (config.ledger === "storage") {
+      throw new ControlError(
+        "dsh-control/internal",
+        "ledger 'storage' requires ctx.storageDomain; mount @deepseek-ai/dsh-storage-domain or set ledger: 'memory'",
+      );
+    }
+    return new MemoryControlLedger();
+  }
+  const domain = await facility.open(controlDomainSpec);
+  return new StorageControlLedger(domain);
+}
+
+/**
+ * Activate the Lingbang control plane.
+ *
+ * @param ctx - Plugin context with the required services already available.
+ * @param config - Validated plugin configuration.
+ */
+export function apply(ctx: Context, config: Config): void {
+  if (!config.enabled) {
+    ctx.logger("void-dsh-control").info("disabled by configuration; no MCP endpoint registered");
+    return;
+  }
+
+  // Validate everything the schema cannot express BEFORE the async effect, so a
+  // configuration the plugin cannot honour fails plugin startup loudly instead
+  // of leaving a half-built endpoint behind (plan §11, stage 0 verification).
+  const defaultOperations = parseOperations(config.allowedOperations, "allowedOperations");
+  const tokenSpecs = config.tokens.map((token) => ({
+    callerId: token.callerId,
+    tokenEnv: token.tokenEnv,
+    operations:
+      token.operations.length > 0 ? parseOperations(token.operations, `tokens[${token.callerId}].operations`) : defaultOperations,
+  }));
+  const entryPolicy = policyFromConfig(config);
+  compilePolicy(entryPolicy);
+  // Validating the callback target here (rather than on the first delivery)
+  // turns a typo in settings into a startup failure with a clear message.
+  const callbackSecret = config.callback.enabled ? (process.env[config.callback.secretEnv ?? ""] ?? "") : "";
+  const callbackUrl = resolveCallbackUrl(
+    {
+      enabled: config.callback.enabled,
+      url: config.callback.url ?? "",
+      secretEnv: config.callback.secretEnv ?? "VOID_DSH_CONTROL_CALLBACK_SECRET",
+      events: config.callback.events ?? [],
+      timeoutMs: config.callback.timeoutMs ?? 10_000,
+      maxAttempts: config.callback.maxAttempts ?? 5,
+      allowedHosts: config.callback.allowedHosts ?? [],
+      includeAssistantSummary: config.callback.includeAssistantSummary ?? false,
+    },
+    callbackSecret,
+  );
+
+  void ctx.effect(async () => {
+    const log = ctx.logger("void-dsh-control");
+
+    const { grants, missingEnv } = readTokenGrants(tokenSpecs);
+    for (const envName of missingEnv) {
+      // A token whose variable is unset silently authenticates nobody; say so
+      // rather than letting the operator discover it through a 401.
+      log.warn(`token environment variable ${envName} is unset; that caller cannot authenticate`);
+    }
+    if (grants.length === 0 && !config.allowAnonymous) {
+      log.warn("no usable machine token and allowAnonymous is false: every request will be rejected with 401");
+    }
+
+    const allowedRoots = await resolveAllowedRoots(config.allowedRoots);
+    if (allowedRoots.length !== config.allowedRoots.length) {
+      log.warn(
+        `allowedRoots: ${config.allowedRoots.length - allowedRoots.length} configured root(s) were skipped because they are not existing absolute directories`,
+      );
+    }
+    const guard: PathGuard = { allowedRoots };
+
+    const { policy, registered } = createPolicySource(ctx, entryPolicy);
+    if (!registered) log.info("ctx.settings is absent; the composition entry is the only policy source");
+
+    const ledger = await openLedger(ctx, config);
+    const hosts = createHostPorts(ctx);
+
+    // Recovery adjudicates against the host before declaring an orphan failed:
+    // the ledger knows a message was queued, only the Session knows whether it
+    // was received (plan §10.3).
+    const recovery = await ledger.init({
+      sessionExists: async (sessionId) => (await hosts.inspectSession(sessionId)).exists,
+    });
+    if (recovery.orphanedTaskIds.length > 0) {
+      log.warn(
+        `recovered ${recovery.orphanedTaskIds.length} task(s) left non-terminal by an earlier process` +
+          (recovery.deliveredTaskIds.length > 0
+            ? `; ${recovery.deliveredTaskIds.length} of them had already delivered their message`
+            : ""),
+      );
+    }
+
+    const callback = new WebhookCallbackDispatcher({
+      target: {
+        enabled: config.callback.enabled,
+        url: config.callback.url ?? "",
+        secretEnv: config.callback.secretEnv ?? "VOID_DSH_CONTROL_CALLBACK_SECRET",
+        events: config.callback.events ?? [],
+        timeoutMs: config.callback.timeoutMs ?? 10_000,
+        maxAttempts: config.callback.maxAttempts ?? 5,
+        allowedHosts: config.callback.allowedHosts ?? [],
+        includeAssistantSummary: config.callback.includeAssistantSummary ?? false,
+      },
+      ledger,
+      secret: callbackSecret,
+    });
+    if (callbackUrl !== undefined) {
+      log.info(`callback webhook enabled for statuses: ${(config.callback.events ?? []).join(", ")}`);
+      // Deliveries left pending by an earlier process resume now; the ledger
+      // keeps the attempt count so a receiver is never notified twice for one
+      // event (plan §10.3).
+      const resumed = await callback.resumePending();
+      if (resumed > 0) log.info(`re-scheduled ${resumed} pending callback delivery(ies)`);
+    }
+
+    const orchestrator = new ControlOrchestrator({
+      ledger,
+      hosts,
+      policy,
+      onEvent: (record, event) => callback.onTaskEvent(record, event),
+    });
+
+    const authenticator = new Authenticator({ tokens: grants as readonly TokenGrant[], allowAnonymous: config.allowAnonymous });
+
+    const handler = createMcpHttpHandler({
+      authenticator,
+      deps: {
+        orchestrator,
+        authenticator,
+        hosts,
+        policy,
+        guard: () => guard,
+        identity: { name: name, version: PLUGIN_VERSION },
+      },
+    });
+
+    const unregisterRoute = ctx.webServer.register({ kind: "exact", path: config.path, handler });
+
+    // Host events drive task status. Every subscription is registered on this
+    // effect, so disposal detaches all of them together.
+    const sessionSequences = new Map<string, number>();
+    ctx.on("session/event", (session, event) => {
+      const sessionId = String(session.id);
+      const like: SessionEventLike = {
+        type: String(event.type),
+        seq: Number(event.seq),
+        time: Number(event.time),
+        data: event.data,
+      };
+      const signals = signalsFromSessionEvent(like);
+      if (signals.length === 0) return;
+      if (!isNewerSessionSeq(sessionSequences.get(sessionId), like.seq)) return;
+      sessionSequences.set(sessionId, like.seq);
+      for (const signal of signals) void orchestrator.applySignal(sessionId, signal);
+    });
+    ctx.on("agent/status", (payload) => {
+      const sessionId = String(payload.agent.session.id);
+      void orchestrator.applySignal(sessionId, signalFromAgentStatus(payload.status === "running"));
+    });
+    ctx.on("agent/error", (payload) => {
+      const sessionId = String(payload.agent.session.id);
+      const message = payload.error instanceof Error ? payload.error.message : String(payload.error);
+      void orchestrator.applySignal(sessionId, signalFromAgentError(message));
+    });
+    ctx.on("session/disposed", (session) => {
+      sessionSequences.delete(String(session.id));
+    });
+
+    const service = new DshControl(ctx, {
+      orchestrator,
+      ledger,
+      hosts,
+      authenticator,
+      policy,
+      guard: () => guard,
+      endpointPath: config.path,
+    });
+    void service;
+
+    await ledger.putPolicyMeta({
+      instructionsVersion: policy().instructionsVersion,
+      publishedAt: new Date().toISOString(),
+      summary: `requiredFields=${policy().requiredFields.length} documentRules=${policy().requiredDocumentRules.length}`,
+    });
+
+    log.info(
+      `control plane active at ${config.path} (callers=${grants.length}, allowedRoots=${allowedRoots.length}, ledger=${ledger.constructor.name})`,
+    );
+
+    return async () => {
+      // Ordered teardown: stop accepting, wait for every accepted admission
+      // chain to settle, then quiesce the notifier, then release the route and
+      // the ledger. Nothing may still be writing to storage when the ledger
+      // closes (plan §7.3, §12, §16).
+      unregisterRoute();
+      await orchestrator.drain();
+      await callback.drain();
+      await ledger.close();
+      log.info("control plane stopped");
+    };
+  }, "void-dsh-control");
+}
+
+/** Plugin version reported over MCP; kept in sync with package.json. */
+export const PLUGIN_VERSION = "0.1.0";
+
+export { DshControl } from "./service.js";
+export { ControlOrchestrator } from "./orchestrator.js";
+export { createMcpHttpHandler, createControlMcpServer } from "./mcp.js";
+export { createHostPorts } from "./hosts.js";
+export { WebhookCallbackDispatcher, signCallbackBody, callbackPayload } from "./callback.js";
+export { EMPTY_CALLER_POLICY };

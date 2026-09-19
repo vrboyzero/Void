@@ -1,0 +1,6 @@
+# 本目录是独立解析根：@void/void-dsh-control 面向 dsh 0.1.5-rc.2，
+# 而 Void 主 workspace 的其余包锁在 0.1.0-rc.6。两个版本共存会让 pnpm 把
+# 既有包的自动安装 peer 提升到 rc.2（实测会让 void-tools / void-legion /
+# void-memory 的测试直接 SyntaxError），因此本包脱离主 workspace 单独安装。
+packages:
+  - "."
