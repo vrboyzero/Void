@@ -35,6 +35,8 @@ import { ControlOrchestrator } from "./orchestrator.js";
 import { createMcpHttpHandler } from "./mcp.js";
 import { DshControl } from "./service.js";
 import { resolveAllowedRoots } from "./workspace.js";
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import {
   isNewerSessionSeq,
   signalFromAgentError,
@@ -362,6 +364,19 @@ function validateSection(value: ControlSection): void {
   // through it makes a stored value that would throw on the next event
   // unwritable in the first place.
   resolveCallbackUrl(value.callback, process.env[value.callback.secretEnv] ?? "");
+
+  // A root that does not exist is skipped at activation with only a log line, so
+  // a typo looks like it took effect until path addressing mysteriously fails.
+  // Refusing it at the write is what makes the panel the place the mistake is
+  // caught. Synchronous because `validate` is; `resolveAllowedRoots` still does
+  // the realpath pass at activation.
+  const badRoots = value.allowedRoots.filter((root) => !isAbsolute(root) || !existsSync(root));
+  if (badRoots.length > 0) {
+    throw new ControlError(
+      "dsh-control/internal",
+      `allowedRoots entries must be existing absolute directories: ${badRoots.join(", ")}`,
+    );
+  }
 }
 
 /** Live view of the configuration, plus the compiled pieces derived from it. */

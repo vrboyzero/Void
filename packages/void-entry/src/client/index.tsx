@@ -7,6 +7,7 @@ import {
   IconQuestionOutline14,
   IconSearchOutline16,
   Input,
+  RiskConfirmation,
   StateDot,
   Switch,
   type StateDotState,
@@ -21,14 +22,18 @@ import {
   type SchemaNode,
 } from './remote.js'
 import {
+  ChoicesField,
   Group,
   Hint,
   ListField,
   NumberField,
   OperationsField,
+  PatternListField,
+  RulesField,
   SwitchField,
   TextField,
   TokensField,
+  type DocumentRuleRow,
   type OperationEntry,
   type TokenRow,
 } from './controls.js'
@@ -60,6 +65,7 @@ interface PanelField {
   path: string[]
   label?: string
   widget?: string
+  options?: Array<{ value: string; label: string }>
   help?: string
   danger?: boolean
   readOnly?: boolean
@@ -497,13 +503,50 @@ function FieldControl(props: {
   }
 
   switch (widget) {
-    case 'switch':
+    case 'switch': {
+      const on = value === true
+      // 危险开关只拦「打开」这一个方向：关掉它是收紧权限，再拦一次纯属打扰。
+      if (field.danger === true && !on) {
+        return h(DangerSwitch, {
+          label,
+          help: field.help,
+          overridden,
+          disabled,
+          onConfirm: () => void set(true),
+        })
+      }
       return h(SwitchField, {
         label,
         help: field.help,
-        value: value === true,
+        value: on,
         overridden,
         disabled,
+        onChange: (next) => void set(next),
+      })
+    }
+    case 'choices':
+      return h(ChoicesField, {
+        label,
+        help: field.help,
+        value: Array.isArray(value) ? (value as string[]) : [],
+        options: field.options ?? [],
+        overridden,
+        onChange: (next) => void set(next),
+      })
+    case 'rules':
+      return h(RulesField, {
+        label,
+        help: field.help,
+        value: Array.isArray(value) ? (value as DocumentRuleRow[]) : [],
+        overridden,
+        onChange: (next) => void set(next),
+      })
+    case 'patterns':
+      return h(PatternListField, {
+        label,
+        help: field.help,
+        value: Array.isArray(value) ? (value as string[]) : [],
+        overridden,
         onChange: (next) => void set(next),
       })
     case 'number':
@@ -568,5 +611,53 @@ function EmptyHint(props: { text: string }): React.ReactElement {
   },
     h(IconQuestionOutline14, { size: 14 }),
     h('span', null, props.text),
+  )
+}
+
+/**
+ * 危险开关：打开前先过一道二次确认。
+ *
+ * 用宿主的 `RiskConfirmation`——它要求用户**主动勾选**「我已了解」才让主按钮可用，
+ * 这比一个「确定/取消」弹窗更难误点。文案由这里给，宿主不内置。
+ */
+function DangerSwitch(props: {
+  label: string
+  help?: string
+  overridden?: boolean
+  disabled?: boolean
+  onConfirm: () => void
+}): React.ReactElement {
+  const [open, setOpen] = useState(false)
+  const [acknowledged, setAcknowledged] = useState(false)
+  return h('div', null,
+    h(SwitchField, {
+      label: props.label,
+      help: props.help,
+      value: false,
+      overridden: props.overridden,
+      disabled: props.disabled,
+      // 开关本身不直接写回：先弹确认，确认后才提交。
+      onChange: () => {
+        setAcknowledged(false)
+        setOpen(true)
+      },
+    }),
+    h(RiskConfirmation, {
+      open,
+      title: `确认开启「${props.label}」`,
+      // 正文就是字段说明本身——两处各写一段会读起来像重复。
+      description: props.help ?? '',
+      acknowledgeLabel: '我已了解风险，确认开启',
+      cancelLabel: '取消',
+      closeLabel: '关闭',
+      confirmLabel: '开启',
+      acknowledged,
+      onAcknowledgedChange: setAcknowledged,
+      onCancel: () => setOpen(false),
+      onConfirm: () => {
+        setOpen(false)
+        props.onConfirm()
+      },
+    }),
   )
 }

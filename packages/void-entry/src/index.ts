@@ -84,7 +84,9 @@ export interface VoidPanelField {
    * 控件提示。面板不认识的值退化为按 schema 类型推断，因此新增控件类型不会让
    * 旧面板渲染失败。
    */
-  widget?: "switch" | "text" | "number" | "list" | "operations" | "rules" | "tokens" | "select";
+  widget?: "switch" | "text" | "number" | "list" | "operations" | "rules" | "tokens" | "patterns" | "choices";
+  /** `choices` 控件的候选项；其他控件忽略。 */
+  options?: Array<{ value: string; label: string }>;
   /** 一句话说明，显示在控件下方。 */
   help?: string;
   /** 危险的开关，需要二次确认（如允许匿名调用）。 */

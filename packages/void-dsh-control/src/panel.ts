@@ -91,7 +91,9 @@ export function buildPanelManifest(): unknown {
             label: "允许无凭据调用",
             widget: "switch",
             danger: true,
-            help: "仅供本机测试。开启后任何能访问该端口的人都能指挥 DSH。",
+            // 这段文字同时是字段说明和二次确认弹窗的正文（弹窗不再追加自己的话），
+            // 所以一次写全，避免两处各说一半。
+            help: "仅供本机测试。开启后任何能访问该端口的程序都能指挥这个 DSH 实例，不需要任何凭据。",
           },
         ],
       },
@@ -128,8 +130,8 @@ export function buildPanelManifest(): unknown {
         fields: [
           { path: ["callerInstructions"], label: "调用约束正文", widget: "text", help: "dsh_control_info 返回给外部 Agent 的说明" },
           { path: ["requiredFields"], label: "必填 metadata 字段", widget: "list" },
-          { path: ["requiredDocumentRules"], label: "任务文档要求", widget: "rules" },
-          { path: ["forbiddenPatterns"], label: "禁用正则", widget: "list", help: "命中即拒绝；用于禁止密钥等内容进入会话" },
+          { path: ["requiredDocumentRules"], label: "任务文档要求", widget: "rules", help: "每条要求可限定匹配的工作区相对路径正则；留空表示任意路径都满足。" },
+          { path: ["forbiddenPatterns"], label: "禁用正则", widget: "patterns", help: "命中即拒绝，用于禁止密钥等内容进入会话。可用下方试匹配框观察实际命中效果。" },
           { path: ["instructionsVersion"], label: "规则版本号", widget: "number", help: "改动规则时递增" },
         ],
       },
@@ -141,7 +143,11 @@ export function buildPanelManifest(): unknown {
           { path: ["callback", "enabled"], label: "启用回调", widget: "switch" },
           { path: ["callback", "url"], label: "回调地址", widget: "text" },
           { path: ["callback", "secretEnv"], label: "签名密钥变量名", widget: "text", help: "密钥本身只从环境变量读" },
-          { path: ["callback", "events"], label: "触发事件", widget: "list" },
+          { path: ["callback", "events"], label: "触发事件", widget: "choices", options: [
+            { value: "completed", label: "完成" },
+            { value: "failed", label: "失败" },
+            { value: "cancelled", label: "取消" },
+          ] },
           { path: ["callback", "timeoutMs"], label: "超时（毫秒）", widget: "number" },
           { path: ["callback", "maxAttempts"], label: "最大重试次数", widget: "number" },
           { path: ["callback", "allowedHosts"], label: "主机白名单", widget: "list", help: "留空表示接受配置里写的地址" },

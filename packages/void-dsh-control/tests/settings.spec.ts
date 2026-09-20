@@ -93,6 +93,29 @@ describe("settings: validation", () => {
     );
   });
 
+  it("refuses a root that is not an existing absolute directory", async () => {
+    const settings = new FakeSettings();
+    await bootWith(settings);
+    // Roots that do not exist are skipped at activation with only a log line, so
+    // a typo would look like it took effect until path addressing mysteriously
+    // fails. The write is where the mistake must surface.
+    expect(() => settings.update(NS, { allowedRoots: ["C:/definitely/not/here"] })).toThrowError(
+      /allowedRoots entries must be existing absolute directories/,
+    );
+    expect(() => settings.update(NS, { allowedRoots: ["relative/path"] })).toThrowError(
+      /allowedRoots entries must be existing absolute directories/,
+    );
+  });
+
+  it("accepts an existing absolute directory", async () => {
+    const settings = new FakeSettings();
+    await bootWith(settings);
+    // The repository root always exists while the suite runs.
+    const cwd = process.cwd();
+    expect(() => settings.update(NS, { allowedRoots: [cwd] })).not.toThrow();
+    expect(settings.user(NS)?.allowedRoots).toEqual([cwd]);
+  });
+
   it("refuses an enabled callback with no usable target", async () => {
     const settings = new FakeSettings();
     await bootWith(settings);

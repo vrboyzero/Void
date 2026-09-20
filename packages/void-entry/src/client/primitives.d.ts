@@ -91,6 +91,29 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
     children: ReactElement;
   }): ReactElement;
 
+  /**
+   * 页内二次确认：主操作在调用方控制的勾选框被勾上前不可用。
+   *
+   * 四项文案（acknowledge / cancel / close / confirm）都由调用方给本地化值，宿主不
+   * 内置文案。
+   */
+  export interface RiskConfirmationProps {
+    open: boolean;
+    title: string;
+    description: string;
+    acknowledgeLabel: string;
+    cancelLabel: string;
+    closeLabel: string;
+    confirmLabel: string;
+    acknowledged: boolean;
+    disabled?: boolean;
+    onAcknowledgedChange: (acknowledged: boolean) => void;
+    onCancel: () => void;
+    onConfirm: () => void;
+  }
+
+  export function RiskConfirmation(props: RiskConfirmationProps): ReactElement;
+
   /** 所有 `Icon*` 的共享 props；颜色跟随 `currentColor`。 */
   export interface IconProps {
     size?: number | undefined;
