@@ -90,6 +90,14 @@ interface PanelManifest {
     title: string
     summary?: string
     fields: PanelField[]
+    /**
+     * 分组顶部的警示行；不写就不显示。
+     *
+     * 用于「做错这一步会静默坏掉、而从界面上看不出来」的前提——比如改
+     * `cordis.patch.yml` 时 `config` 是整体替换而非深合并，只写一个字段会把 `tokens`
+     * 一并抹掉，端点还在但所有请求 401。这类内容得在**动手之前**看到，所以放在分组最上面。
+     */
+    notice?: string
     /** 分组末尾的展示区块；connect 让面板渲染 MCP 接入信息。 */
     block?: string
   }>
@@ -545,6 +553,8 @@ function PluginCard(props: {
             open: openGroup === group.id,
             onToggle: () => props.onToggleGroup(group.id),
           },
+            // 警示行放在分组**最上面**：这类内容要在用户动手之前看到，滚到底才出现就晚了。
+            group.notice ? h(Hint, { text: group.notice, tone: 'danger' }) : null,
             ...group.fields.map((field) =>
               h(FieldControl, {
                 key: field.path.join('.'),

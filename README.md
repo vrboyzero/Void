@@ -193,6 +193,39 @@ credentials 领域写入而非 settings 分节。
 重新应用。前提是 profile 的 `patchReload === "live"`——`web` 模板是 `live`，`acp`/`headless`/`sdk`
 是 `startup`。实测：运行中写 `disabled: true`，**2 秒内端点 404**。
 
+#### 7.1 ⚠️ patch 的 `config` 是**整体替换**，不是深合并
+
+这条极易踩，后果是**静默丢配置**。
+
+patch 的语义在 `dsh-app-boot/lib/index.js` 的 `applyEntryPatches()` 里——源码注释称它为
+「THE patch semantics of this include」：
+
+```js
+for (const [key, value] of Object.entries(overrides)) {
+  if (key === "id") continue;
+  target[key] = value;      // 顶层键直接赋值，没有递归合并
+}
+```
+
+`config` 是顶层键，所以**整个 config 对象被替换**，而不是逐字段覆盖。只写一个字段，其余字段
+全部回到 schema 默认值——包括你没打算动的那些。
+
+实测（`void-dsh-control`）：往 profile 的 `cordis.patch.yml` 只写
+
+```yaml
+- id: void-dsh-control
+  config:
+    allowedRoots:
+      - E:\project\star-sanctuary\Void
+```
+
+结果 `tokens` 被一并抹掉（回到 `[]`），端点仍然在，但**所有请求 401**。补全 `tokens` 后立即恢复。
+
+**正确写法**：改任何一个字段，都要把**其余关键项一并写全**。最省事的做法是从包内的
+`cordis.patch.yml` 复制整段 `config` 再改你要改的那一行。
+
+> 参考实现见 `packages/void-dsh-control/cordis.patch.yml`——它就是一份可直接抄的完整 config。
+
 ### 8. 构建链有个坑：`pnpm pack` 不编译
 
 它只把现成的 `lib/` 打进 tarball。漏了构建，打出来的是**上一次**的代码——命令成功、产物是旧

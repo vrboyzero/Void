@@ -96,6 +96,16 @@ export function buildPanelManifest(runtime: RuntimeConfig): unknown {
       {
         id: "basic",
         title: "基本",
+        // 下面四项都由 profile 的 cordis.patch.yml 决定，所以这条警告放在这一组。
+        //
+        // 它必须在**动手改之前**看到：patch 的 `config` 是整体替换而非深合并
+        // （`dsh-app-boot` 的 `applyEntryPatches()` 对顶层键直接赋值，源码注释称其为
+        // 「THE patch semantics of this include」）。只写一个字段，其余字段全部回到 schema
+        // 默认值——`tokens` 会变成空数组，端点还在，但所有请求 401。真机踩过一次。
+        notice:
+          "这几项要改 profile 的 cordis.patch.yml。注意其中的 config 是「整体替换」而不是逐字段合并：" +
+          "只写你想改的那一项，其余项会全部回到默认值（tokens 会变成空，端点还在但所有请求 401）。" +
+          "请从包内自带的 cordis.patch.yml 复制整段 config 再改。改后数秒内生效，无需重启。",
         fields: [
           // `source: "runtime"` 表示取值来自清单里的 `runtime` 块，而不是设置命名空间。
           //

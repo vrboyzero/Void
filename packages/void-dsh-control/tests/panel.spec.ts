@@ -50,6 +50,23 @@ describe("void-dsh-control panel: 基本 组的说明与实现一致", () => {
     expect(fields().map((f) => f.source)).toEqual(["runtime", "runtime", "runtime", "runtime"]);
   });
 
+  it("warns that a profile patch replaces the whole config, not merges it", () => {
+    // patch 的 config 是整体替换（dsh-app-boot 的 applyEntryPatches 对顶层键直接赋值）。
+    // 只写 allowedRoots 会把 tokens 一并抹掉，端点还在但所有请求 401。这条必须在「基本」组
+    // 最上面看到——那是用户准备动手改 patch 的地方。
+    const m = buildPanelManifest(RUNTIME) as unknown as {
+      groups: Array<{ id: string; notice?: string }>;
+    };
+    const basic = m.groups.find((g) => g.id === "basic")!;
+    expect(basic.notice).toBeDefined();
+    expect(basic.notice).toContain("整体替换");
+    expect(basic.notice).toContain("tokens");
+    expect(basic.notice).toContain("401");
+    expect(basic.notice).toContain("cordis.patch.yml");
+    // 其余分组不该被顺手套上警示行。
+    expect(m.groups.filter((g) => g.notice !== undefined).map((g) => g.id)).toEqual(["basic"]);
+  });
+
   it("carries the runtime block the runtime-sourced fields read", () => {
     const m = buildPanelManifest(RUNTIME) as unknown as { runtime?: Record<string, unknown> };
     expect(m.runtime).toEqual(RUNTIME);
