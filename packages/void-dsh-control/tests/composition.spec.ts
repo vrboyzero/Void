@@ -45,6 +45,15 @@ describe("composition: plugin activation", () => {
     expect(other.status).toBe(404);
   });
 
+  it("subscribes to host lifecycle events globally", async () => {
+    const ctx = await bootControl();
+    const hooks = (ctx.events as unknown as { _hooks: Record<string, Array<{ global?: boolean }>> })._hooks;
+
+    expect(hooks["session/event"]?.some((hook) => hook.global === true)).toBe(true);
+    expect(hooks["agent/status"]?.some((hook) => hook.global === true)).toBe(true);
+    expect(hooks["agent/error"]?.some((hook) => hook.global === true)).toBe(true);
+  });
+
   it("stays inert when disabled", async () => {
     const ctx = await bootControl({ config: { enabled: false } });
     const webServer = ctx.get("webServer")!;

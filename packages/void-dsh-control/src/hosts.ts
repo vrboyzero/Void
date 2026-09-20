@@ -136,9 +136,17 @@ export function createHostPorts(ctx: Context): HostPorts {
 
     async createSession(request): Promise<{ sessionId: string }> {
       try {
+        // The rc.2 host contract accepts exactly one location selector. A
+        // Workspace already carries its cwd, so prefer the stable identity when
+        // both are supplied by the orchestration layer.
+        const location =
+          request.workspaceId === undefined
+            ? request.cwd === undefined
+              ? {}
+              : { cwd: request.cwd }
+            : { workspaceId: WorkspaceId(request.workspaceId) };
         const value = await ctx.sessionController.create({
-          ...(request.workspaceId === undefined ? {} : { workspaceId: WorkspaceId(request.workspaceId) }),
-          ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+          ...location,
           ...(request.agentPreset === undefined ? {} : { agentPreset: request.agentPreset }),
         });
         return { sessionId: String(value.sessionId) };

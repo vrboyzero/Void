@@ -718,19 +718,19 @@ export function apply(ctx: Context, config: Config): void {
       if (!isNewerSessionSeq(sessionSequences.get(sessionId), like.seq)) return;
       sessionSequences.set(sessionId, like.seq);
       for (const signal of signals) void orchestrator.applySignal(sessionId, signal);
-    });
+    }, { global: true });
     ctx.on("agent/status", (payload) => {
       const sessionId = String(payload.agent.session.id);
       void orchestrator.applySignal(sessionId, signalFromAgentStatus(payload.status === "running"));
-    });
+    }, { global: true });
     ctx.on("agent/error", (payload) => {
       const sessionId = String(payload.agent.session.id);
       const message = payload.error instanceof Error ? payload.error.message : String(payload.error);
       void orchestrator.applySignal(sessionId, signalFromAgentError(message));
-    });
+    }, { global: true });
     ctx.on("session/disposed", (session) => {
       sessionSequences.delete(String(session.id));
-    });
+    }, { global: true });
 
     const service = new DshControl(ctx, {
       orchestrator,
