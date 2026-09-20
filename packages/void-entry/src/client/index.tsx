@@ -21,6 +21,7 @@ import {
   type SchemaEnvelope,
   type SchemaNode,
 } from './remote.js'
+import { ConnectBlock } from './connect.js'
 import {
   ChoicesField,
   Group,
@@ -73,8 +74,17 @@ interface PanelField {
 
 interface PanelManifest {
   namespace: string
-  groups: Array<{ id: string; title: string; summary?: string; fields: PanelField[] }>
+  groups: Array<{
+    id: string
+    title: string
+    summary?: string
+    fields: PanelField[]
+    /** 分组末尾的展示区块；connect 让面板渲染 MCP 接入信息。 */
+    block?: string
+  }>
   operations?: OperationEntry[]
+  /** MCP 接入信息：主机与端口由面板用 window.location.origin 补。 */
+  connect?: { path: string; transport?: string }
 }
 
 /**
@@ -445,6 +455,15 @@ function PluginCard(props: {
                 onCommit: (ops) => props.onCommit(manifest!.namespace, ops),
               }),
             ),
+            group.block === 'connect' && manifest?.connect
+              ? h(ConnectBlock, {
+                  path: manifest.connect.path,
+                  transport: manifest.connect.transport,
+                  callers: Array.isArray(readPath(view?.value, ['tokens']))
+                    ? (readPath(view?.value, ['tokens']) as TokenRow[])
+                    : [],
+                })
+              : null,
           ),
         ),
       )

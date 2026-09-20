@@ -8,6 +8,7 @@ afterEach(disposeContexts);
 
 interface Manifest {
   namespace: string;
+  connect?: { path: string; transport?: string };
   groups: Array<{
     id: string;
     title: string;
@@ -16,7 +17,8 @@ interface Manifest {
   operations?: Array<{ value: string; label: string; implies: string[] }>;
 }
 
-const manifest = (): Manifest => buildPanelManifest() as Manifest;
+const ENDPOINT = "/mcp/dsh-agent-control";
+const manifest = (): Manifest => buildPanelManifest(ENDPOINT) as Manifest;
 
 /** Walk a path through a resolved settings value. */
 function at(value: unknown, path: readonly string[]): { found: boolean; value: unknown } {
@@ -121,6 +123,20 @@ describe("panel: manifest against the registered schema", () => {
     expect(wronglyWritable).toEqual([]);
   });
 
+  it("reports the configured endpoint path rather than a hard-coded one", () => {
+    // A hard-coded path would generate client configs pointing at an endpoint the
+    // user had already moved.
+    expect(manifest().connect).toEqual({ path: ENDPOINT, transport: "streamable-http" });
+    expect((buildPanelManifest("/custom/mcp") as Manifest).connect!.path).toBe("/custom/mcp");
+  });
+
+  it("keeps the connect group free of fields", () => {
+    // Its content is generated from the manifest plus live values, so a field
+    // here would be rendered as an empty control.
+    const connect = manifest().groups.find((g) => g.id === "connect");
+    expect(connect?.fields).toEqual([]);
+  });
+
   it("groups every live-settable field exactly once", async () => {
     const settings = new FakeSettings();
     await bootControl({ settings });
@@ -155,7 +171,7 @@ describe("panel: registration", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Re-run the contribution against the now-present service.
-    registerVoidPanel(ctx as never);
+    registerVoidPanel(ctx as never, ENDPOINT);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(registered.has("@void/void-dsh-control")).toBe(true);

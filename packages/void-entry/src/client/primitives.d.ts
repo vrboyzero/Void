@@ -38,6 +38,16 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
   } & InputHTMLAttributes<HTMLInputElement>): ReactElement;
 
   /**
+   * 胶囊标签。给了 `onClick` 就是可点的（渲染成 button），否则是静态 span。
+   * 用来做配置形态切换那一排。
+   */
+  export function Pill(props: {
+    active?: boolean;
+    className?: string | undefined;
+    children?: ReactNode;
+  } & ButtonHTMLAttributes<HTMLButtonElement>): ReactElement;
+
+  /**
    * 受控开关。`label` 是无障碍名称，由调用方给本地化文案。
    */
   export function Switch(props: {
@@ -119,6 +129,15 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
     size?: number | undefined;
     className?: string | undefined;
   }
+
+  /**
+   * 写入宿主剪贴板：优先用异步 Clipboard API，在缺少它的宿主（jsdom、非安全上下文）
+   * 上回退到 `execCommand('copy')`。
+   *
+   * @param text - 要放到剪贴板上的**原文**。
+   * @returns 仅在宿主接受写入时为 true。
+   */
+  export function writeClipboard(text: string): Promise<boolean>;
 
   export function IconCordisPluginOutline14(props: IconProps): ReactElement;
   export function IconChevronDownOutline14(props: IconProps): ReactElement;

@@ -109,6 +109,14 @@ export interface VoidPanelGroup {
   /** 未展开时的摘要；缺省由面板按字段值生成。 */
   summary?: string;
   fields: VoidPanelField[];
+  /**
+   * 分组末尾的**展示区块**（不是可配置字段）。
+   *
+   * `connect` 让面板渲染 MCP 接入信息与可复制的客户端配置；数据取自
+   * {@link VoidPanelManifest.connect} 与当前命名空间的值。渲染逻辑归面板——各客户端
+   * 的配置格式是通用 MCP 知识，不是某个插件独有的。
+   */
+  block?: "connect";
 }
 
 /**
@@ -129,6 +137,20 @@ export interface VoidPanelManifest {
    * 前置关系由插件给出（它就是运行时 `expandOperations` 的实现方），面板不重算。
    */
   operations?: Array<{ value: string; label: string; prerequisite?: boolean }>;
+  /**
+   * MCP 接入信息：面板据此生成可复制的客户端配置。
+   *
+   * **不含主机与端口**，因为面板自己就能补上——面板跑在浏览器里、与端点同源，
+   * `window.location.origin` 就是调用方该用的地址。让插件去猜端口反而会猜错：端口由
+   * 启动参数 `--port` 决定，插件配置里没有这个信息。路径必须由插件给，因为它是组合
+   * 入口定的。
+   */
+  connect?: {
+    /** 端点路径，如 `/mcp/dsh-agent-control`。 */
+    path: string;
+    /** 传输方式，用于生成的配置里标注；目前只有 `streamable-http`。 */
+    transport?: string;
+  };
 }
 
 interface RegisteredPanel {

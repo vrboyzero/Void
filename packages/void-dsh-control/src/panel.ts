@@ -61,9 +61,12 @@ export function impliedOperations(selected: readonly ControlOperation[]): Contro
  *
  * @returns 分组、字段提示与业务词汇表。
  */
-export function buildPanelManifest(): unknown {
+export function buildPanelManifest(endpointPath: string): unknown {
   return {
     namespace: "dsh-agent-control",
+    // 路径取组合入口里的实际配置，不写死；写死的话用户改了 path，面板生成的配置
+    // 就会指向一个不存在的端点。
+    connect: { path: endpointPath, transport: "streamable-http" },
     groups: [
       {
         id: "basic",
@@ -136,6 +139,13 @@ export function buildPanelManifest(): unknown {
         ],
       },
       {
+        id: "connect",
+        title: "MCP接入配置",
+        summary: "复制给 Codex / Cursor / Claude 使用",
+        fields: [],
+        block: "connect",
+      },
+      {
         id: "callback",
         title: "回调通知",
         summary: "未启用",
@@ -173,11 +183,15 @@ export function buildPanelManifest(): unknown {
  * 本插件的其余功能不受影响。
  *
  * @param ctx - 插件上下文。
+ * @param endpointPath - 组合入口里配置的端点路径。
  */
-export function registerVoidPanel(ctx: Context): void {
+export function registerVoidPanel(ctx: Context, endpointPath: string): void {
   ctx.inject(["voidSuite"], (panelCtx) => {
     const host = panelCtx.get("voidSuite") as PanelHost | undefined;
     if (host === undefined || typeof host.registerPanel !== "function") return;
-    panelCtx.effect(() => host.registerPanel(PACKAGE, buildPanelManifest()), "void-dsh-control: panel manifest");
+    panelCtx.effect(
+      () => host.registerPanel(PACKAGE, buildPanelManifest(endpointPath)),
+      "void-dsh-control: panel manifest",
+    );
   });
 }

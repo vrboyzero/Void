@@ -136,23 +136,43 @@ VOID_DSH_CONTROL_TOKEN=一长串随机字符
 
 优先级：已存在的进程环境变量 **高于** `.env`，临时覆盖直接 export 即可。
 
-### 1.5 客户端配置样例（Codex / 通用 MCP Client）
+### 1.5 客户端配置（Codex / Cursor / Claude）
+
+**推荐从「虚空（Void）」设置面板的「MCP接入配置」分组里复制**——那里的地址、路径、变量名
+都取自实时值，粘贴即可用。本节只解释为什么各家写法不一样。
+
+各客户端的字段名与取值**并不统一**，一份「通用片段」不可能对所有客户端成立（2026-09-20
+逐家核对官方文档得到）：
+
+| 客户端 | 配置文件 | 要点 |
+|---|---|---|
+| **Codex CLI** | `~/.codex/config.toml` | 有专门的 `bearer_token_env_var`，暗号完全不必进配置 |
+| **Cursor** | `.cursor/mcp.json` | 远程 server **不写 `type`**；插值语法是 `${env:NAME}`（带 `env:` 前缀） |
+| **Claude Code** | `.mcp.json` | 与 Cursor 相反：**必须写 `type: "http"`**，缺了会被跳过并报错 |
+| **Claude Desktop** | `%APPDATA%\Claude\claude_desktop_config.json` | **只支持 stdio**，必须经 `mcp-remote` 桥接，且 Windows 上另有空格转义问题 |
+
+Codex 与 Cursor 两种写法**不需要任何桥接**，是本插件的首选。
+
+```toml
+# Codex CLI：~/.codex/config.toml
+[mcp_servers.dsh-control]
+url = "http://127.0.0.1:3080/mcp/dsh-agent-control"
+bearer_token_env_var = "VOID_DSH_CONTROL_TOKEN"
+```
 
 ```json
+// Cursor：.cursor/mcp.json（项目级）或 ~/.cursor/mcp.json（全局）
 {
   "mcpServers": {
     "dsh-control": {
-      "type": "streamable-http",
       "url": "http://127.0.0.1:3080/mcp/dsh-agent-control",
-      "headers": {
-        "Authorization": "Bearer ${VOID_DSH_CONTROL_TOKEN}"
-      }
+      "headers": { "Authorization": "Bearer ${env:VOID_DSH_CONTROL_TOKEN}" }
     }
   }
 }
 ```
 
-> 字段名以你实际使用的客户端文档为准；上例是概念配置。
+> 端口以你实际启动的为准；上面写的是默认的 3080。面板里生成的那份会自动带上正确端口。
 
 ## 2. 配置项
 

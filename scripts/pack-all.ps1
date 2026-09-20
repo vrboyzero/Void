@@ -47,6 +47,14 @@ $packages = @(
   "packages/void"
 )
 
+# 不在上面这个列表里的包，构建链也在这条链之外。静默漏掉它们的后果是打出发旧的
+# tarball——命令成功、产物是旧的。目前只有 void-dsh-control 属于这种情况：它被
+# pnpm-workspace 排除，必须单独跑 scripts/pack-lingbang.ps1。末尾会比对 src 与 lib
+# 的时间戳主动提醒。
+$externallyBuilt = @{
+  "packages/void-dsh-control" = "scripts/pack-lingbang.ps1"
+}
+
 Write-Host "== Void 构建 + 打包 ==" -ForegroundColor Cyan
 Write-Host "产物目录：$dist"
 if ($SkipBuild) { Write-Host "模式：跳过构建（-SkipBuild）" -ForegroundColor Yellow }
@@ -128,9 +136,27 @@ if ($DryRun) {
 # --- 汇总 --------------------------------------------------------------------
 $tarballs = @(Get-ChildItem $dist -Filter '*.tgz' -File | Sort-Object Name)
 Write-Host "`n完成：构建 $built 个包，产出 $($tarballs.Count) 个 tarball -> $dist" -ForegroundColor Green
+
+
 $tarballs | ForEach-Object { Write-Host "  $($_.Name)" }
 if ($skipped.Count -gt 0) {
   Write-Host "（无 build 脚本：$($skipped -join ', ')）" -ForegroundColor DarkGray
+}
+# 不在本脚本包列表里的包，构建链也在这条链之外。静默漏掉它们的后果是打出发旧的
+# tarball——命令成功、产物是旧的。目前只有 void-dsh-control 属于这种情况（被
+# pnpm-workspace 排除），这里比对 src 与 lib 的时间戳主动提醒。
+foreach ($entry in $externallyBuilt.GetEnumerator()) {
+  $dir = Join-Path $root $entry.Key
+  if (-not (Test-Path $dir)) { continue }
+  $manifest = Get-Content (Join-Path $dir "package.json") -Raw | ConvertFrom-Json
+  $newestSrc = Get-ChildItem (Join-Path $dir "src") -Recurse -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  $newestLib = Get-ChildItem (Join-Path $dir "lib") -Recurse -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if ($newestSrc -and (-not $newestLib -or $newestSrc.LastWriteTime -gt $newestLib.LastWriteTime)) {
+    Write-Host "  [!] $($manifest.name) 的 src 比 lib 新，但本脚本不管它" -ForegroundColor Yellow
+    Write-Host "      请另跑：pwsh -File $($entry.Value)" -ForegroundColor Yellow
+  }
 }
 Write-Host "`n安装（必须用 tarball，不要用目录）：" -ForegroundColor Green
 Write-Host "  dsh plugin --profile <profile> add `"$dist\<name>.tgz`"" -ForegroundColor Green

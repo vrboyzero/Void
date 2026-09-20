@@ -546,7 +546,7 @@ export function apply(ctx: Context, config: Config): void {
   // Contribute the configuration panel to the Void entry, when one is installed.
   // Outside the async effect: registration is synchronous and must not wait on
   // the ledger or the host ports.
-  registerVoidPanel(ctx);
+  registerVoidPanel(ctx, config.path);
 
   void ctx.effect(async () => {
     const log = ctx.logger("void-dsh-control");
