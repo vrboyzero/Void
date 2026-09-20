@@ -1,7 +1,8 @@
-import { createElement as h, useCallback, useEffect, useState } from 'react'
+import { createElement as h, useCallback, useEffect, useRef, useState } from 'react'
 import type { Context } from './context-types.ts'
 import { createVoidWidgetsService } from './widgets.js'
 import {
+  Button,
   DisclosureRow,
   IconCordisPluginOutline14,
   IconQuestionOutline14,
@@ -22,6 +23,7 @@ import {
   type SchemaNode,
 } from './remote.js'
 import { ConnectBlock } from './connect.js'
+import { draftOps, editDraft, isDirty, saveBlockers, shownValue, type Draft } from './draft.js'
 import {
   ChoicesField,
   Group,
@@ -187,6 +189,17 @@ function VoidSection(): React.ReactElement {
   const [query, setQuery] = useState('')
   const [openPlugin, setOpenPlugin] = useState<string | null>(null)
   const [openGroup, setOpenGroup] = useState<string | null>(null)
+  /**
+   * 各命名空间的未保存改动。
+   *
+   * 官方设置卡片的规则是「只有用户保存时才写入」，所以输入只落到这里，不发请求。
+   * 这样从结构上就不存在「半成品值上线」——P4 时那些逐个控件的绕法（失焦提交、空行
+   * 过滤）都不再需要。
+   */
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({})
+  // 写回时要读最新视图，但不想让 `edit` 依赖 `views` 而频繁重建。
+  const viewsRef = useRef<Record<string, NamespaceView>>({})
+  viewsRef.current = views
 
   /** 重读所有命名空间，写入冲突时也走这里（revision 已经变了）。 */
   const refreshViews = useCallback(async () => {
@@ -242,30 +255,60 @@ function VoidSection(): React.ReactElement {
       .finally(() => setBusy(null))
   }
 
-  /**
-   * 写回一组字段。
-   *
-   * 乐观更新 + 冲突重读：服务端用 `expectedRevision` 拒绝陈旧编辑器，被拒时说明
-   * 别处改过配置，此时**必须重新读取再让用户重试**，而不是重试写入——否则就把
-   * 别人的改动盖掉了。
-   */
-  const commit = async (ns: string, ops: PathOp[]) => {
-    const view = views[ns]
-    if (view === undefined) return
-    setBusy(`${ns}:${ops.map((op) => op.path.join('.')).join(',')}`)
+  /** 把一次输入写进草稿——只动本地状态，不发请求。 */
+  const edit = (ns: string, path: readonly string[], value: unknown) => {
+    const revision = viewsRef.current[ns]?.revision ?? 0
+    setDrafts((current) => ({ ...current, [ns]: editDraft(current[ns], path, value, revision) }))
     setError(null)
-    const outcome = await mutateNamespace(ns, ops, view.revision)
+  }
+
+  const discard = (ns: string) => {
+    setDrafts((current) => {
+      const next = { ...current }
+      delete next[ns]
+      return next
+    })
+    setError(null)
+  }
+
+  /**
+   * 保存一个命名空间的草稿。
+   *
+   * 以**草稿开始编辑时**的 revision 设栅，所以一个已经与文档脱节的表单会被
+   * `settings/conflict` 拒绝，而不是盖掉并发发生的改动。被拒时保留草稿并重读，
+   * 让用户核对后再存——而不是替他重试。
+   */
+  const save = async (ns: string) => {
+    const draft = drafts[ns]
+    const view = views[ns]
+    if (draft === undefined || view === undefined) return
+    const widgets = manifestWidgets(manifests, ns)
+    const ops = draftOps(draft, widgets, view.value) as PathOp[]
+    if (ops.length === 0) {
+      discard(ns)
+      return
+    }
+    setBusy(`${ns}:save`)
+    setError(null)
+    const outcome = await mutateNamespace(ns, ops, draft.revision)
     setBusy(null)
     if (outcome.ok) {
       setViews((current) => ({ ...current, [ns]: outcome.value }))
+      discard(ns)
       return
     }
+    // 失败保留草稿：用户改的东西不能因为一次失败就没了。
     setError(
       outcome.code === 'settings/conflict'
-        ? '配置已被别处改动，已重新读取；请确认后重试。'
+        ? '配置已被别处改动，已重新读取。请核对下面的值后再保存。'
         : `写入被拒绝：${outcome.message}`,
     )
     await refreshViews()
+    // 重读之后把设栅推到新 revision：用户已经看到了刷新后的值，再存一次是他明确的意思。
+    setDrafts((current) => {
+      const held = current[ns]
+      return held === undefined ? current : { ...current, [ns]: { ...held, revision: viewsRef.current[ns]?.revision ?? held.revision } }
+    })
   }
 
   const list = plugins ?? []
@@ -369,7 +412,10 @@ function VoidSection(): React.ReactElement {
                   },
                   onToggleGroup: (gid: string) => setOpenGroup(openGroup === gid ? null : gid),
                   onToggleEnabled: (next: boolean) => toggle(plugin.id, next),
-                  onCommit: commit,
+                  draft: manifests[plugin.id] ? drafts[manifests[plugin.id]!.namespace] : undefined,
+                  onEdit: (path, value) => edit(manifests[plugin.id]!.namespace, path, value),
+                  onSave: () => void save(manifests[plugin.id]!.namespace),
+                  onDiscard: () => discard(manifests[plugin.id]!.namespace),
                 }),
               ),
             ),
@@ -399,9 +445,15 @@ function PluginCard(props: {
   onToggleOpen: () => void
   onToggleGroup: (id: string) => void
   onToggleEnabled: (next: boolean) => void
-  onCommit: (ns: string, ops: PathOp[]) => Promise<void>
+  /** 该命名空间的未保存改动。 */
+  draft: Draft | undefined
+  onEdit: (path: readonly string[], value: unknown) => void
+  onSave: () => void
+  onDiscard: () => void
 }): React.ReactElement {
-  const { plugin, manifest, view, busy, open, openGroup } = props
+  const { plugin, manifest, view, busy, open, openGroup, draft } = props
+  const blockers = saveBlockers(draft, manifestWidgets(manifest ? { [plugin.id]: manifest } : {}, manifest?.namespace ?? ''))
+  const dirty = draft !== undefined && Object.keys(draft.values).length > 0
   const groups = manifest?.groups ?? []
   const expandable = groups.length > 0
 
@@ -432,11 +484,40 @@ function PluginCard(props: {
       : h('span', { style: { fontSize: 12, color: MUTED, whiteSpace: 'nowrap' } }, '不可关闭'),
   )
 
+  // 保存条常驻在卡片正文顶部：改动只落在草稿里，不给一个显眼的保存入口等于让用户以为
+  // 改丢了。有阻塞项时保存禁用并说明原因——「字段不接受的草稿会阻塞保存，而不是被丢弃」。
+  const saveBar = dirty
+    ? h('div', {
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          margin: '0 0 8px 24px',
+          padding: '6px 10px',
+          borderRadius: 8,
+          background: 'rgba(210,150,0,0.10)',
+          border: '1px solid rgba(210,150,0,0.35)',
+        },
+      },
+        h(StateDot, { state: 'warning', size: 8 }),
+        h('span', { style: { fontSize: 12, flex: 1, minWidth: 0 } },
+          blockers.length > 0 ? blockers.join(' ') : '有未保存的改动。'),
+        h(Button, { variant: 'ghost', size: 'sm', disabled: busy !== null, onClick: props.onDiscard }, '放弃'),
+        h(Button, {
+          variant: 'primary',
+          size: 'sm',
+          disabled: busy !== null || blockers.length > 0,
+          onClick: props.onSave,
+        }, busy === `${manifest?.namespace}:save` ? '保存中…' : '保存'),
+      )
+    : null
+
   const body = expandable
     ? h('div', { style: { display: 'flex', flexDirection: 'column' } },
         plugin.description
           ? h('div', { style: { fontSize: 12, color: MUTED, padding: '0 0 6px 24px' } }, plugin.description)
           : null,
+        saveBar,
         ...groups.map((group) =>
           h(Group, {
             key: group.id,
@@ -452,15 +533,17 @@ function PluginCard(props: {
                 view,
                 manifest: manifest!,
                 busy,
-                onCommit: (ops) => props.onCommit(manifest!.namespace, ops),
+                draft,
+                onEdit: props.onEdit,
               }),
             ),
             group.block === 'connect' && manifest?.connect
               ? h(ConnectBlock, {
                   path: manifest.connect.path,
                   transport: manifest.connect.transport,
-                  callers: Array.isArray(readPath(view?.value, ['tokens']))
-                    ? (readPath(view?.value, ['tokens']) as TokenRow[])
+                  // 调用方列表也读草稿：用户刚加的一行没保存时，配置片段里就该出现它。
+                  callers: Array.isArray(shownValue(view?.value, draft, ['tokens']))
+                    ? (shownValue(view?.value, draft, ['tokens']) as TokenRow[])
                     : [],
                 })
               : null,
@@ -497,16 +580,21 @@ function FieldControl(props: {
   view: NamespaceView | undefined
   manifest: PanelManifest
   busy: string | null
-  onCommit: (ops: PathOp[]) => Promise<void>
+  /** 该命名空间的未保存改动；字段展示时草稿优先。 */
+  draft: Draft | undefined
+  onEdit: (path: readonly string[], value: unknown) => void
 }): React.ReactElement {
-  const { field, view } = props
-  const value = view === undefined ? undefined : readPath(view.value, field.path)
+  const { field, view, draft } = props
+  const value = shownValue(view?.value, draft, field.path)
   const label = field.label ?? field.path[field.path.length - 1]!
+  // 「已自定义」说的是服务端解析结果里有这一层；「已修改」说的是草稿里有。两者不同：
+  // 前者表示这个值不再来自默认，后者表示这次改动还没保存。
   const overridden = view === undefined ? false : isOverridden(view, field.path)
+  const dirty = isDirty(draft, field.path)
   const node = view === undefined ? undefined : nodeAt(view.schema, field.path)
   const widget = field.widget ?? inferWidget(node, value)
   const disabled = view === undefined || props.busy !== null
-  const set = (next: unknown) => props.onCommit([{ op: 'set', path: field.path, value: next }])
+  const set = (next: unknown) => props.onEdit(field.path, next)
 
   if (field.readOnly === true) {
     return h('div', { style: { padding: '6px 0 6px 24px' } },
@@ -530,6 +618,7 @@ function FieldControl(props: {
           label,
           help: field.help,
           overridden,
+          dirty,
           disabled,
           onConfirm: () => void set(true),
         })
@@ -539,6 +628,7 @@ function FieldControl(props: {
         help: field.help,
         value: on,
         overridden,
+        dirty,
         disabled,
         onChange: (next) => void set(next),
       })
@@ -550,6 +640,7 @@ function FieldControl(props: {
         value: Array.isArray(value) ? (value as string[]) : [],
         options: field.options ?? [],
         overridden,
+        dirty,
         onChange: (next) => void set(next),
       })
     case 'rules':
@@ -558,6 +649,7 @@ function FieldControl(props: {
         help: field.help,
         value: Array.isArray(value) ? (value as DocumentRuleRow[]) : [],
         overridden,
+        dirty,
         onChange: (next) => void set(next),
       })
     case 'patterns':
@@ -566,6 +658,7 @@ function FieldControl(props: {
         help: field.help,
         value: Array.isArray(value) ? (value as string[]) : [],
         overridden,
+        dirty,
         onChange: (next) => void set(next),
       })
     case 'number':
@@ -574,6 +667,7 @@ function FieldControl(props: {
         help: field.help,
         value: typeof value === 'number' ? value : 0,
         overridden,
+        dirty,
         onChange: (next) => void set(next),
       })
     case 'operations':
@@ -583,6 +677,7 @@ function FieldControl(props: {
         value: Array.isArray(value) ? (value as string[]) : [],
         vocabulary: props.manifest.operations ?? [],
         overridden,
+        dirty,
         onChange: (next) => void set(next),
       })
     case 'tokens':
@@ -592,6 +687,7 @@ function FieldControl(props: {
         value: Array.isArray(value) ? (value as TokenRow[]) : [],
         vocabulary: props.manifest.operations ?? [],
         overridden,
+        dirty,
         onChange: (next) => void set(next),
       })
     case 'list':
@@ -600,6 +696,7 @@ function FieldControl(props: {
         help: field.help,
         value: Array.isArray(value) ? (value as string[]) : [],
         overridden,
+        dirty,
         onChange: (next) => void set(next),
       })
     case 'object':
@@ -617,6 +714,7 @@ function FieldControl(props: {
         help: field.help,
         value: typeof value === 'string' ? value : '',
         overridden,
+        dirty,
         multiline: Array.isArray(value) === false && typeof value === 'string' && value.length > 60,
         onChange: (next) => void set(next),
       })
@@ -624,6 +722,24 @@ function FieldControl(props: {
 }
 
 /** 空态/加载态的统一呈现。 */
+/**
+ * 字段路径键 → 清单里的控件类型。
+ *
+ * 保存路径要靠它决定怎么规整值（空行怎么算），而不是去猜路径名的含义——哪个字段是
+ * 数组、元素长什么样，是清单说了算。
+ *
+ * @param manifests - 包名 → 清单。
+ * @param ns - 命名空间。
+ * @returns 路径键到控件类型的映射。
+ */
+function manifestWidgets(manifests: Record<string, PanelManifest>, ns: string): Record<string, string | undefined> {
+  const manifest = Object.values(manifests).find((m) => m.namespace === ns)
+  const out: Record<string, string | undefined> = {}
+  for (const group of manifest?.groups ?? []) {
+    for (const field of group.fields) out[field.path.join('.')] = field.widget
+  }
+  return out
+}
 function EmptyHint(props: { text: string }): React.ReactElement {
   return h('div', {
     style: { display: 'flex', alignItems: 'center', gap: 10, padding: '20px 4px', color: MUTED, fontSize: 13 },
@@ -643,6 +759,8 @@ function DangerSwitch(props: {
   label: string
   help?: string
   overridden?: boolean
+  /** 有未保存的改动。 */
+  dirty?: boolean
   disabled?: boolean
   onConfirm: () => void
 }): React.ReactElement {
@@ -654,6 +772,7 @@ function DangerSwitch(props: {
       help: props.help,
       value: false,
       overridden: props.overridden,
+      dirty: props.dirty,
       disabled: props.disabled,
       // 开关本身不直接写回：先弹确认，确认后才提交。
       onChange: () => {
