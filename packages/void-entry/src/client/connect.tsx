@@ -18,7 +18,7 @@ import {
   StateDot,
   writeClipboard,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { CLIENT_RECIPES, endpointUrl, serverName, smokeCommand } from './client-configs.js'
+import { CLIENT_RECIPES, endpointUrl, serverName, smokeCommand, type ConnectContext } from './client-configs.js'
 import type { TokenRow } from './controls.js'
 
 
@@ -64,11 +64,15 @@ export function ConnectBlock(props: {
   const [recipeId, setRecipeId] = useState(CLIENT_RECIPES[0]!.id)
   const caller = callers[Math.min(callerIndex, callers.length - 1)]!
   const recipe = CLIENT_RECIPES.find((r) => r.id === recipeId) ?? CLIENT_RECIPES[0]!
-  const body = recipe.render({
+  // 上下文算一次给两处用：`render` 生成配置正文，`prerequisite` 生成前提框（它要用到
+  // 环境变量名，而那是由 caller 派生的，不能在 recipe 里写死）。
+  const connectCtx: ConnectContext = {
     url,
     tokenEnv: tokenEnvName(caller),
     callerId: caller.callerId,
-  })
+  }
+  const body = recipe.render(connectCtx)
+  const prerequisite = recipe.prerequisite?.(connectCtx)
 
   return h('div', { style: { padding: '6px 0 8px 24px', display: 'flex', flexDirection: 'column', gap: 10 } },
     // ── 端点 ──────────────────────────────────────────────────────────────
@@ -162,9 +166,10 @@ export function ConnectBlock(props: {
           },
         }, body),
       ),
-      // Claude Desktop 的写法需要一个额外的派生变量（整段 Bearer 放进去以绕开 Windows
-      // 的 args 空格问题）。不写清值长什么样，用户会只填裸 token 然后收到 401。
-      recipe.id === 'claude-desktop'
+      // 前提框。它是**行动项**，所以用警示色和 note 的灰字分开——漏做的前提（比如 Codex
+      // 的环境变量）失败方式是静默 401，混在灰字里会被读过去。以前这段是按 recipe id
+      // 硬编码的，只服务 Claude Desktop；现在由 recipe 自己声明，谁需要谁给。
+      prerequisite !== undefined
         ? h('div', {
             style: {
               fontSize: 11,
@@ -175,11 +180,13 @@ export function ConnectBlock(props: {
               border: `1px solid ${WARN}`,
             },
           },
-            h('div', { style: { marginBottom: 2 } },
-              `需要先设好环境变量 ${tokenEnvName(caller)}_AUTH，值是完整的：`),
-            h('code', { style: { fontFamily: CODE_FONT } }, `Bearer <你的暗号>`),
-            h('div', { style: { color: TEXT_SECONDARY, marginTop: 2 } },
-              '注意连 "Bearer " 前缀和它后面那个空格一起放进去——这是绕开 Windows 上参数空格不转义的方式。'),
+            h('div', { style: { marginBottom: prerequisite.example ? 2 : 0 } }, prerequisite.text),
+            prerequisite.example
+              ? h('code', { style: { fontFamily: CODE_FONT } }, prerequisite.example)
+              : null,
+            prerequisite.detail
+              ? h('div', { style: { color: TEXT_SECONDARY, marginTop: 2 } }, prerequisite.detail)
+              : null,
           )
         : null,
       recipe.note

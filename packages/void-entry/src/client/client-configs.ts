@@ -35,10 +35,32 @@ export interface ClientRecipe {
   source: string;
   /** 查证日期，`YYYY-MM-DD`。 */
   verifiedAt: string;
-  /** 这个客户端上容易配错的点；没有就省略。 */
+  /**
+   * 这个客户端上容易配错的点；没有就省略。
+   *
+   * 只写「别这么做、为什么」。真正需要用户去**别处**动手的前提不写这里，写
+   * `prerequisite`——那张警示框是行动项，这段是说明。
+   */
   note?: string;
+  /**
+   * 粘配置**之前**必须先做好的事；返回 `undefined` 表示没有。
+   *
+   * 单独立一个字段，是因为这类前提的漏做后果是**静默 401**：配置语法正确、能保存、
+   * 客户端也不报错，只是每个请求都被拒。混在 `note` 的一段灰字里会被读过去。
+   */
+  prerequisite?: (ctx: ConnectContext) => RecipePrerequisite;
   /** 生成可粘贴的配置正文。 */
   render: (ctx: ConnectContext) => string;
+}
+
+/** 一个必须先在客户端之外完成的前提。 */
+export interface RecipePrerequisite {
+  /** 要做什么，一句话。 */
+  text: string;
+  /** 值的形状，等宽显示；不需要就省略。 */
+  example?: string;
+  /** 补充说明，通常解释「为什么」或「错了会怎样」。 */
+  detail?: string;
 }
 
 /**
@@ -59,7 +81,8 @@ export function serverName(callerId: string): string {
  * Codex CLI：`~/.codex/config.toml` 的 `[mcp_servers.*]`，原生支持 Streamable HTTP。
  *
  * 这是**最贴合本插件模型**的一份：Codex 有专门的 `bearer_token_env_var`，暗号本身
- * 完全不必进配置文件。
+ * 完全不必进配置文件。但它也是**唯一一个配置分居两处**的客户端——config.toml 只放变量
+ * 名，值必须落在操作系统环境变量里，因为 Codex 不读本插件的 `.env`。
  */
 const codex: ClientRecipe = {
   id: "codex",
@@ -69,8 +92,28 @@ const codex: ClientRecipe = {
   recommended: true,
   source: "https://github.com/openai/codex/blob/main/docs/config.md",
   verifiedAt: "2026-09-20",
+  // 两条都是实测踩出来的，不是从文档抄的。
+  //
+  // 第一条：这个字段名里的 `env_var` 是「环境变量**名**」。往里填值不会报错，Codex 会
+  // 去找一个叫那串暗号的环境变量、找不到、然后一个字节的凭据都不发。失败表现是 401，
+  // 且 `codex doctor` 也只检查变量「存在且非空」，填错值一样通过——所以从报错看不出
+  // 是这里错了。
+  //
+  // 第二条：看起来更省事的 `bearer_token = "<值>"` 对 streamable_http **不被支持**，会
+  // 让整份 config.toml 加载失败（`bearer_token is not supported for streamable_http`），
+  // 该文件里**所有** MCP server 一起失效。所以没有捷径可走。
   note:
-    "bearer_token_env_var 让暗号留在环境变量里——和本插件「token 只从环境变量读」的契约正好一致。",
+    "bearer_token_env_var 填的是环境变量的「名字」，不是暗号本身——填成值会静默 401，" +
+    "而且 codex doctor 只查变量存在与否、不看值对不对，从报错上看不出是这里错了。" +
+    "也别为了省事改用 bearer_token 明文字段：streamable_http 不支持它，写了会让整份 " +
+    "config.toml 加载失败，里面所有 MCP server 一起失效。",
+  prerequisite: (ctx) => ({
+    text: `先在 Windows 环境变量里设好 ${ctx.tokenEnv}，然后重启 Codex。`,
+    example: `${ctx.tokenEnv}=<你的暗号>`,
+    detail:
+      "Codex 不读本插件的 .env，只认进程环境变量。用户级设置即可：" +
+      `setx ${ctx.tokenEnv} "<暗号>"；改完必须重开终端或重启 Codex，已运行的进程读不到新值。`,
+  }),
   render: (ctx) =>
     [
       `[mcp_servers.${serverName(ctx.callerId)}]`,
@@ -170,11 +213,17 @@ const claudeDesktop: ClientRecipe = {
   language: "json",
   source: "https://claude.com/docs/third-party/claude-desktop/configuration",
   verifiedAt: "2026-09-20",
-  // 只说「为什么这条路线更差」。那个额外变量怎么设，由界面上的警告框专门讲——两处都讲
-  // 会读起来像复读。
+  // 只说「为什么这条路线更差」。那个额外变量怎么设，由 prerequisite 那张框专门讲——两处
+  // 都讲会读起来像复读。
   note:
     "它的用户级配置文件只接 stdio server，远程路线必须经 mcp-remote 桥接、要联网拉包，" +
     "比前两种脆弱。能用 Codex / Cursor 就别用它。",
+  prerequisite: (ctx) => ({
+    text: `需要先设好环境变量 ${desktopAuthVar(ctx.tokenEnv)}，值是完整的：`,
+    example: "Bearer <你的暗号>",
+    detail:
+      '注意连 "Bearer " 前缀和它后面那个空格一起放进去——这是绕开 Windows 上参数空格不转义的方式。',
+  }),
   render: (ctx) =>
     JSON.stringify(
       {
