@@ -23,7 +23,7 @@ import { type Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import type {} from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
-import { Authenticator, describeTokenSetup, readTokenGrants, userEnvFilePath, type TokenGrant } from "./auth.js";
+import { Authenticator, describeTokenSetup, readTokenGrants, userEnvFilePath, type AuthPolicy } from "./auth.js";
 import { WebhookCallbackDispatcher, resolveCallbackUrl } from "./callback.js";
 import { CONTROL_OPERATIONS, ControlError, type ControlOperation } from "./protocol.js";
 import { compilePolicy, EMPTY_CALLER_POLICY, type CallerPolicy, type CompiledCallerPolicy } from "./policy.js";
@@ -33,7 +33,7 @@ import { createHostPorts } from "./hosts.js";
 import { ControlOrchestrator } from "./orchestrator.js";
 import { createMcpHttpHandler } from "./mcp.js";
 import { DshControl } from "./service.js";
-import { resolveAllowedRoots, type PathGuard } from "./workspace.js";
+import { resolveAllowedRoots } from "./workspace.js";
 import {
   isNewerSessionSeq,
   signalFromAgentError,
@@ -195,132 +195,289 @@ function parseOperations(values: readonly string[], what: string): ControlOperat
 }
 
 /**
- * Build the caller policy from configuration.
- *
- * @param config - Plugin configuration.
- * @returns The policy as written by the user.
- */
-function policyFromConfig(config: Config): CallerPolicy {
-  return {
-    callerInstructions: config.callerInstructions,
-    requiredFields: config.requiredFields,
-    requiredDocumentRules: config.requiredDocumentRules.map((rule) => ({
-      id: rule.id,
-      description: rule.description ?? "",
-      required: rule.required ?? true,
-      ...(rule.pathPattern === undefined || rule.pathPattern === "" ? {} : { pathPattern: rule.pathPattern }),
-    })),
-    forbiddenPatterns: config.forbiddenPatterns,
-    instructionsVersion: config.instructionsVersion,
-  };
-}
-
-/**
  * Resolved shape of the `dsh-agent-control` settings section.
  *
  * Distinct from {@link CallerPolicy} because a settings document always carries
  * every field (schema defaults fill the gaps), while the policy type models an
  * omitted `pathPattern` as absent.
+ *
+ * **What is deliberately absent**: `enabled`, `transport`, `path` and `ledger`.
+ * Those decide whether the plugin loads at all, which path it mounts on, and
+ * which ledger backend holds the task records — they are composition-entry
+ * concerns (plan §11). dsh's settings service declares one `applies` per
+ * namespace, so mixing them in would either mislabel them as live or label the
+ * whole section restart-only; the settings panel renders them read-only with a
+ * pointer to the composition file instead (plan §29.4).
  */
-interface PolicySection {
+interface ControlSection {
+  allowedOperations: string[];
+  allowAnonymous: boolean;
+  tokens: { callerId: string; tokenEnv: string; operations: string[] }[];
+  allowedRoots: string[];
   callerInstructions: string;
   requiredFields: string[];
   requiredDocumentRules: { id: string; description: string; required: boolean; pathPattern: string }[];
   forbiddenPatterns: string[];
   instructionsVersion: number;
+  callback: {
+    enabled: boolean;
+    url: string;
+    secretEnv: string;
+    events: string[];
+    timeoutMs: number;
+    maxAttempts: number;
+    allowedHosts: string[];
+    includeAssistantSummary: boolean;
+  };
 }
 
 /**
- * Create a live policy accessor.
+ * Project the composition-entry config onto the live-settable section.
+ *
+ * This is both the schema `base` layer and the fallback when `ctx.settings` is
+ * absent, so an unconfigured deployment behaves exactly as before.
+ *
+ * @param config - Plugin configuration from the composition entry.
+ * @returns The equivalent section value.
+ */
+function sectionFromEntry(config: Config): ControlSection {
+  return {
+    allowedOperations: [...config.allowedOperations],
+    allowAnonymous: config.allowAnonymous,
+    tokens: config.tokens.map((token) => ({
+      callerId: token.callerId,
+      tokenEnv: token.tokenEnv,
+      operations: [...token.operations],
+    })),
+    allowedRoots: [...config.allowedRoots],
+    callerInstructions: config.callerInstructions,
+    requiredFields: [...config.requiredFields],
+    requiredDocumentRules: config.requiredDocumentRules.map((rule) => ({
+      id: rule.id,
+      description: rule.description ?? "",
+      required: rule.required ?? true,
+      pathPattern: rule.pathPattern ?? "",
+    })),
+    forbiddenPatterns: [...config.forbiddenPatterns],
+    instructionsVersion: config.instructionsVersion,
+    callback: {
+      enabled: config.callback.enabled,
+      url: config.callback.url ?? "",
+      secretEnv: config.callback.secretEnv ?? "VOID_DSH_CONTROL_CALLBACK_SECRET",
+      events: [...(config.callback.events ?? [])],
+      timeoutMs: config.callback.timeoutMs ?? 10_000,
+      maxAttempts: config.callback.maxAttempts ?? 5,
+      allowedHosts: [...(config.callback.allowedHosts ?? [])],
+      includeAssistantSummary: config.callback.includeAssistantSummary ?? false,
+    },
+  };
+}
+
+/**
+ * Build the schemastery schema for the settings namespace.
+ *
+ * Defaults come from the entry section so the *rendered* form shows the values
+ * actually in force, not a hard-coded second opinion — otherwise clearing a
+ * field in the panel would silently change behaviour to an unrelated default.
+ *
+ * @param entry - Section derived from the composition entry.
+ * @returns The schema the settings service validates and the panel renders.
+ */
+function controlSchema(entry: ControlSection): z<ControlSection> {
+  return z.object({
+    allowedOperations: z.array(z.string()).default([...entry.allowedOperations]),
+    allowAnonymous: z.boolean().default(entry.allowAnonymous),
+    tokens: z
+      .array(
+        z.object({
+          callerId: z.string().required(),
+          tokenEnv: z.string().required(),
+          operations: z.array(z.string()).default([]),
+        }),
+      )
+      .default(entry.tokens.map((token) => ({ ...token }))),
+    allowedRoots: z.array(z.string()).default([...entry.allowedRoots]),
+    callerInstructions: z.string().default(entry.callerInstructions),
+    requiredFields: z.array(z.string()).default([...entry.requiredFields]),
+    requiredDocumentRules: z
+      .array(
+        z.object({
+          id: z.string().required(),
+          description: z.string().default(""),
+          required: z.boolean().default(true),
+          pathPattern: z.string().default(""),
+        }),
+      )
+      .default(entry.requiredDocumentRules.map((rule) => ({ ...rule }))),
+    forbiddenPatterns: z.array(z.string()).default([...entry.forbiddenPatterns]),
+    instructionsVersion: z.natural().default(entry.instructionsVersion),
+    callback: z
+      .object({
+        enabled: z.boolean().default(entry.callback.enabled),
+        url: z.string().default(entry.callback.url),
+        secretEnv: z.string().default(entry.callback.secretEnv),
+        events: z.array(z.string()).default([...entry.callback.events]),
+        timeoutMs: z.natural().default(entry.callback.timeoutMs),
+        maxAttempts: z.natural().default(entry.callback.maxAttempts),
+        allowedHosts: z.array(z.string()).default([...entry.callback.allowedHosts]),
+        includeAssistantSummary: z.boolean().default(entry.callback.includeAssistantSummary),
+      })
+      .default({ ...entry.callback }),
+  });
+}
+
+/**
+ * Reject a section the plugin could not act on.
+ *
+ * Runs on every write, so a bad value is refused at `update` and the caller
+ * learns immediately instead of storing something that would silently disable
+ * the endpoint. Cross-field rules live here because schemastery cannot express
+ * them; the regex and operation-name checks reuse the same parsers the runtime
+ * uses, so the panel can never accept a value the runtime would choke on.
+ *
+ * @param value - The resolved section, schema-valid by construction.
+ * @throws ControlError when the section is unusable.
+ */
+function validateSection(value: ControlSection): void {
+  parseOperations(value.allowedOperations, "allowedOperations");
+  for (const token of value.tokens) {
+    if (token.operations.length > 0) {
+      parseOperations(token.operations, `tokens[${token.callerId}].operations`);
+    }
+  }
+  compilePolicy({
+    callerInstructions: value.callerInstructions,
+    requiredFields: value.requiredFields,
+    requiredDocumentRules: value.requiredDocumentRules.map((rule) => ({
+      id: rule.id,
+      description: rule.description,
+      required: rule.required,
+      ...(rule.pathPattern === "" ? {} : { pathPattern: rule.pathPattern }),
+    })),
+    forbiddenPatterns: value.forbiddenPatterns,
+    instructionsVersion: value.instructionsVersion,
+  });
+  // resolveCallbackUrl is what the dispatcher calls per delivery, so validating
+  // through it makes a stored value that would throw on the next event
+  // unwritable in the first place.
+  resolveCallbackUrl(value.callback, process.env[value.callback.secretEnv] ?? "");
+}
+
+/** Live view of the configuration, plus the compiled pieces derived from it. */
+interface ConfigSource {
+  /** The section in force right now. */
+  live: () => ControlSection;
+  /** Caller policy compiled from {@link live}, memoized on the raw value. */
+  policy: () => CompiledCallerPolicy;
+  /** Authentication policy, with token values re-read from the environment. */
+  auth: () => AuthPolicy;
+  /**
+   * Subscribe to section changes. No-op when no settings namespace is
+   * registered, since the composition entry cannot change while running.
+   */
+  watch: (listener: () => void) => void;
+  /** Whether a settings namespace is registered (false makes the entry authoritative). */
+  registered: boolean;
+}
+
+/**
+ * Create the live configuration accessors.
  *
  * When `ctx.settings` is present the namespace `dsh-agent-control` becomes the
- * user layer, so the policy hot-reloads from `$DSH_HOME/settings.yaml` and
- * `dsh_control_info` always reports the current rules (plan §9.1). Otherwise the
- * composition entry is authoritative.
+ * user layer, so every field hot-reloads from the settings document and the
+ * settings panel can drive it (plan §29.2). Otherwise the composition entry is
+ * authoritative and the accessors return it unchanged.
+ *
+ * The returned accessors are deliberately lazy: they are called per request or
+ * per delivery, so a panel edit applies to the next call with no re-registration
+ * and no restart.
  *
  * @param ctx - Plugin context.
- * @param entry - Policy from the composition entry.
- * @returns An accessor plus the settings-registration disposer, when registered.
+ * @param config - Plugin configuration from the composition entry.
+ * @returns The accessors.
  */
-function createPolicySource(
-  ctx: Context,
-  entry: CallerPolicy,
-): { policy: () => CompiledCallerPolicy; registered: boolean } {
+function createConfigSource(ctx: Context, config: Config): ConfigSource {
+  const entry = sectionFromEntry(config);
   const settings = ctx.get("settings");
-  let read: () => CallerPolicy = () => entry;
+
+  let read: () => ControlSection = () => entry;
+  let watch: (listener: () => void) => void = () => {};
   let registered = false;
 
   if (settings !== undefined) {
-    const schema: z<PolicySection> = z.object({
-      callerInstructions: z.string().default(entry.callerInstructions),
-      requiredFields: z.array(z.string()).default([...entry.requiredFields]),
-      requiredDocumentRules: z
-        .array(
-          z.object({
-            id: z.string().required(),
-            description: z.string().default(""),
-            required: z.boolean().default(true),
-            pathPattern: z.string().default(""),
-          }),
-        )
-        .default(
-          entry.requiredDocumentRules.map((rule) => ({
-            id: rule.id,
-            description: rule.description,
-            required: rule.required,
-            pathPattern: rule.pathPattern ?? "",
-          })),
-        ),
-      forbiddenPatterns: z.array(z.string()).default([...entry.forbiddenPatterns]),
-      instructionsVersion: z.natural().default(entry.instructionsVersion),
+    const scope = settings.register("dsh-agent-control", controlSchema(entry), {
+      base: entry,
+      applies: "live",
+      validate: validateSection,
     });
-    const scope = settings.register("dsh-agent-control", schema, {
-      base: {
-        callerInstructions: entry.callerInstructions,
-        requiredFields: [...entry.requiredFields],
-        requiredDocumentRules: entry.requiredDocumentRules.map((rule) => ({
-          id: rule.id,
-          description: rule.description,
-          required: rule.required,
-          pathPattern: rule.pathPattern ?? "",
-        })),
-        forbiddenPatterns: [...entry.forbiddenPatterns],
-        instructionsVersion: entry.instructionsVersion,
-      },
-    });
-    read = () => {
-      const value = scope.get();
-      return {
-        callerInstructions: value.callerInstructions,
-        requiredFields: value.requiredFields,
-        requiredDocumentRules: value.requiredDocumentRules.map((rule) => ({
-          id: rule.id,
-          description: rule.description,
-          required: rule.required,
-          ...(rule.pathPattern === "" ? {} : { pathPattern: rule.pathPattern }),
-        })),
-        forbiddenPatterns: value.forbiddenPatterns,
-        instructionsVersion: value.instructionsVersion,
-      };
+    read = () => scope.get();
+    watch = (listener) => {
+      scope.watch(listener);
     };
     registered = true;
   }
 
-  // Compilation is memoized on the raw policy so an unchanged settings document
-  // never recompiles its regular expressions on a hot path.
-  let lastRaw = "";
-  let lastCompiled = compilePolicy(entry);
+  // Memoized on the raw value so an unchanged document never recompiles its
+  // regular expressions on a hot path (the same reasoning as before P2).
+  let lastPolicyRaw = "";
+  let lastPolicy = compilePolicy(policyFromSection(entry));
   const policy = (): CompiledCallerPolicy => {
-    const current = read();
+    const current = policyFromSection(read());
     const raw = JSON.stringify(current);
-    if (raw !== lastRaw) {
-      lastCompiled = compilePolicy(current);
-      lastRaw = raw;
+    if (raw !== lastPolicyRaw) {
+      lastPolicy = compilePolicy(current);
+      lastPolicyRaw = raw;
     }
-    return lastCompiled;
+    return lastPolicy;
   };
 
-  return { policy, registered };
+  // Token values live in environment variables, never in the settings document,
+  // so they are re-read here rather than stored. Memoized per request batch on
+  // the raw token spec, which is what makes `readTokenGrants` cheap enough to
+  // run on the authentication path.
+  let lastAuthRaw = "";
+  let lastAuth: AuthPolicy = { tokens: [], allowAnonymous: entry.allowAnonymous };
+  const auth = (): AuthPolicy => {
+    const section = read();
+    const raw = JSON.stringify([section.tokens, section.allowedOperations, section.allowAnonymous]);
+    if (raw !== lastAuthRaw) {
+      const defaultOperations = parseOperations(section.allowedOperations, "allowedOperations");
+      const specs = section.tokens.map((token) => ({
+        callerId: token.callerId,
+        tokenEnv: token.tokenEnv,
+        operations:
+          token.operations.length > 0
+            ? parseOperations(token.operations, `tokens[${token.callerId}].operations`)
+            : defaultOperations,
+      }));
+      lastAuth = { tokens: readTokenGrants(specs).grants, allowAnonymous: section.allowAnonymous };
+      lastAuthRaw = raw;
+    }
+    return lastAuth;
+  };
+
+  return { live: read, policy, auth, watch, registered };
+}
+
+/**
+ * Project the settings section onto {@link CallerPolicy}.
+ *
+ * @param section - Resolved settings section.
+ * @returns The policy as written by the user.
+ */
+function policyFromSection(section: ControlSection): CallerPolicy {
+  return {
+    callerInstructions: section.callerInstructions,
+    requiredFields: section.requiredFields,
+    requiredDocumentRules: section.requiredDocumentRules.map((rule) => ({
+      id: rule.id,
+      description: rule.description,
+      required: rule.required,
+      ...(rule.pathPattern === "" ? {} : { pathPattern: rule.pathPattern }),
+    })),
+    forbiddenPatterns: section.forbiddenPatterns,
+    instructionsVersion: section.instructionsVersion,
+  };
 }
 
 /**
@@ -361,43 +518,34 @@ export function apply(ctx: Context, config: Config): void {
   // Validate everything the schema cannot express BEFORE the async effect, so a
   // configuration the plugin cannot honour fails plugin startup loudly instead
   // of leaving a half-built endpoint behind (plan §11, stage 0 verification).
-  const defaultOperations = parseOperations(config.allowedOperations, "allowedOperations");
-  const tokenSpecs = config.tokens.map((token) => ({
-    callerId: token.callerId,
-    tokenEnv: token.tokenEnv,
-    operations:
-      token.operations.length > 0 ? parseOperations(token.operations, `tokens[${token.callerId}].operations`) : defaultOperations,
-  }));
-  const entryPolicy = policyFromConfig(config);
-  compilePolicy(entryPolicy);
-  // Validating the callback target here (rather than on the first delivery)
-  // turns a typo in settings into a startup failure with a clear message.
-  const callbackSecret = config.callback.enabled ? (process.env[config.callback.secretEnv ?? ""] ?? "") : "";
+  // From P2 on, the same checks also run on every settings write via the
+  // namespace's `validate`, so the panel cannot store what startup would reject.
+  const entrySection = sectionFromEntry(config);
+  validateSection(entrySection);
   const callbackUrl = resolveCallbackUrl(
-    {
-      enabled: config.callback.enabled,
-      url: config.callback.url ?? "",
-      secretEnv: config.callback.secretEnv ?? "VOID_DSH_CONTROL_CALLBACK_SECRET",
-      events: config.callback.events ?? [],
-      timeoutMs: config.callback.timeoutMs ?? 10_000,
-      maxAttempts: config.callback.maxAttempts ?? 5,
-      allowedHosts: config.callback.allowedHosts ?? [],
-      includeAssistantSummary: config.callback.includeAssistantSummary ?? false,
-    },
-    callbackSecret,
+    entrySection.callback,
+    entrySection.callback.enabled ? (process.env[entrySection.callback.secretEnv] ?? "") : "",
   );
 
   void ctx.effect(async () => {
     const log = ctx.logger("void-dsh-control");
 
-    const { grants, missingEnv } = readTokenGrants(tokenSpecs);
-    for (const envName of missingEnv) {
-      // A token whose variable is unset silently authenticates nobody; say so
-      // rather than letting the operator discover it through a 401.
-      log.warn(`token environment variable ${envName} is unset; that caller cannot authenticate`);
+    const source = createConfigSource(ctx, config);
+    const { policy } = source;
+    if (!source.registered) log.info("ctx.settings is absent; the composition entry is the only policy source");
+
+    const section = source.live();
+    const initialAuth = source.auth();
+    for (const token of section.tokens) {
+      if ((process.env[token.tokenEnv] ?? "") === "") {
+        // A token whose variable is unset silently authenticates nobody; say so
+        // rather than letting the operator discover it through a 401.
+        log.warn(`token environment variable ${token.tokenEnv} is unset; that caller cannot authenticate`);
+      }
     }
-    if (grants.length === 0 && !config.allowAnonymous) {
-      const guidance = describeTokenSetup(missingEnv, userEnvFilePath());
+    if (initialAuth.tokens.length === 0 && !section.allowAnonymous) {
+      const unset = section.tokens.map((token) => token.tokenEnv).filter((name) => (process.env[name] ?? "") === "");
+      const guidance = describeTokenSetup(unset, userEnvFilePath());
       // Two sinks on purpose. `ctx.logger` is the structured channel dsh
       // surfaces in the Web UI, but no Node-side package registers a console
       // exporter, so an operator watching the terminal never sees it. dsh's own
@@ -412,16 +560,33 @@ export function apply(ctx: Context, config: Config): void {
       process.stderr.write(`\n${banner}\n\n`);
     }
 
-    const allowedRoots = await resolveAllowedRoots(config.allowedRoots);
-    if (allowedRoots.length !== config.allowedRoots.length) {
-      log.warn(
-        `allowedRoots: ${config.allowedRoots.length - allowedRoots.length} configured root(s) were skipped because they are not existing absolute directories`,
-      );
-    }
-    const guard: PathGuard = { allowedRoots };
-
-    const { policy, registered } = createPolicySource(ctx, entryPolicy);
-    if (!registered) log.info("ctx.settings is absent; the composition entry is the only policy source");
+    // `allowedRoots` is the only field needing asynchronous work (realpath), so
+    // it is resolved into a snapshot here and refreshed whenever the section
+    // changes. `currentRoots()` stays synchronous because the HTTP guard runs on
+    // every path-addressed request.
+    let roots: readonly string[] = [];
+    let rootsRaw = "";
+    const refreshRoots = async (): Promise<void> => {
+      const configured = source.live().allowedRoots;
+      const raw = JSON.stringify(configured);
+      if (raw === rootsRaw) return;
+      const resolved = await resolveAllowedRoots(configured);
+      if (resolved.length !== configured.length) {
+        log.warn(
+          `allowedRoots: ${configured.length - resolved.length} configured root(s) were skipped because they are not existing absolute directories`,
+        );
+      }
+      roots = resolved;
+      rootsRaw = raw;
+    };
+    const currentRoots = (): readonly string[] => roots;
+    await refreshRoots();
+    // Any later section edit re-resolves the snapshot. `watch` fires only for
+    // the settings document; the composition entry cannot change while the
+    // process runs, so there is no second source to observe.
+    source.watch(() => {
+      void refreshRoots();
+    });
 
     const ledger = await openLedger(ctx, config);
     const hosts = createHostPorts(ctx);
@@ -441,22 +606,17 @@ export function apply(ctx: Context, config: Config): void {
       );
     }
 
+    // The callback target and its secret are read per delivery, so the panel can
+    // retarget, disable, or rotate the webhook without a restart. Resuming
+    // pending deliveries still uses the activation-time target: an earlier
+    // process left those owed to *that* receiver.
     const callback = new WebhookCallbackDispatcher({
-      target: {
-        enabled: config.callback.enabled,
-        url: config.callback.url ?? "",
-        secretEnv: config.callback.secretEnv ?? "VOID_DSH_CONTROL_CALLBACK_SECRET",
-        events: config.callback.events ?? [],
-        timeoutMs: config.callback.timeoutMs ?? 10_000,
-        maxAttempts: config.callback.maxAttempts ?? 5,
-        allowedHosts: config.callback.allowedHosts ?? [],
-        includeAssistantSummary: config.callback.includeAssistantSummary ?? false,
-      },
+      target: () => source.live().callback,
       ledger,
-      secret: callbackSecret,
+      secretSource: () => process.env[source.live().callback.secretEnv] ?? "",
     });
     if (callbackUrl !== undefined) {
-      log.info(`callback webhook enabled for statuses: ${(config.callback.events ?? []).join(", ")}`);
+      log.info(`callback webhook enabled for statuses: ${entrySection.callback.events.join(", ")}`);
       // Deliveries left pending by an earlier process resume now; the ledger
       // keeps the attempt count so a receiver is never notified twice for one
       // event (plan §10.3).
@@ -471,7 +631,10 @@ export function apply(ctx: Context, config: Config): void {
       onEvent: (record, event) => callback.onTaskEvent(record, event),
     });
 
-    const authenticator = new Authenticator({ tokens: grants as readonly TokenGrant[], allowAnonymous: config.allowAnonymous });
+    // Authentication is re-derived per request from the live section, so a
+    // permission or token-binding edit in the panel takes effect on the next
+    // call (plan §29.7 P2).
+    const authenticator = new Authenticator(() => source.auth());
 
     const handler = createMcpHttpHandler({
       authenticator,
@@ -480,7 +643,11 @@ export function apply(ctx: Context, config: Config): void {
         authenticator,
         hosts,
         policy,
-        guard: () => guard,
+        // The guard is rebuilt per request for the same reason. `allowedRoots`
+        // is the one field needing asynchronous work (realpath), so it is
+        // resolved once at activation and re-resolved whenever the section
+        // changes; the guard then reads the current snapshot synchronously.
+        guard: () => ({ allowedRoots: currentRoots() }),
         identity: { name: name, version: PLUGIN_VERSION },
       },
     });
@@ -523,7 +690,7 @@ export function apply(ctx: Context, config: Config): void {
       hosts,
       authenticator,
       policy,
-      guard: () => guard,
+      guard: () => ({ allowedRoots: currentRoots() }),
       endpointPath: config.path,
     });
     void service;
@@ -535,7 +702,7 @@ export function apply(ctx: Context, config: Config): void {
     });
 
     log.info(
-      `control plane active at ${config.path} (callers=${grants.length}, allowedRoots=${allowedRoots.length}, ledger=${ledger.constructor.name})`,
+      `control plane active at ${config.path} (callers=${initialAuth.tokens.length}, allowedRoots=${currentRoots().length}, ledger=${ledger.constructor.name})`,
     );
 
     return async () => {

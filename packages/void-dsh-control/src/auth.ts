@@ -60,10 +60,23 @@ export function constantTimeEquals(provided: string, expected: string): boolean 
 
 /** Resolves bearer credentials to caller identities and enforces operations. */
 export class Authenticator {
-  private readonly policy: AuthPolicy;
+  private readonly policySource: () => AuthPolicy;
 
-  constructor(policy: AuthPolicy) {
-    this.policy = policy;
+  /**
+   * @param policy - The authentication policy, or a provider for it. Prefer the
+   *   provider form: the settings panel can change permissions and token
+   *   bindings while the endpoint is live, and a fixed object would keep
+   *   enforcing the values captured at activation (plan §29.7 P2). The provider
+   *   runs per request, so it must stay cheap — callers memoize the expensive
+   *   parts (environment lookups, operation parsing) behind it.
+   */
+  constructor(policy: AuthPolicy | (() => AuthPolicy)) {
+    this.policySource = typeof policy === "function" ? policy : () => policy;
+  }
+
+  /** The policy in force right now. */
+  private get policy(): AuthPolicy {
+    return this.policySource();
   }
 
   /** Whether any token is configured, i.e. whether the endpoint can authenticate. */

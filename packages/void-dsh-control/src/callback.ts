@@ -53,10 +53,21 @@ export interface CallbackAttempt {
 
 /** Options of {@link WebhookCallbackDispatcher}. */
 export interface CallbackDispatcherOptions {
-  readonly target: CallbackTarget;
+  /**
+   * Callback target, or a provider for it. Prefer the provider form: the
+   * settings panel can retarget or disable the webhook while the endpoint is
+   * live, and a fixed object would keep delivering to the url resolved at
+   * activation (plan §29.7 P2).
+   */
+  readonly target: CallbackTarget | (() => CallbackTarget);
   readonly ledger: ControlLedger;
-  /** Secret value resolved from `target.secretEnv`; empty disables delivery. */
-  readonly secret: string;
+  /** Fixed secret value. Ignored when {@link secretSource} is given. */
+  readonly secret?: string;
+  /**
+   * Secret provider, consulted per delivery so a rotated
+   * `target.secretEnv` value is picked up without a restart.
+   */
+  readonly secretSource?: () => string;
   /** Transport, injectable for tests. Defaults to global `fetch`. */
   readonly send?: (url: string, init: RequestInit) => Promise<{ ok: boolean; status: number }>;
   /** Delay primitive, injectable so backoff does not slow tests down. */
@@ -180,10 +191,9 @@ export function signCallbackBody(secret: string, timestamp: number, body: string
  * deduplication.
  */
 export class WebhookCallbackDispatcher {
-  private readonly target: CallbackTarget;
+  private readonly targetSource: () => CallbackTarget;
   private readonly ledger: ControlLedger;
-  private readonly secret: string;
-  private readonly url: string | undefined;
+  private readonly secretSource: () => string;
   private readonly send: (url: string, init: RequestInit) => Promise<{ ok: boolean; status: number }>;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
@@ -191,13 +201,34 @@ export class WebhookCallbackDispatcher {
   private stopped = false;
 
   constructor(options: CallbackDispatcherOptions) {
-    this.target = options.target;
+    this.targetSource = typeof options.target === "function" ? options.target : () => options.target as CallbackTarget;
     this.ledger = options.ledger;
-    this.secret = options.secret;
+    const fixedSecret = options.secret ?? "";
+    this.secretSource = options.secretSource ?? (() => fixedSecret);
     this.send = options.send ?? ((url, init) => fetch(url, init));
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = options.now ?? (() => Date.now());
-    this.url = resolveCallbackUrl(this.target, options.secret);
+  }
+
+  /** The target in force right now. */
+  private get target(): CallbackTarget {
+    return this.targetSource();
+  }
+
+  /** The shared secret in force right now. */
+  private get secret(): string {
+    return this.secretSource();
+  }
+
+  /**
+   * The delivery URL in force right now.
+   *
+   * Re-resolved per use rather than cached at construction: `resolveCallbackUrl`
+   * is a URL parse plus a host-list check, and caching it would freeze the
+   * retarget the settings panel can perform while the endpoint is live.
+   */
+  private get url(): string | undefined {
+    return resolveCallbackUrl(this.target, this.secret);
   }
 
   /** Whether this dispatcher will actually deliver anything. */

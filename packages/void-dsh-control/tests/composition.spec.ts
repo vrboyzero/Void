@@ -5,108 +5,13 @@ import WebServer from "@deepseek-ai/dsh-host-webserver";
 import * as Control from "../src/index.js";
 import { createHostPorts } from "../src/hosts.js";
 import type { HostPorts } from "../src/orchestrator.js";
-import { FakeHosts } from "./support/fake-hosts.js";
+import { bootControl, disposeContexts, ENDPOINT, findFiber, TOKEN_ENV, trackContext } from "./support/boot.js";
 
-const contexts: Context[] = [];
-
-afterEach(async () => {
-  for (const ctx of contexts.splice(0)) await ctx.fiber.dispose();
-});
-
-const TOKEN_ENV = "VOID_DSH_CONTROL_SPEC_TOKEN";
-const ENDPOINT = "/mcp/dsh-agent-control";
-
-/**
- * Boot a real Cordis Loader with the real WebServer and stub controllers.
- *
- * The Workspace and Session controllers are stubbed rather than booted because
- * they need the whole agent/model stack; what this fixture verifies is the
- * plugin's own composition: injection, route registration, service publication,
- * event wiring and disposal.
- */
-async function boot(config: Record<string, unknown>, options: { withControllers?: boolean } = {}): Promise<Context> {
-  const ctx = new Context();
-  contexts.push(ctx);
-  await ctx.plugin(Loader);
-
-  const hosts = new FakeHosts();
-  const controllers = {
-    sessionController: {
-      async list() {
-        return { items: [] };
-      },
-      async inspect() {
-        return { meta: { cwd: "E:/work/app" }, inheritedEventCount: 0, events: [] };
-      },
-      async create() {
-        return { sessionId: "session-1" };
-      },
-      async fork() {
-        return { sessionId: "session-2" };
-      },
-      async prompt() {
-        return { accepted: true };
-      },
-      async resolveAgent() {
-        return { error: { code: "session/not-found" } };
-      },
-      cancel() {
-        return { accepted: true };
-      },
-    },
-    workspaceController: {
-      async create(request: { path: string }) {
-        return { workspace: { workspaceId: "workspace-1", path: request.path, title: request.path, sessionIds: [], createdAt: "t", updatedAt: "t" }, created: true };
-      },
-      async *follow(signal: AbortSignal) {
-        void signal;
-        yield { type: "baseline", value: { items: [], archivedSessionIds: [] } };
-      },
-    },
-  };
-
-  const modules = new Map<string, unknown>([
-    ["@deepseek-ai/dsh-host-webserver", WebServer],
-    ["@void/void-dsh-control", Control],
-  ]);
-  ctx.loader.internal = {
-    version: "v2",
-    async import(specifier: string) {
-      if (!modules.has(specifier)) throw new Error(`unexpected Loader import: ${specifier}`);
-      return modules.get(specifier);
-    },
-  } as unknown as NonNullable<typeof ctx.loader.internal>;
-
-  await ctx.loader.create({ name: "@deepseek-ai/dsh-host-webserver", config: { host: "127.0.0.1", port: 0 } });
-  await ctx.loader.await();
-
-  if (options.withControllers !== false) {
-    ctx.provide("sessionController", controllers.sessionController);
-    ctx.provide("workspaceController", controllers.workspaceController);
-  }
-
-  process.env[TOKEN_ENV] = "spec-token";
-  await ctx.loader.create({
-    name: "@void/void-dsh-control",
-    config: { path: ENDPOINT, ledger: "memory", tokens: [{ callerId: "spec", tokenEnv: TOKEN_ENV }], ...config },
-  });
-  await ctx.loader.await();
-  void hosts;
-  return ctx;
-}
-
-function findFiber(ctx: Context, pluginName: string) {
-  for (const runtime of ctx.registry.values()) {
-    for (const fiber of runtime.fibers) {
-      if (fiber.name === pluginName) return fiber;
-    }
-  }
-  return undefined;
-}
+afterEach(disposeContexts);
 
 describe("composition: plugin activation", () => {
   it("registers the MCP route, publishes the service and wires host events", async () => {
-    const ctx = await boot({});
+    const ctx = await bootControl();
     const webServer = ctx.get("webServer")!;
     const url = `http://127.0.0.1:${webServer.port}${ENDPOINT}`;
 
@@ -127,7 +32,7 @@ describe("composition: plugin activation", () => {
   });
 
   it("stays inert when disabled", async () => {
-    const ctx = await boot({ enabled: false });
+    const ctx = await bootControl({ config: { enabled: false } });
     const webServer = ctx.get("webServer")!;
     expect(ctx.get("voidDshControl")).toBeUndefined();
     const response = await fetch(`http://127.0.0.1:${webServer.port}${ENDPOINT}`, { method: "POST" });
@@ -135,7 +40,7 @@ describe("composition: plugin activation", () => {
   });
 
   it("removes the route and the service when the plugin is disposed", async () => {
-    const ctx = await boot({});
+    const ctx = await bootControl();
     const webServer = ctx.get("webServer")!;
     const url = `http://127.0.0.1:${webServer.port}${ENDPOINT}`;
 
@@ -149,7 +54,7 @@ describe("composition: plugin activation", () => {
   });
 
   it("does not activate while a required service is missing", async () => {
-    const ctx = await boot({}, { withControllers: false });
+    const ctx = await bootControl({ withControllers: false });
     // The fiber waits for its injections instead of registering a half-built,
     // unauthenticated endpoint.
     expect(ctx.get("voidDshControl")).toBeUndefined();
@@ -160,8 +65,8 @@ describe("composition: plugin activation", () => {
 
   it("warns instead of failing when the configured token variable is unset", async () => {
     delete process.env["VOID_DSH_CONTROL_MISSING_TOKEN"];
-    const ctx = await boot({
-      tokens: [{ callerId: "spec", tokenEnv: "VOID_DSH_CONTROL_MISSING_TOKEN" }],
+    const ctx = await bootControl({
+      config: { tokens: [{ callerId: "spec", tokenEnv: "VOID_DSH_CONTROL_MISSING_TOKEN" }] },
     });
     const webServer = ctx.get("webServer")!;
     // The endpoint still exists, but authenticates nobody.
@@ -184,8 +89,8 @@ describe("composition: plugin activation", () => {
       return true;
     });
     try {
-      await boot({
-        tokens: [{ callerId: "spec", tokenEnv: "VOID_DSH_CONTROL_MISSING_TOKEN" }],
+      await bootControl({
+        config: { tokens: [{ callerId: "spec", tokenEnv: "VOID_DSH_CONTROL_MISSING_TOKEN" }] },
       });
     } finally {
       spy.mockRestore();
@@ -200,8 +105,7 @@ describe("composition: plugin activation", () => {
   });
 
   it("refuses to start with a storage ledger when no storage domain is mounted", async () => {
-    const ctx = new Context();
-    contexts.push(ctx);
+    const ctx = trackContext(new Context());
     await ctx.plugin(Loader);
     const modules = new Map<string, unknown>([
       ["@deepseek-ai/dsh-host-webserver", WebServer],
@@ -240,7 +144,7 @@ describe("composition: configuration validation", () => {
    * plan requires. No endpoint and no service are left behind.
    */
   async function bootFailure(config: Record<string, unknown>, pattern: RegExp): Promise<void> {
-    await expect(boot(config)).rejects.toThrowError(pattern);
+    await expect(bootControl({ config })).rejects.toThrowError(pattern);
   }
 
   it("rejects an unknown operation name with a clear error", async () => {
@@ -259,7 +163,7 @@ describe("composition: configuration validation", () => {
   });
 
   it("applies the documented defaults", async () => {
-    const ctx = await boot({});
+    const ctx = await bootControl();
     const policy = ctx.get("voidDshControl")!.policy;
     expect(policy.instructionsVersion).toBe(0);
     expect(policy.requiredFields).toEqual([]);
@@ -270,7 +174,7 @@ describe("composition: configuration validation", () => {
 
 describe("composition: host port adapter", () => {
   it("exposes the controller surface through HostPorts", async () => {
-    const ctx = await boot({});
+    const ctx = await bootControl();
     const ports: HostPorts = createHostPorts(ctx);
     await expect(ports.listSessions()).resolves.toEqual([]);
     await expect(ports.listWorkspaces()).resolves.toEqual([]);
