@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { bootControl, disposeContexts, ENDPOINT } from "./support/boot.js";
-import { FakeSettings } from "./support/fake-settings.js";
+import { FakeSettings, provideSettings } from "./support/fake-settings.js";
 
 afterEach(disposeContexts);
 
@@ -14,6 +14,37 @@ describe("settings: namespace coverage", () => {
     const service = ctx.get("voidDshControl")!;
     expect(service.guard.allowedRoots).toEqual([]);
     expect(service.policy.callerInstructions).toBe("");
+  });
+
+  it("adopts a settings provider that attaches after the plugin is composed", async () => {
+    // This is the behaviour the official `installSection` + `ctx.inject` pairing
+    // buys over the one-shot `ctx.get("settings")` probe it replaced: the probe
+    // decided once, at apply time, so a provider arriving later never became the
+    // source and the entry stayed authoritative for the whole process.
+    const settings = new FakeSettings();
+    const ctx = await bootControl();
+    expect(settings.schemaOf(NS)).toBeUndefined();
+
+    provideSettings(ctx, settings);
+    // Publishing the service does not run the injection callback synchronously;
+    // it is scheduled. Give it a tick, as a real boot would.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(settings.schemaOf(NS)).toBeDefined();
+    settings.update(NS, { callerInstructions: "late attach wins" });
+    expect(ctx.get("voidDshControl")!.policy.callerInstructions).toBe("late attach wins");
+  });
+
+  it("drops the namespace on unload, so a reload does not collide with itself", async () => {
+    // `installSection` ties the registration to the owner fiber. If it leaked,
+    // dsh's own hot reload would fail the next load with "already registered"
+    // rather than picking up the new schema.
+    const settings = new FakeSettings();
+    const ctx = await bootControl({ settings });
+    expect(settings.has(NS)).toBe(true);
+
+    await ctx.fiber.dispose();
+    expect(settings.has(NS)).toBe(false);
   });
 
   it("covers every live-settable field of the plugin configuration", async () => {

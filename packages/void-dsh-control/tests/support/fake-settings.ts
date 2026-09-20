@@ -5,13 +5,14 @@ import type { Context } from "@deepseek-ai/cordis";
  *
  * Mirrors the three behaviours this plugin depends on, and nothing else:
  *
- * - `register(ns, schema, options)` resolves schema defaults → composition
- *   `base` → user section, in that order;
- * - the returned scope's `get()` re-resolves on every read, so a test can prove
- *   a value written mid-flight is picked up without re-registration;
- * - `watch()` fires after a write, and a section the registrant's `validate`
- *   refuses is **not stored** — which is what lets a test assert that the panel
- *   cannot persist something the runtime would reject.
+ * - `installSection(owner, ns, schema, entry, hooks)` resolves schema defaults →
+ *   composition `entry` → user section, in that order, and drives the consumer
+ *   through `setSource`/`onChange` at attach and at detach;
+ * - reads re-resolve every time, so a test can prove a value written mid-flight
+ *   is picked up without re-registration;
+ * - a section the registrant's `validate` refuses is **not stored** and no
+ *   listener fires — which is what lets a test assert that the panel cannot
+ *   persist something the runtime would reject.
  *
  * Deliberately not modelled: the raw document, revisions, secret redaction and
  * the `applies` timing. Those belong to the settings provider, and the plugin
@@ -46,6 +47,54 @@ export class FakeSettings {
   }
 
   /**
+   * Attach one consumer through the official section hook.
+   *
+   * The real provider layers the consumer's composition `entry` under the user
+   * document while it is present, and hands back the bare `entry` when it
+   * detaches — notifying through `setSource` before each `onChange`. Modelled
+   * here so the plugin's use of the official API is exercised rather than a
+   * private stand-in with the same name.
+   *
+   * @param owner - Consumer context; its unload detaches the section.
+   * @param ns - Consumer-owned namespace.
+   * @param schema - Schema resolving the namespace.
+   * @param entry - Composition entry used as base and fallback.
+   * @param hooks - Source sink, change notification, and optional validation.
+   */
+  installSection<Value>(
+    owner: Context,
+    ns: string,
+    schema: (value: unknown) => Value,
+    entry: Value,
+    hooks: {
+      setSource: (current: () => Value) => void;
+      onChange: () => void;
+      validate?: (value: Value) => void;
+    },
+  ): void {
+    if (this.registrations.has(ns)) throw new Error(`settings namespace "${ns}" is already registered`);
+    const registration: Registration = {
+      ns,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- schemastery's callable schema is untyped here.
+      schema: schema as (value: unknown) => any,
+      base: entry as Record<string, unknown>,
+      validate: hooks.validate as ((value: unknown) => void) | undefined,
+      user: undefined,
+      listeners: new Set(),
+    };
+    this.registrations.set(ns, registration);
+    // Attach: the resolved scope becomes the source, then the consumer is told.
+    hooks.setSource(() => resolve(registration) as Value);
+    hooks.onChange();
+    // Detach when the consumer unloads: authority returns to the entry.
+    owner.effect(() => () => {
+      this.registrations.delete(ns);
+      hooks.setSource(() => entry);
+      hooks.onChange();
+    }, `fake-settings: ${ns}`);
+  }
+
+  /**
    * Merge a section into the user layer, exactly as a settings-panel write would.
    *
    * @param ns - Namespace to write.
@@ -61,6 +110,11 @@ export class FakeSettings {
     registration.validate?.(candidate);
     registration.user = next;
     for (const listener of registration.listeners) listener();
+  }
+
+  /** Whether a namespace is currently registered. */
+  has(ns: string): boolean {
+    return this.registrations.has(ns);
   }
 
   /** The stored user section, or `undefined` when nothing has been written. */

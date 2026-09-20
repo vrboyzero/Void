@@ -116,6 +116,9 @@ export interface Config {
   callback: CallbackConfig;
 }
 
+/** Settings namespace the panel reads and writes. */
+const SETTINGS_NAMESPACE = "dsh-agent-control";
+
 /** Schemastery schema for {@link Config}. */
 export const Config: z<Config> = z.object({
   enabled: z.boolean().default(true).description("主开关。设为 false 时插件完全不注册端点，回滚只需改这一行。"),
@@ -388,21 +391,26 @@ interface ConfigSource {
   /** Authentication policy, with token values re-read from the environment. */
   auth: () => AuthPolicy;
   /**
-   * Subscribe to section changes. No-op when no settings namespace is
-   * registered, since the composition entry cannot change while running.
+   * Subscribe to section changes: an attach, a detach, or a committed edit.
+   *
+   * A listener added while no settings provider is attached still gets called if
+   * one attaches later, so callers do not have to re-subscribe.
    */
   watch: (listener: () => void) => void;
-  /** Whether a settings namespace is registered (false makes the entry authoritative). */
-  registered: boolean;
 }
 
 /**
  * Create the live configuration accessors.
  *
- * When `ctx.settings` is present the namespace `dsh-agent-control` becomes the
- * user layer, so every field hot-reloads from the settings document and the
- * settings panel can drive it (plan §29.2). Otherwise the composition entry is
- * authoritative and the accessors return it unchanged.
+ * Uses the official `ctx.settings.installSection()` instead of hand-rolling the
+ * layering. It makes the composition entry the base layer while a settings
+ * provider is attached, and falls back to that same entry when the provider
+ * detaches — exactly the behaviour we used to spell out with
+ * `register({ base: entry })` plus a one-shot `ctx.get('settings')` probe.
+ *
+ * `ctx.inject` supplies the reactivity that probe could not: a provider which
+ * attaches *after* this plugin is composed still becomes the source, and one
+ * that detaches hands authority back to the entry.
  *
  * The returned accessors are deliberately lazy: they are called per request or
  * per delivery, so a panel edit applies to the next call with no re-registration
@@ -414,24 +422,26 @@ interface ConfigSource {
  */
 function createConfigSource(ctx: Context, config: Config): ConfigSource {
   const entry = sectionFromEntry(config);
-  const settings = ctx.get("settings");
 
+  // The composition entry is authoritative until a settings provider attaches;
+  // `installSection` calls `setSource` at every attach and every detach.
   let read: () => ControlSection = () => entry;
-  let watch: (listener: () => void) => void = () => {};
-  let registered = false;
+  const listeners = new Set<() => void>();
 
-  if (settings !== undefined) {
-    const scope = settings.register("dsh-agent-control", controlSchema(entry), {
-      base: entry,
-      applies: "live",
+  ctx.inject(["settings"], (settingsCtx) => {
+    settingsCtx.settings.installSection(ctx, SETTINGS_NAMESPACE, controlSchema(entry), entry, {
       validate: validateSection,
+      setSource: (current) => {
+        read = current;
+      },
+      // Fires after an attach, a detach, and every committed change. The detach
+      // case matters here: the roots snapshot has to be re-resolved against the
+      // entry again rather than keeping the last user-layer value.
+      onChange: () => {
+        for (const listener of listeners) listener();
+      },
     });
-    read = () => scope.get();
-    watch = (listener) => {
-      scope.watch(listener);
-    };
-    registered = true;
-  }
+  });
 
   // Memoized on the raw value so an unchanged document never recompiles its
   // regular expressions on a hot path (the same reasoning as before P2).
@@ -472,7 +482,14 @@ function createConfigSource(ctx: Context, config: Config): ConfigSource {
     return lastAuth;
   };
 
-  return { live: read, policy, auth, watch, registered };
+  return {
+    live: read,
+    policy,
+    auth,
+    watch: (listener) => {
+      listeners.add(listener);
+    },
+  };
 }
 
 /**
@@ -553,7 +570,9 @@ export function apply(ctx: Context, config: Config): void {
 
     const source = createConfigSource(ctx, config);
     const { policy } = source;
-    if (!source.registered) log.info("ctx.settings is absent; the composition entry is the only policy source");
+    if (ctx.get("settings") === undefined) {
+      log.info("ctx.settings is absent; the composition entry is the only policy source");
+    }
 
     const section = source.live();
     const initialAuth = source.auth();

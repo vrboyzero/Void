@@ -34,8 +34,8 @@ export interface BootOptions {
   withControllers?: boolean;
   /**
    * Install a {@link FakeSettings} before the plugin loads. Omit to exercise the
-   * deployment where `ctx.settings` is absent and the composition entry is the
-   * only configuration source.
+   * deployment where no settings provider ever attaches and the composition
+   * entry is the only configuration source.
    */
   settings?: FakeSettings;
   /** Entry configuration merged over the fixture defaults. */
@@ -114,8 +114,9 @@ export async function bootControl(options: BootOptions = {}): Promise<Context> {
     ctx.provide("workspaceController", controllers.workspaceController);
   }
 
-  // Before the plugin loads: it reads `settings` with a non-requiring `get`, so
-  // the service must already be published for the namespace to register.
+  // Published before the plugin loads. Not required — the plugin reaches settings
+  // through `ctx.inject`, so a provider attaching later is adopted too (see the
+  // late-attach case in `settings.spec.ts`).
   if (options.settings !== undefined) provideSettings(ctx, options.settings);
 
   process.env[TOKEN_ENV] = "spec-token";
