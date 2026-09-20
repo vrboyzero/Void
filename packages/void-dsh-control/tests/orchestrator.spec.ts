@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ControlOrchestrator } from "../src/orchestrator.js";
-import { MemoryControlLedger } from "../src/ledger.js";
+import { MemoryControlLedger, type ControlLedger, type TaskEventRecord } from "../src/ledger.js";
 import { EMPTY_CALLER_POLICY, compilePolicy } from "../src/policy.js";
 import { expandOperations, ControlError, type ControlOperation } from "../src/protocol.js";
 import type { CallerIdentity } from "../src/auth.js";
@@ -11,15 +11,29 @@ function identity(callerId: string, operations: ControlOperation[] = ["session.p
   return { callerId, operations: expandOperations(operations) };
 }
 
-function build(options: { policy?: Parameters<typeof compilePolicy>[0]; hosts?: FakeHosts } = {}) {
+function build(options: { policy?: Parameters<typeof compilePolicy>[0]; hosts?: FakeHosts; ledger?: ControlLedger } = {}) {
   const hosts = options.hosts ?? new FakeHosts();
-  const ledger = new MemoryControlLedger();
+  const ledger = options.ledger ?? new MemoryControlLedger();
   const orchestrator = new ControlOrchestrator({
     ledger,
     hosts,
     policy: () => compilePolicy(options.policy ?? EMPTY_CALLER_POLICY),
   });
   return { hosts, ledger, orchestrator };
+}
+
+/**
+ * 追加事件时强制让出一次事件循环，把「读投影 → 追加 → 写回投影」的窗口撑开。
+ *
+ * 不加这层延迟，`MemoryControlLedger` 的追加是同步的，并发窗口会被微任务顺序掩盖，
+ * 于是测试在**未修复时也通过**——那是假锁。真机上用的是 `StorageControlLedger`，
+ * `await table.put(...)` 会真的让出，竞争窗口是敞开的。
+ */
+class SlowAppendLedger extends MemoryControlLedger {
+  override async appendEvent(event: Omit<TaskEventRecord, "seq">): Promise<TaskEventRecord> {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return super.appendEvent(event);
+  }
 }
 
 const NEW_SESSION = { kind: "new" } as const;
@@ -617,6 +631,47 @@ describe("orchestrator: agent signals", () => {
   it("ignores signals for sessions no task owns", async () => {
     const { orchestrator } = build();
     await expect(orchestrator.applySignal("nobody", signalFromAgentStatus(true))).resolves.toBeUndefined();
+  });
+
+  /**
+   * 派发方（`index.ts` 的事件订阅）以 `void` 触发 `applySignal`，所以同一回合的信号会并发
+   * 到达。必须逐条、按序应用，否则状态机会看到乱序信号。
+   *
+   * 真机上更隐蔽的后果在投影侧：`record()` 是「同步读投影 → await 追加事件 → 写回投影」，
+   * 两次并发调用都基于同一份旧投影写回，后写的会把先写的字段静默抹掉——`assistantSummary`
+   * 就在这条路径上，表现为「助手回复明明产生了，账本里却没有」。
+   */
+  it("applies concurrent signals for one session in order, losing no event", async () => {
+    const { orchestrator } = build({ ledger: new SlowAppendLedger() });
+    const result = await orchestrator.dispatch(identity("codex"), {
+      requestId: "r1",
+      workspace: { path: "E:/work/app" },
+      session: NEW_SESSION,
+      messages: [{ text: "x", mode: "queue" }],
+      wait: { until: "accepted", timeoutMs: 0 },
+    });
+
+    // 不 await，模拟派发方的 void 调用。
+    const pending = [
+      orchestrator.applySignal(result.sessionId, signalFromAgentStatus(true)),
+      orchestrator.applySignal(result.sessionId, {
+        status: "assistant_message",
+        summary: "assistant message",
+        sessionSeq: 10,
+        assistantText: "OK",
+      }),
+      orchestrator.applySignal(result.sessionId, signalFromAgentStatus(false)),
+    ];
+    await Promise.all(pending);
+
+    const snapshot = orchestrator.getTask(identity("codex"), { taskId: result.taskId, limit: 50 });
+    const kinds = snapshot.events.map((event) => event.kind);
+    // running 是 assistant_message 的合法前驱；三条一个都不能少。
+    expect(kinds).toContain("running");
+    expect(kinds).toContain("assistant_message");
+    expect(kinds.indexOf("running")).toBeLessThan(kinds.indexOf("assistant_message"));
+    // 投影里也要留住：并发写回不得抹掉助手文本。
+    expect(snapshot.task.assistantSummary).toBe("OK");
   });
 
   it("ignores signals after a task is terminal", async () => {

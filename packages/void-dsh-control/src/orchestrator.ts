@@ -167,6 +167,12 @@ export class ControlOrchestrator {
    * on the same session cannot close a freshly queued task.
    */
   private readonly sawRunning = new Set<string>();
+  /**
+   * 每个 Session 一条信号链，保证 `applySignal` 逐条、按序执行。
+   *
+   * 见 `applySignal` 的说明：派发方以 `void` 触发，同一回合的信号会并发到达。
+   */
+  private readonly signalChains = new Map<string, Promise<unknown>>();
   private counter = 0;
   private accepting = true;
 
@@ -527,6 +533,27 @@ export class ControlOrchestrator {
    * @param signal - Bounded signal derived in `events.ts`.
    */
   async applySignal(sessionId: string, signal: TaskSignal): Promise<void> {
+    // 同一 Session 的信号必须**按到达顺序、逐条**应用。
+    //
+    // 派发方（`index.ts` 的事件订阅）是以 `void` 触发本方法的——同一个回合里 `turn/start`、
+    // `assistant/message`、`turn/end` 常前后脚到达，若并发执行会有两个后果：状态机看到的是
+    // 乱序的信号；而 `record()` 是「同步读投影 → await 追加事件 → 写回投影」，两次并发调用
+    // 都基于同一份旧投影写回，后写的会把先写的字段**静默抹掉**（`assistantSummary` 就在这条
+    // 路径上）。按 sessionId 分桶串行化，两个问题一起消掉。
+    const previous = this.signalChains.get(sessionId) ?? Promise.resolve();
+    const queued = previous.then(() => this.applySignalNow(sessionId, signal));
+    // 链上只留「已结束」标记：一次失败不能毒化该 Session 后续的信号。
+    this.signalChains.set(
+      sessionId,
+      queued.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return queued;
+  }
+
+  private async applySignalNow(sessionId: string, signal: TaskSignal): Promise<void> {
     const taskId = this.sessionToTask.get(sessionId);
     if (taskId === undefined) return;
     const record = this.ledger.getTask(taskId);

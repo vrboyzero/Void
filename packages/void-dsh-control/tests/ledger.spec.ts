@@ -123,8 +123,57 @@ describe("ledger: task events", () => {
     expect(ledger.listEvents("task-2", -1, 10).map((event) => event.summary)).toEqual(["c"]);
   });
 
-  it("survives a process restart", async () => {
+  /**
+   * 并发追加必须各自拿到**互不相同**的 seq。
+   *
+   * 真机就是这么丢事件的：`StorageControlLedger.appendEvent()` 用 `countEvents()`（条数）而不是
+   * 最大 seq + 1 来分配 seq，中间又隔着 `await table.put(...)`。而调用方
+   * （`orchestrator.applySignal`）是以 `void` 触发的——同一 Session 的 `running` 与
+   * `assistant_message` 常常前后脚到达，两个调用读到同一个 count、写同一个 key，后写的把
+   * 先写的**静默覆盖**掉。
+   *
+   * 症状是账本里凭空少一条事件，而任务状态仍然正常推进（`sawRunning` 在 await 之前就置位了，
+   * 所以 `completed` 照样发生）。内存实现没这个问题，因为它的读和写在同一个同步块里——这就是
+   * 为什么测试全绿而生产出问题：测试用 `MemoryControlLedger`，生产用 `StorageControlLedger`。
+   */
+  it("gives concurrent appends distinct sequences instead of overwriting", async () => {
     const root = await mkdtemp(join(tmpdir(), "void-dsh-ledger-"));
+    roots.push(root);
+    const { ledger } = await openLedger(root);
+    await ledger.init();
+
+    const kinds = ["accepted", "workspace_resolved", "session_created", "prompt_queued"] as const;
+    const written = await Promise.all(
+      kinds.map((kind) => ledger.appendEvent({ taskId: "task-1", kind, status: kind, time: "t", summary: kind })),
+    );
+
+    expect(new Set(written.map((event) => event.seq)).size).toBe(kinds.length);
+    expect(ledger.countEvents("task-1")).toBe(kinds.length);
+    expect(ledger.listEvents("task-1", -1, 10).map((event) => event.kind)).toEqual([...kinds]);
+  });
+
+  it("keeps sequences dense and ordered across interleaved tasks", async () => {
+    // 串行化必须按 taskId 分桶：一个任务的积压不能拖住另一个任务，也不能让两个任务的 seq 串台。
+    const root = await mkdtemp(join(tmpdir(), "void-dsh-ledger-"));
+    roots.push(root);
+    const { ledger } = await openLedger(root);
+    await ledger.init();
+
+    await Promise.all([
+      ledger.appendEvent({ taskId: "a", kind: "accepted", status: "accepted", time: "t", summary: "a0" }),
+      ledger.appendEvent({ taskId: "b", kind: "accepted", status: "accepted", time: "t", summary: "b0" }),
+      ledger.appendEvent({ taskId: "a", kind: "prompt_queued", status: "prompt_queued", time: "t", summary: "a1" }),
+      ledger.appendEvent({ taskId: "b", kind: "prompt_queued", status: "prompt_queued", time: "t", summary: "b1" }),
+    ]);
+
+    for (const taskId of ["a", "b"]) {
+      const events = ledger.listEvents(taskId, -1, 10);
+      expect(events.map((event) => event.seq)).toEqual([0, 1]);
+      expect(events.map((event) => event.summary)).toEqual([`${taskId}0`, `${taskId}1`]);
+    }
+  });
+
+  it("survives a process restart", async () => {    const root = await mkdtemp(join(tmpdir(), "void-dsh-ledger-"));
     roots.push(root);
 
     const first = await openLedger(root);

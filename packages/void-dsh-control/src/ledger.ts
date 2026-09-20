@@ -327,6 +327,18 @@ function eventKey(taskId: string, seq: number): string {
  */
 export class StorageControlLedger implements ControlLedger {
   private readonly domain: Domain<typeof controlDomainSpec>;
+  /**
+   * 每个任务一条追加链，保证同一任务的 `appendEvent` 串行执行。
+   *
+   * seq 由「已有条数」推出，而读和写之间隔着 `await table.put(...)`。调用方
+   * （`orchestrator.applySignal`）是以 `void` 触发的，同一 Session 的 `running` 与
+   * `assistant_message` 常前后脚到达，两个调用会读到同一个条数、写同一个 key，**后写的静默
+   * 覆盖先写的**——真机上就是因此丢了事件，而任务状态照样推进（`sawRunning` 在 await 之前
+   * 就置位了），症状极难反推。
+   *
+   * 串行化按 taskId 分桶，所以一个任务的积压不会拖住别的任务。
+   */
+  private readonly appendChains = new Map<string, Promise<unknown>>();
   private closed = false;
 
   constructor(domain: Domain<typeof controlDomainSpec>) {
@@ -414,6 +426,19 @@ export class StorageControlLedger implements ControlLedger {
   }
 
   async appendEvent(event: Omit<TaskEventRecord, "seq">): Promise<TaskEventRecord> {
+    // 同一任务的追加排队执行；seq 的分配（读条数）与其落盘（写 key）之间不能再被别的
+    // appendEvent 插进来，否则两者会算出同一个 seq、后写的覆盖先写的。
+    const previous = this.appendChains.get(event.taskId) ?? Promise.resolve();
+    const queued = previous.then(() => this.appendNow(event));
+    // 链上只保留「已结束」的标记：失败不能毒化后续追加，成功也不必留住结果。
+    this.appendChains.set(event.taskId, queued.then(
+      () => undefined,
+      () => undefined,
+    ));
+    return queued;
+  }
+
+  private async appendNow(event: Omit<TaskEventRecord, "seq">): Promise<TaskEventRecord> {
     const table = this.domain.table("task_events");
     const nextSeq = this.countEvents(event.taskId);
     const stored: TaskEventRecord = { ...event, seq: nextSeq };
