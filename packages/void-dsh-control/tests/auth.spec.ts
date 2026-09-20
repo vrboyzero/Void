@@ -1,5 +1,14 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { Authenticator, constantTimeEquals, extractBearer, readTokenGrants } from "../src/auth.js";
+import {
+  Authenticator,
+  constantTimeEquals,
+  describeTokenSetup,
+  extractBearer,
+  readTokenGrants,
+  userEnvFilePath,
+} from "../src/auth.js";
 import { ControlError, expandOperations, type ControlOperation } from "../src/protocol.js";
 
 const ALPHA: ControlOperation[] = ["workspace.read", "session.prompt"];
@@ -118,5 +127,84 @@ describe("auth: environment grants", () => {
     );
     expect(grants).toEqual([]);
     expect(missingEnv).toEqual(["TEST_ALPHA_TOKEN"]);
+  });
+});
+
+describe("auth: operator-facing token setup guidance", () => {
+  it("resolves the user-level .env dsh reads from any invoking directory", () => {
+    expect(userEnvFilePath({ DSH_HOME: "D:\\custom home" } as NodeJS.ProcessEnv)).toBe(
+      join("D:\\custom home", ".env"),
+    );
+  });
+
+  it("falls back to ~/.dsh when DSH_HOME is unset or blank", () => {
+    const expected = join(homedir(), ".dsh", ".env");
+    expect(userEnvFilePath({} as NodeJS.ProcessEnv)).toBe(expected);
+    expect(userEnvFilePath({ DSH_HOME: "   " } as NodeJS.ProcessEnv)).toBe(expected);
+  });
+
+  it("expands a tilde prefix the way dsh does", () => {
+    expect(userEnvFilePath({ DSH_HOME: "~/harness" } as NodeJS.ProcessEnv)).toBe(
+      join(homedir(), "harness", ".env"),
+    );
+  });
+
+  it("names the unset variable, the target file, the fix command and the doc pointer", () => {
+    const message = describeTokenSetup(["VOID_DSH_CONTROL_TOKEN"], "C:\\Users\\me\\.dsh\\.env");
+    expect(message).toContain("VOID_DSH_CONTROL_TOKEN");
+    expect(message).toContain("C:\\Users\\me\\.dsh\\.env");
+    expect(message).toContain("Get-Random");
+    expect(message).toContain("§25.3");
+    // The remediation must name the variable the operator has to set.
+    expect(message).toContain("VOID_DSH_CONTROL_TOKEN=$t");
+  });
+
+  it("never leaks a token value into the guidance", () => {
+    const message = describeTokenSetup(["A_TOKEN", "B_TOKEN"], "/home/me/.dsh/.env");
+    expect(message).not.toMatch(/[0-9a-f]{32,}/);
+    expect(message).toContain("A_TOKEN");
+    expect(message).toContain("B_TOKEN");
+  });
+
+  it("still reads sensibly when no variable name is known", () => {
+    expect(describeTokenSetup([], "/home/me/.dsh/.env")).toContain("401");
+  });
+});
+
+describe("auth: token guidance follows the shell the operator actually has", () => {
+  const FILE = "/home/me/.dsh/.env";
+
+  it("prints a POSIX command on Linux and macOS, not PowerShell", () => {
+    for (const platform of ["linux", "darwin"] as NodeJS.Platform[]) {
+      const message = describeTokenSetup(["VOID_DSH_CONTROL_TOKEN"], FILE, platform);
+      expect(message).toContain("/dev/urandom");
+      expect(message).toContain(`>> "${FILE}"`);
+      // A WSL operator has no $env:USERPROFILE and no Add-Content.
+      expect(message).not.toContain("Add-Content");
+      expect(message).not.toContain("USERPROFILE");
+      expect(message).not.toContain("Get-Random");
+    }
+  });
+
+  it("still prints PowerShell on Windows", () => {
+    const message = describeTokenSetup(
+      ["VOID_DSH_CONTROL_TOKEN"],
+      "C:\\Users\\me\\.dsh\\.env",
+      "win32",
+    );
+    expect(message).toContain("Add-Content");
+    expect(message).toContain("Get-Random");
+    expect(message).not.toContain("/dev/urandom");
+  });
+
+  it("creates the parent directory, since a fresh WSL home may lack it", () => {
+    const message = describeTokenSetup(["VOID_DSH_CONTROL_TOKEN"], FILE, "linux");
+    expect(message).toContain('mkdir -p "/home/me/.dsh"');
+  });
+
+  it("uses the variable name it was given on every platform", () => {
+    for (const platform of ["win32", "linux"] as NodeJS.Platform[]) {
+      expect(describeTokenSetup(["MY_TOKEN"], FILE, platform)).toContain("MY_TOKEN=$t");
+    }
   });
 });

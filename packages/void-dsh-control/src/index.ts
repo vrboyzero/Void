@@ -23,7 +23,7 @@ import { type Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import type {} from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
-import { Authenticator, readTokenGrants, type TokenGrant } from "./auth.js";
+import { Authenticator, describeTokenSetup, readTokenGrants, userEnvFilePath, type TokenGrant } from "./auth.js";
 import { WebhookCallbackDispatcher, resolveCallbackUrl } from "./callback.js";
 import { CONTROL_OPERATIONS, ControlError, type ControlOperation } from "./protocol.js";
 import { compilePolicy, EMPTY_CALLER_POLICY, type CallerPolicy, type CompiledCallerPolicy } from "./policy.js";
@@ -397,7 +397,19 @@ export function apply(ctx: Context, config: Config): void {
       log.warn(`token environment variable ${envName} is unset; that caller cannot authenticate`);
     }
     if (grants.length === 0 && !config.allowAnonymous) {
-      log.warn("no usable machine token and allowAnonymous is false: every request will be rejected with 401");
+      const guidance = describeTokenSetup(missingEnv, userEnvFilePath());
+      // Two sinks on purpose. `ctx.logger` is the structured channel dsh
+      // surfaces in the Web UI, but no Node-side package registers a console
+      // exporter, so an operator watching the terminal never sees it. dsh's own
+      // `loadLayeredEnv` writes boot misconfiguration straight to stderr; this is
+      // the case that leaves the endpoint completely dead, so it goes to both
+      // (plan §27.6).
+      log.warn(guidance);
+      const banner = guidance
+        .split("\n")
+        .map((line) => `[void-dsh-control] ${line}`)
+        .join("\n");
+      process.stderr.write(`\n${banner}\n\n`);
     }
 
     const allowedRoots = await resolveAllowedRoots(config.allowedRoots);

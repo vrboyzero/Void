@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Context } from "@deepseek-ai/cordis";
 import Loader from "@deepseek-ai/cordis-plugin-loader";
 import WebServer from "@deepseek-ai/dsh-host-webserver";
@@ -171,6 +171,32 @@ describe("composition: plugin activation", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
     });
     expect(response.status).toBe(401);
+  });
+
+  it("prints token remediation to stderr, where the operator is actually looking", async () => {
+    delete process.env["VOID_DSH_CONTROL_MISSING_TOKEN"];
+    // `ctx.logger` alone is invisible: no Node-side package registers a console
+    // exporter, so a warning that only reaches the Web UI log panel leaves a
+    // terminal operator with an unexplained 401. Pin the stderr channel.
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      await boot({
+        tokens: [{ callerId: "spec", tokenEnv: "VOID_DSH_CONTROL_MISSING_TOKEN" }],
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const output = written.join("");
+    expect(output).toContain("VOID_DSH_CONTROL_MISSING_TOKEN");
+    expect(output).toContain("401");
+    expect(output).toContain("Get-Random");
+    // Attribution matters: dsh prints other plugins' banners on the same stream.
+    expect(output).toContain("[void-dsh-control]");
   });
 
   it("refuses to start with a storage ledger when no storage domain is mounted", async () => {
