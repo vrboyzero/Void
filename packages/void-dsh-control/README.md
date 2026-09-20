@@ -52,8 +52,50 @@ ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/cordis'
 `dsh plugin add` 会识别 `package.json` 里的 `dsh.bundle.patch`，把 `cordis.patch.yml`
 作为一个 bundle 层加入 profile。
 
+> **安装时的三个实操要点**（均实测）：
+>
+> 1. **路径必须是绝对的，或 `.\` 开头。** `dsh plugin` 的 `anchorPathSpec()` 只锚定
+>    以 `.` 开头的参数，`dist\lingbang\x.tgz` 这种会被原样透传给 pnpm，而 pnpm 的 cwd
+>    是 **profile 目录** —— 所以它会去 profile 里找，任何目录下都失败（包括仓库根）。
+> 2. **先停掉正在跑的 profile 再装。** 热重载只监听 `cordis.patch.yml`，不监听
+>    `package.json`，但 pnpm 会重写 `node_modules`，对运行中的进程有理论风险。
+> 3. **装完验证真的装对了地方**，`dsh plugin add` 成功只代表 pnpm 装好了：
+>    ```powershell
+>    (Get-Content "$env:USERPROFILE\.dsh\profiles\web\package.json" -Raw | ConvertFrom-Json).dsh.profile.bundles
+>    ```
+>    列表里应出现 `@void/void-dsh-control`。
+>
+> **重启时的目录决定 token 有没有值**：`dsh plugin` 不读 `.env`，但**重启 profile 会读**。
+> 从有 `.env` 的目录启动才有 token，否则所有请求 401。不想依赖目录就把 token 放到
+> `$DSH_HOME\.env`（用户层）。
 > 重新打包后要**先 remove 再 add**：pnpm 按包名 + 版本复用已解析的依赖，直接
 > `add` 同一个版本的 tarball 会返回 "Already up to date" 而保留旧代码。
+
+#### 安装时那串 peer 警告是正常的
+
+`dsh plugin add` 会打印：
+
+```text
+WARN  Issues with peer dependencies found
+└─┬ @void/void-dsh-control 0.1.0
+  ├── ✕ missing peer @deepseek-ai/cordis@^4.0.2
+  ├── ✕ missing peer @deepseek-ai/dsh-agent@^0.1.5-rc.2
+  └── ... （共 11 个）
+```
+
+**可以忽略。** pnpm 只看得见 profile 自己的 `node_modules`，那里确实没有
+`@deepseek-ai/*`；这些包由 dsh 的模块回退镜像在上一层：
+
+```text
+$DSH_HOME/profiles/<profile>/node_modules/@deepseek-ai/*   ← 不存在，所以 pnpm 报警
+$DSH_HOME/profiles/node_modules/@deepseek-ai/*             ← 实际在这里（dsh 建的 symlink）
+```
+
+Node 沿父目录向上查找时会命中第二行，所以运行时解析正常。pnpm 不知道这层回退，
+它的 peer 检查必然误报——这是 dsh 插件生态的固有现象。
+
+验证方式：装完直接启动 profile，端点能起来就说明 peer 全部解析成功。
+（这也是本包**必须用 tarball 安装**的同一个机制，见上文。）
 
 ```powershell
 dsh plugin --profile <profile> remove "@void/void-dsh-control"
@@ -69,7 +111,32 @@ $env:VOID_DSH_CONTROL_TOKEN = "<一段随机长字符串>"
 
 变量未设置时插件会 warn，并且**所有请求返回 401**——不会退化成无认证端点。
 
-### 1.4 客户端配置样例（Codex / 通用 MCP Client）
+### 1.4 用文件代替环境变量
+
+`dsh` 在真实启动路径（`dsh --profile X` / `dsh web`）上会读取两个 `.env`，并把其中的
+变量填入 `process.env`（仅当同名变量尚未设置）：
+
+```text
+<调用 dsh 的目录>/.env     ← 项目层，推荐（随仓库走，Void/.env 已 gitignore）
+$DSH_HOME/.env             ← 用户层，影响该 home 下所有 profile
+```
+
+```ini
+VOID_DSH_CONTROL_TOKEN=一长串随机字符
+```
+
+两点约束（均已实测）：
+
+- **`DSH_HOME` 不能放进 `.env`。** `DSH_` 属于 `BOOTSTRAP_PREFIXES`，`readEnvLayer` 会对
+  bootstrap 名直接抛错，dsh 启动失败：
+  `sets "DSH_HOME", which only the launching environment may set`。
+  这是设计使然——home 路径决定去读哪个 `.env`，先有鸡才有蛋。
+- **`dsh --dump-config` 与 `dsh plugin` 不读 `.env`**，只有真实 boot 路径读。
+  所以「dump-config 看不到」不代表 `.env` 没生效。
+
+优先级：已存在的进程环境变量 **高于** `.env`，临时覆盖直接 export 即可。
+
+### 1.5 客户端配置样例（Codex / 通用 MCP Client）
 
 ```json
 {
@@ -306,7 +373,7 @@ profile 的 `cordis.patch.yml` 是一个**顶层 YAML 数组**，回滚条目要
 cd packages/void-dsh-control
 pnpm install
 pnpm run typecheck   # src + tests 两套 tsconfig
-pnpm test            # vitest，10 文件 / 204 例
+pnpm test            # vitest，10 文件 / 215 例
 pnpm run build       # tsc -> lib/
 ```
 
@@ -320,8 +387,28 @@ pwsh -File scripts/pack-lingbang.ps1
 
 # 2. 用隔离的 DSH_HOME 起一个临时 profile（不动正在使用的 web profile）
 $env:DSH_HOME = "E:\project\star-sanctuary\Void\.tmp\lingbang-smoke"
-dsh --profile lingbang --from-default-profile web --port 3199 --no-open   # 首次生成后 Ctrl-C
+dsh --profile lingbang --from-default-profile web --port 3199 --no-open   # 仅首次；生成后 Ctrl-C
 dsh plugin --profile lingbang add "E:\project\star-sanctuary\Void\dist\lingbang\void-void-dsh-control-0.1.0.tgz"
+```
+
+> `--from-default-profile web` 是「新建」语义，只跑一次；profile 已存在时会报
+> `profile "lingbang" already exists ...; omit --from-default-profile to use it`。
+> 这是 dsh 拒绝覆盖已装好的环境，不是故障。日常启动去掉该参数即可。
+
+> ⚠️ **设过 `DSH_HOME` 的窗口里，`dsh web` 打不开你的正式环境。**
+> `web` / `headless` / `acp` / `sdk` / `sdk-minimal` 是 dsh 的**出厂模板名**，
+> `loadProfile()` 对模板名会**静默新建** profile（非模板名才报 `does not exist`）。
+> 所以在隔离窗口里敲 `dsh web`，它会新建一个空白 `web` 并启动，默认还绑同一个 3080，
+> 跟正在跑的那个撞端口。
+>
+> `dsh plugin add` 同理且更危险——它不打印目标 home，装错了你不会察觉。
+> 执行前先确认：
+>
+> ```powershell
+> "DSH_HOME = '$env:DSH_HOME'"     # 空 = 走真实 ~/.dsh
+> ```
+>
+> 最省心的做法：隔离测试用一个窗口，正式操作用另一个窗口。
 
 # 3. 启动并跑 smoke（19 项断言，退出码即结果）
 $env:VOID_DSH_CONTROL_TOKEN = "<token>"
