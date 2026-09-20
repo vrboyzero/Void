@@ -30,6 +30,7 @@ import { compilePolicy, EMPTY_CALLER_POLICY, type CallerPolicy, type CompiledCal
 import { MemoryControlLedger, StorageControlLedger, type ControlLedger } from "./ledger.js";
 import { controlDomainSpec } from "./ledger.js";
 import { createHostPorts } from "./hosts.js";
+import { registerVoidPanel } from "./panel.js";
 import { ControlOrchestrator } from "./orchestrator.js";
 import { createMcpHttpHandler } from "./mcp.js";
 import { DshControl } from "./service.js";
@@ -526,6 +527,11 @@ export function apply(ctx: Context, config: Config): void {
     entrySection.callback,
     entrySection.callback.enabled ? (process.env[entrySection.callback.secretEnv] ?? "") : "",
   );
+
+  // Contribute the configuration panel to the Void entry, when one is installed.
+  // Outside the async effect: registration is synchronous and must not wait on
+  // the ledger or the host ports.
+  registerVoidPanel(ctx);
 
   void ctx.effect(async () => {
     const log = ctx.logger("void-dsh-control");

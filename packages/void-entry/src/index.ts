@@ -69,8 +69,76 @@ interface DiscoveredPlugin {
   enabled: boolean;
 }
 
+/**
+ * 一个配置字段的展示提示。
+ *
+ * 字段的**存在与类型**来自 settings namespace 的 schema（面板自己解析），这里只补
+ * schema 表达不了的三件事：中文标签、用哪个控件渲染、以及帮助文字。
+ */
+export interface VoidPanelField {
+  /** 从 namespace 根出发的路径，例如 `["callback", "url"]`。 */
+  path: string[];
+  /** 中文标签；缺省退化为路径末段。 */
+  label?: string;
+  /**
+   * 控件提示。面板不认识的值退化为按 schema 类型推断，因此新增控件类型不会让
+   * 旧面板渲染失败。
+   */
+  widget?: "switch" | "text" | "number" | "list" | "operations" | "rules" | "tokens" | "select";
+  /** 一句话说明，显示在控件下方。 */
+  help?: string;
+  /** 危险的开关，需要二次确认（如允许匿名调用）。 */
+  danger?: boolean;
+  /**
+   * 只读字段：值来自组合入口（`cordis.patch.yml`）而不是设置命名空间，因此面板
+   * 只展示、不提供编辑，并在旁边给出改法。
+   *
+   * 这类字段**不在 schema 里**，面板必须靠这个标记区分「可写，只是当前值来自
+   * base」与「根本改不了」——否则会渲染出一个写了不生效的控件，那是最糟的面板
+   * bug，因为它看起来像是成功了。
+   */
+  readOnly?: boolean;
+}
+
+/** 面板里的一组配置。分组顺序即展示顺序。 */
+export interface VoidPanelGroup {
+  id: string;
+  title: string;
+  /** 未展开时的摘要；缺省由面板按字段值生成。 */
+  summary?: string;
+  fields: VoidPanelField[];
+}
+
+/**
+ * 一个插件贡献给「虚空（Void）」面板的配置清单。
+ *
+ * 由插件**自己**通过 `ctx.voidSuite.registerPanel()` 注册，而不是在入口里维护一张
+ * 大表：字段标签、控件选择和业务词汇表都是插件自己的知识，放这边才不会两边各写
+ * 一份、日久失同步。入口只负责按 schema 渲染。
+ */
+export interface VoidPanelManifest {
+  /** 设置命名空间，面板据此取 schema 与当前值。 */
+  namespace: string;
+  groups: VoidPanelGroup[];
+  /**
+   * 业务操作词汇表：值 → 中文解释 + 它会自动带上的前置项。
+   *
+   * `operations` 控件用它渲染勾选矩阵，并把「你没勾但实际生效了」的前置项标出来。
+   * 前置关系由插件给出（它就是运行时 `expandOperations` 的实现方），面板不重算。
+   */
+  operations?: Array<{ value: string; label: string; prerequisite?: boolean }>;
+}
+
+interface RegisteredPanel {
+  package: string;
+  manifest: VoidPanelManifest;
+}
+
 export class VoidSuite extends Service {
   static inject = ["loader"];
+
+  /** 各插件贡献的面板清单，按包名索引。 */
+  private readonly panels = new Map<string, VoidPanelManifest>();
 
   constructor(ctx: Context) {
     super(ctx, "voidSuite");
@@ -106,7 +174,41 @@ export class VoidSuite extends Service {
           }),
         "void-entry: /void/api/toggle",
       );
+      webCtx.effect(
+        () =>
+          webServer.register({
+            kind: "exact",
+            path: "/void/api/panels",
+            handler: (_req, res) => {
+              void this.handlePanels(res);
+            },
+          }),
+        "void-entry: /void/api/panels",
+      );
     });
+  }
+
+  /**
+   * 登记一个插件的面板清单。
+   *
+   * 由插件在自己的 `ctx.inject(["voidSuite"], ...)` 里调用，因此不装在某个
+   * profile 里的插件不会留下任何痕迹；disposer 随 fiber 卸载回收。
+   *
+   * @param packageName - 贡献方包名，须与目录里的 id 一致。
+   * @param manifest - 分组、字段提示与业务词汇表。
+   * @returns 注销函数。
+   */
+  registerPanel(packageName: string, manifest: VoidPanelManifest): () => void {
+    this.panels.set(packageName, manifest);
+    return () => {
+      // 只在仍是我们登记的那一份时删除，避免误删后来者的覆盖。
+      if (this.panels.get(packageName) === manifest) this.panels.delete(packageName);
+    };
+  }
+
+  /** 已登记的面板清单，按包名索引。 */
+  panelManifests(): Record<string, VoidPanelManifest> {
+    return Object.fromEntries(this.panels);
   }
 
   /**
@@ -201,6 +303,12 @@ export class VoidSuite extends Service {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ plugins: this.list() }));
+  }
+
+  private async handlePanels(res: JsonResponseLike): Promise<void> {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ panels: this.panelManifests() }));
   }
 
   private async handleToggle(req: JsonRequestLike, res: JsonResponseLike): Promise<void> {

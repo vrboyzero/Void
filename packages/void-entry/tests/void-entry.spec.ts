@@ -137,7 +137,7 @@ describe("void-entry host routes (webServer is optional and late)", () => {
     await ctx.loader.await();
 
     const webServer = ctx.get("webServer") as unknown as { routes: Map<string, unknown> };
-    expect([...webServer.routes.keys()].sort()).toEqual(["/void/api/status", "/void/api/toggle"]);
+    expect([...webServer.routes.keys()].sort()).toEqual(["/void/api/panels", "/void/api/status", "/void/api/toggle"]);
   });
 
   it("does not fail to load when no webServer ever appears (headless)", async () => {
