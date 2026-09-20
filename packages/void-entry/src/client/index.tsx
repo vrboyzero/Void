@@ -23,6 +23,7 @@ import {
   type SchemaNode,
 } from './remote.js'
 import { ConnectBlock } from './connect.js'
+import { TEXT_SECONDARY, BORDER, WARN, WARN_SURFACE, ROW_TITLE_CLASS, ensureStyles } from './theme.js'
 import { draftOps, editDraft, isDirty, saveBlockers, shownValue, type Draft } from './draft.js'
 import {
   ChoicesField,
@@ -53,7 +54,6 @@ const SECTION_LABEL = '虚空（Void）'
  */
 const SECTION_ORDER = 45
 
-const MUTED = '#888'
 
 interface PluginState {
   id: string
@@ -101,6 +101,9 @@ interface PanelManifest {
  * 就能配，这一侧不需要认识任何一个具体插件。
  */
 export function apply(ctx: Context): void {
+  // 行标题加粗只能靠注入的样式表：DisclosureRow 的 title 是字符串，只收 className。
+  ensureStyles()
+
   ctx.provide('voidWidgets', createVoidWidgetsService())
 
   if (PRIMITIVE_GAPS.length > 0) {
@@ -352,7 +355,7 @@ function VoidSection(): React.ReactElement {
         alignItems: 'center',
         gap: 12,
         paddingBottom: 12,
-        borderBottom: '1px solid rgba(128,128,128,0.18)',
+        borderBottom: `1px solid ${BORDER}`,
         marginBottom: 12,
       },
     },
@@ -366,7 +369,7 @@ function VoidSection(): React.ReactElement {
       h('span', { style: { flex: 1 } }),
       list.length > 0
         ? h('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13 } },
-            h('span', { style: { color: MUTED } }, allEnabled ? '整套已开启' : '整套已关闭'),
+            h('span', { style: { color: TEXT_SECONDARY } }, allEnabled ? '整套已开启' : '整套已关闭'),
             h(Switch, {
               checked: allEnabled,
               disabled: busy === 'all' || toggleable.length === 0,
@@ -465,7 +468,7 @@ function PluginCard(props: {
     h('code', {
       style: {
         fontSize: 11,
-        color: MUTED,
+        color: TEXT_SECONDARY,
         flex: 1,
         minWidth: 0,
         overflow: 'hidden',
@@ -481,7 +484,7 @@ function PluginCard(props: {
           label: `${plugin.name} 开关`,
           onChange: props.onToggleEnabled,
         })
-      : h('span', { style: { fontSize: 12, color: MUTED, whiteSpace: 'nowrap' } }, '不可关闭'),
+      : h('span', { style: { fontSize: 12, color: TEXT_SECONDARY, whiteSpace: 'nowrap' } }, '不可关闭'),
   )
 
   // 保存条常驻在卡片正文顶部：改动只落在草稿里，不给一个显眼的保存入口等于让用户以为
@@ -495,8 +498,8 @@ function PluginCard(props: {
           margin: '0 0 8px 24px',
           padding: '6px 10px',
           borderRadius: 8,
-          background: 'rgba(210,150,0,0.10)',
-          border: '1px solid rgba(210,150,0,0.35)',
+          background: WARN_SURFACE,
+          border: `1px solid ${WARN}`,
         },
       },
         h(StateDot, { state: 'warning', size: 8 }),
@@ -515,7 +518,7 @@ function PluginCard(props: {
   const body = expandable
     ? h('div', { style: { display: 'flex', flexDirection: 'column' } },
         plugin.description
-          ? h('div', { style: { fontSize: 12, color: MUTED, padding: '0 0 6px 24px' } }, plugin.description)
+          ? h('div', { style: { fontSize: 12, color: TEXT_SECONDARY, padding: '0 0 6px 24px' } }, plugin.description)
           : null,
         saveBar,
         ...groups.map((group) =>
@@ -550,15 +553,17 @@ function PluginCard(props: {
           ),
         ),
       )
-    : h('div', { style: { fontSize: 12, color: MUTED, padding: '4px 0 4px 24px' } },
+    : h('div', { style: { fontSize: 12, color: TEXT_SECONDARY, padding: '4px 0 4px 24px' } },
         plugin.description || '这个插件没有可配置项。')
 
   return h('div', {
-    style: { border: '1px solid rgba(128,128,128,0.18)', borderRadius: 10, overflow: 'hidden' },
+    style: { border: `1px solid ${BORDER}`, borderRadius: 10, overflow: 'hidden' },
   },
     h(DisclosureRow, {
       icon: h(IconCordisPluginOutline14, { size: 14 }),
       title: plugin.name,
+      // 卡片标题加粗，与分组标题一致——两级标题都靠这张注入的样式表。
+      titleClassName: ROW_TITLE_CLASS,
       open,
       expandable,
       expandOnRowClick: true,
@@ -601,11 +606,11 @@ function FieldControl(props: {
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
         h('span', { style: { fontSize: 13 } }, label),
         h('span', {
-          style: { fontSize: 11, color: MUTED, border: `1px solid ${MUTED}`, borderRadius: 4, padding: '0 4px' },
+          style: { fontSize: 11, color: TEXT_SECONDARY, border: `1px solid ${TEXT_SECONDARY}`, borderRadius: 4, padding: '0 4px' },
         }, '只读'),
         h('code', { style: { fontSize: 12 } }, value === undefined ? '—' : JSON.stringify(value)),
       ),
-      field.help ? h('div', { style: { fontSize: 11, color: MUTED, marginTop: 4 } }, field.help) : null,
+      field.help ? h('div', { style: { fontSize: 11, color: TEXT_SECONDARY, marginTop: 4 } }, field.help) : null,
     )
   }
 
@@ -704,9 +709,9 @@ function FieldControl(props: {
       return h('div', { style: { padding: '6px 0 6px 24px' } },
         h('div', { style: { fontSize: 13 } }, label),
         h('pre', {
-          style: { fontSize: 11, color: MUTED, whiteSpace: 'pre-wrap', margin: '4px 0 0' },
+          style: { fontSize: 11, color: TEXT_SECONDARY, whiteSpace: 'pre-wrap', margin: '4px 0 0' },
         }, JSON.stringify(value, null, 2)),
-        field.help ? h('div', { style: { fontSize: 11, color: MUTED, marginTop: 4 } }, field.help) : null,
+        field.help ? h('div', { style: { fontSize: 11, color: TEXT_SECONDARY, marginTop: 4 } }, field.help) : null,
       )
     default:
       return h(TextField, {
@@ -742,7 +747,7 @@ function manifestWidgets(manifests: Record<string, PanelManifest>, ns: string): 
 }
 function EmptyHint(props: { text: string }): React.ReactElement {
   return h('div', {
-    style: { display: 'flex', alignItems: 'center', gap: 10, padding: '20px 4px', color: MUTED, fontSize: 13 },
+    style: { display: 'flex', alignItems: 'center', gap: 10, padding: '20px 4px', color: TEXT_SECONDARY, fontSize: 13 },
   },
     h(IconQuestionOutline14, { size: 14 }),
     h('span', null, props.text),

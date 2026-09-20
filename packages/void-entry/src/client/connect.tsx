@@ -11,6 +11,7 @@
  * @module @void/void-entry/client/connect
  */
 import { createElement as h, useState } from 'react'
+import { TEXT_SECONDARY, BORDER, BORDER_SOFT, SURFACE_HOVER, DANGER, WARN, WARN_SURFACE } from './theme.js'
 import {
   Button,
   Pill,
@@ -20,7 +21,6 @@ import {
 import { CLIENT_RECIPES, endpointUrl, serverName, smokeCommand } from './client-configs.js'
 import type { TokenRow } from './controls.js'
 
-const MUTED = '#888'
 
 /** 该调用方实际使用的变量名；没填就退回默认名，好让配置至少形状正确。 */
 function tokenEnvName(caller: TokenRow): string {
@@ -75,7 +75,7 @@ export function ConnectBlock(props: {
     h('div', null,
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 } },
         h('span', { style: { fontSize: 13 } }, '端点'),
-        h('code', { style: { fontSize: 11, color: MUTED } }, props.transport ?? 'streamable-http'),
+        h('code', { style: { fontSize: 11, color: TEXT_SECONDARY } }, props.transport ?? 'streamable-http'),
       ),
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
         h('code', {
@@ -84,7 +84,7 @@ export function ConnectBlock(props: {
             minWidth: 0,
             fontSize: 12,
             fontFamily: CODE_FONT,
-            background: 'rgba(128,128,128,0.10)',
+            background: SURFACE_HOVER,
             borderRadius: 6,
             padding: '4px 8px',
             overflow: 'hidden',
@@ -100,7 +100,7 @@ export function ConnectBlock(props: {
     h('div', null,
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 } },
         h('span', { style: { fontSize: 13 } }, '调用方'),
-        h('span', { style: { fontSize: 11, color: MUTED } }, '每个调用方用自己那行配置和暗号'),
+        h('span', { style: { fontSize: 11, color: TEXT_SECONDARY } }, '每个调用方用自己那行配置和暗号'),
       ),
       h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
         ...callers.map((row, index) =>
@@ -114,7 +114,7 @@ export function ConnectBlock(props: {
         ),
       ),
       caller.tokenEnv === ''
-        ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#d33', marginTop: 4 } },
+        ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: DANGER, marginTop: 4 } },
             h(StateDot, { state: 'warning', size: 8 }),
             h('span', null, '这个调用方还没填 token 变量名，下面的配置里用了占位名。'),
           )
@@ -132,7 +132,7 @@ export function ConnectBlock(props: {
       ),
       h('div', {
         style: {
-          border: '1px solid rgba(128,128,128,0.22)',
+          border: `1px solid ${BORDER_SOFT}`,
           borderRadius: 8,
           overflow: 'hidden',
         },
@@ -143,11 +143,11 @@ export function ConnectBlock(props: {
             alignItems: 'center',
             gap: 8,
             padding: '5px 8px',
-            borderBottom: '1px solid rgba(128,128,128,0.18)',
-            background: 'rgba(128,128,128,0.06)',
+            borderBottom: `1px solid ${BORDER}`,
+            background: SURFACE_HOVER,
           },
         },
-          h('code', { style: { fontSize: 11, color: MUTED, flex: 1, minWidth: 0 } }, recipe.location),
+          h('code', { style: { fontSize: 11, color: TEXT_SECONDARY, flex: 1, minWidth: 0 } }, recipe.location),
           h(CopyButton, { text: body, label: '复制配置' }),
         ),
         h('pre', {
@@ -171,19 +171,19 @@ export function ConnectBlock(props: {
               marginTop: 6,
               padding: '6px 8px',
               borderRadius: 6,
-              background: 'rgba(210,150,0,0.10)',
-              border: '1px solid rgba(210,150,0,0.35)',
+              background: WARN_SURFACE,
+              border: `1px solid ${WARN}`,
             },
           },
             h('div', { style: { marginBottom: 2 } },
               `需要先设好环境变量 ${tokenEnvName(caller)}_AUTH，值是完整的：`),
             h('code', { style: { fontFamily: CODE_FONT } }, `Bearer <你的暗号>`),
-            h('div', { style: { color: MUTED, marginTop: 2 } },
+            h('div', { style: { color: TEXT_SECONDARY, marginTop: 2 } },
               '注意连 "Bearer " 前缀和它后面那个空格一起放进去——这是绕开 Windows 上参数空格不转义的方式。'),
           )
         : null,
       recipe.note
-        ? h('div', { style: { fontSize: 11, color: MUTED, marginTop: 4 } }, recipe.note)
+        ? h('div', { style: { fontSize: 11, color: TEXT_SECONDARY, marginTop: 4 } }, recipe.note)
         : null,
     ),
 
@@ -197,7 +197,7 @@ export function ConnectBlock(props: {
             minWidth: 0,
             fontSize: 11.5,
             fontFamily: CODE_FONT,
-            background: 'rgba(128,128,128,0.10)',
+            background: SURFACE_HOVER,
             borderRadius: 6,
             padding: '4px 8px',
             overflow: 'hidden',
@@ -207,7 +207,7 @@ export function ConnectBlock(props: {
         }, smokeCommand(url, tokenEnvName(caller))),
         h(CopyButton, { text: smokeCommand(url, tokenEnvName(caller)), label: '复制命令' }),
       ),
-      h('div', { style: { fontSize: 11, color: MUTED, marginTop: 4 } },
+      h('div', { style: { fontSize: 11, color: TEXT_SECONDARY, marginTop: 4 } },
         `在仓库根目录跑。暗号从 ${tokenEnvName(caller)} 环境变量读，命令历史里记的是变量名而不是暗号本身；` +
           '报错说明端点或暗号还没配好。'),
     ),

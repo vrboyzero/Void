@@ -11,6 +11,7 @@
  * @module @void/void-entry/client/controls
  */
 import { createElement as h, useState } from "react";
+import { TEXT_SECONDARY, BORDER_SOFT, DANGER, WARN, ROW_TITLE_CLASS } from "./theme.js";
 import { checkPatterns, pathPatternError } from "./patterns.js";
 import {
   Button,
@@ -23,7 +24,7 @@ import {
   Input,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 
-const MUTED = "#888";
+
 
 /**
  * 列表编辑器的三个动作。
@@ -66,18 +67,18 @@ export function Field(props: {
     h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4 } },
       h("span", { style: { fontSize: 13 } }, props.label),
       props.readOnly
-        ? h("span", { style: { fontSize: 11, color: MUTED, border: `1px solid ${MUTED}`, borderRadius: 4, padding: "0 4px" } }, "只读")
+        ? h("span", { style: { fontSize: 11, color: TEXT_SECONDARY, border: `1px solid ${TEXT_SECONDARY}`, borderRadius: 4, padding: "0 4px" } }, "只读")
         : null,
       props.overridden === true
-        ? h("span", { style: { fontSize: 11, color: MUTED } }, "已自定义")
+        ? h("span", { style: { fontSize: 11, color: TEXT_SECONDARY } }, "已自定义")
         : null,
       props.dirty === true
-        ? h("span", { style: { fontSize: 11, color: "#c80" } }, "未保存")
+        ? h("span", { style: { fontSize: 11, color: WARN } }, "未保存")
         : null,
     ),
     props.children,
     props.help
-      ? h("div", { style: { fontSize: 11, color: MUTED, marginTop: 4 } }, props.help)
+      ? h("div", { style: { fontSize: 11, color: TEXT_SECONDARY, marginTop: 4 } }, props.help)
       : null,
   );
 }
@@ -130,7 +131,7 @@ export function TextField(props: {
           value: props.value,
           readOnly: props.readOnly === true,
           rows: 3,
-          style: { width: "100%", boxSizing: "border-box", font: "inherit", fontSize: 12, padding: 6, borderRadius: 6, border: "1px solid rgba(128,128,128,0.3)", background: "transparent", color: "inherit", resize: "vertical" },
+          style: { width: "100%", boxSizing: "border-box", font: "inherit", fontSize: 12, padding: 6, borderRadius: 6, border: `1px solid ${BORDER_SOFT}`, background: "transparent", color: "inherit", resize: "vertical" },
           onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => props.onChange(e.target.value),
         })
       : h(Input, {
@@ -214,7 +215,7 @@ export function ListField(props: {
         ),
       ),
       items.length === 0
-        ? h("div", { style: { fontSize: 12, color: MUTED } }, "（空）")
+        ? h("div", { style: { fontSize: 12, color: TEXT_SECONDARY } }, "（空）")
         : null,
       props.readOnly === true
         ? null
@@ -273,9 +274,11 @@ export function OperationsField(props: {
       ...props.vocabulary.map((op) => {
         const checked = selected.has(op.value);
         const auto = !checked && implied.has(op.value);
+        // 不整行降透明度：用户得先读得清一项，才能决定要不要授权。授权状态由勾选框
+        // 与「自动」标记表达，两者合起来已经能区分「直接勾选 / 被前置项带上 / 未授权」。
         return h("label", {
           key: op.value,
-          style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "2px 0", opacity: granted.has(op.value) ? 1 : 0.55 },
+          style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "2px 0" },
         },
           h("input", {
             type: "checkbox",
@@ -284,14 +287,15 @@ export function OperationsField(props: {
             onChange: (e: React.ChangeEvent<HTMLInputElement>) => toggle(op.value, e.target.checked),
           }),
           h("span", null, op.label),
-          op.mostUsed === true ? h("span", { style: { fontSize: 10, color: MUTED } }, "最常用") : null,
-          auto ? h("span", { style: { fontSize: 10, color: MUTED } }, "自动") : null,
-          h("code", { style: { fontSize: 10, color: MUTED, marginLeft: "auto" } }, op.value),
+          op.mostUsed === true ? h("span", { style: { fontSize: 11, color: TEXT_SECONDARY } }, "最常用") : null,
+          auto ? h("span", { style: { fontSize: 11, color: TEXT_SECONDARY } }, "自动") : null,
+          // 操作名是用户判断权限的主要依据，用次级文字色（浅色下 5.8:1）而不是弱化色。
+          h("code", { style: { fontSize: 11, color: TEXT_SECONDARY, marginLeft: "auto" } }, op.value),
         );
       }),
     ),
     implied.size > 0
-      ? h("div", { style: { fontSize: 11, color: MUTED, marginTop: 6 } },
+      ? h("div", { style: { fontSize: 11, color: TEXT_SECONDARY, marginTop: 6 } },
           `灰色标注的 ${implied.size} 项没有直接勾选，但会被上面的选择自动带上：` +
             props.vocabulary.filter((op) => implied.has(op.value)).map((op) => op.label).join("、"),
         )
@@ -332,10 +336,10 @@ export function TokensField(props: {
       ...rows.map((row, index) =>
         h("div", {
           key: index,
-          style: { border: "1px solid rgba(128,128,128,0.22)", borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", gap: 6 },
+          style: { border: `1px solid ${BORDER_SOFT}`, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", gap: 6 },
         },
           h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
-            h("span", { style: { fontSize: 12, color: MUTED, width: 46 } }, "身份"),
+            h("span", { style: { fontSize: 12, color: TEXT_SECONDARY, width: 46 } }, "身份"),
             h(Input, {
               value: row.callerId,
               readOnly: props.readOnly === true,
@@ -343,7 +347,7 @@ export function TokensField(props: {
               style: { width: 120 },
               onChange: (e: React.ChangeEvent<HTMLInputElement>) => replace(index, { callerId: e.target.value }),
             }),
-            h("span", { style: { fontSize: 12, color: MUTED, width: 46 } }, "变量"),
+            h("span", { style: { fontSize: 12, color: TEXT_SECONDARY, width: 46 } }, "变量"),
             h(Input, {
               value: row.tokenEnv,
               readOnly: props.readOnly === true,
@@ -375,7 +379,7 @@ export function TokensField(props: {
         ),
       ),
       rows.length === 0
-        ? h("div", { style: { fontSize: 12, color: MUTED } }, "（还没有调用方）")
+        ? h("div", { style: { fontSize: 12, color: TEXT_SECONDARY } }, "（还没有调用方）")
         : null,
       props.readOnly === true
         ? null
@@ -402,12 +406,14 @@ export function Group(props: {
   return h(DisclosureRow, {
     icon: h(IconSettingsOutline16, { size: 16 }),
     title: props.title,
+    // 分组标题加粗，与插件卡片标题一致。
+    titleClassName: ROW_TITLE_CLASS,
     open: props.open,
     expandable: true,
     expandOnRowClick: true,
     onToggle: props.onToggle,
     collapsedContent: props.summary
-      ? h("span", { style: { fontSize: 12, color: MUTED, marginLeft: 8 } }, props.summary)
+      ? h("span", { style: { fontSize: 12, color: TEXT_SECONDARY, marginLeft: 8 } }, props.summary)
       : null,
   }, props.children);
 }
@@ -415,7 +421,7 @@ export function Group(props: {
 /** 分组或卡片级的提示行。 */
 export function Hint(props: { text: string; tone?: "muted" | "danger" }): React.ReactElement {
   return h("div", {
-    style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: props.tone === "danger" ? "#d33" : MUTED },
+    style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: props.tone === "danger" ? DANGER : TEXT_SECONDARY },
   },
     props.tone === "danger" ? h(StateDot, { state: "error", size: 8 }) : null,
     h("span", null, props.text),
@@ -496,7 +502,7 @@ export function RulesField(props: {
         const patternError = pathPatternError(rule.pathPattern);
         return h("div", {
           key: index,
-          style: { border: "1px solid rgba(128,128,128,0.22)", borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", gap: 4 },
+          style: { border: `1px solid ${BORDER_SOFT}`, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", gap: 4 },
         },
           h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
             h(Input, {
@@ -534,16 +540,16 @@ export function RulesField(props: {
             value: rule.pathPattern,
             readOnly: props.readOnly === true,
             placeholder: "匹配工作区相对路径的正则；留空表示任意路径都满足",
-            style: patternError === undefined ? undefined : { borderColor: "#d33" },
+            style: patternError === undefined ? undefined : { borderColor: DANGER },
             onChange: (e: React.ChangeEvent<HTMLInputElement>) => replace(index, { pathPattern: e.target.value }),
           }),
           patternError === undefined
             ? null
-            : h("div", { style: { fontSize: 11, color: "#d33" } }, `正则无法编译：${patternError}`),
+            : h("div", { style: { fontSize: 11, color: DANGER } }, `正则无法编译：${patternError}`),
         );
       }),
-      rules.length === 0 ? h("div", { style: { fontSize: 12, color: MUTED } }, "（没有文档要求）") : null,
-      blankId ? h("div", { style: { fontSize: 11, color: "#d33" } }, "每条要求都要有 id，补齐后才会保存。") : null,
+      rules.length === 0 ? h("div", { style: { fontSize: 12, color: TEXT_SECONDARY } }, "（没有文档要求）") : null,
+      blankId ? h("div", { style: { fontSize: 11, color: DANGER } }, "每条要求都要有 id，补齐后才会保存。") : null,
       props.readOnly === true
         ? null
         : h("div", null,
@@ -585,15 +591,15 @@ export function PatternListField(props: {
             value: check.source,
             readOnly: props.readOnly === true,
             placeholder: "正则",
-            style: check.error === undefined ? undefined : { borderColor: "#d33" },
+            style: check.error === undefined ? undefined : { borderColor: DANGER },
             onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
               edit(sources.map((v, i) => (i === index ? e.target.value : v))),
           }),
           check.error !== undefined
-            ? h("span", { style: { fontSize: 11, color: "#d33", whiteSpace: "nowrap" } }, "无法编译")
+            ? h("span", { style: { fontSize: 11, color: DANGER, whiteSpace: "nowrap" } }, "无法编译")
             : check.matched === undefined
               ? null
-              : h("span", { style: { fontSize: 11, whiteSpace: "nowrap", color: check.matched ? "#d33" : MUTED } },
+              : h("span", { style: { fontSize: 11, whiteSpace: "nowrap", color: check.matched ? DANGER : TEXT_SECONDARY } },
                   check.matched ? "命中 → 会拒绝" : "未命中"),
           props.readOnly === true
             ? null
@@ -605,7 +611,7 @@ export function PatternListField(props: {
               }, h(IconTrashOutline16, { size: 16 })),
         ),
       ),
-      sources.length === 0 ? h("div", { style: { fontSize: 12, color: MUTED } }, "（没有禁用正则）") : null,
+      sources.length === 0 ? h("div", { style: { fontSize: 12, color: TEXT_SECONDARY } }, "（没有禁用正则）") : null,
       props.readOnly === true
         ? null
         : h("div", null,
@@ -619,7 +625,7 @@ export function PatternListField(props: {
       sources.length === 0
         ? null
         : h("div", { style: { marginTop: 4 } },
-            h("div", { style: { fontSize: 11, color: MUTED, marginBottom: 3 } }, "试匹配（不会保存，只用来观察命中效果）"),
+            h("div", { style: { fontSize: 11, color: TEXT_SECONDARY, marginBottom: 3 } }, "试匹配（不会保存，只用来观察命中效果）"),
             h(Input, {
               value: sample,
               placeholder: "粘贴一段文本，看哪几条正则会命中…",
