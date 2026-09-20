@@ -227,6 +227,7 @@ dsh-agent-control:
 |---|---|---|
 | `dsh_control_info` | 仅需认证 | 协议版本、能力、限额、**当前调用约束** |
 | `dsh_dispatch_session_task` | `session.prompt` | 一次完成 Workspace 解析 + Session 创建/恢复/fork + 投递 |
+| `dsh_dispatch_plan` | `session.plan` | 进入 DSH 原生计划模式并派发任务；在 Web 原生评审卡批准或退回 |
 | `dsh_list_workspaces` | `workspace.read` | 列出已登记 Workspace |
 | `dsh_list_sessions` | `session.list` | 按 Workspace 或路径列出 Session |
 | `dsh_send_message` | `session.prompt` | 向已有（含冷）Session 发一条消息 |
@@ -244,6 +245,7 @@ dsh-agent-control:
 | 授予 | 同时获得 |
 |---|---|
 | `session.prompt` | `session.create` → `workspace.read` |
+| `session.plan` | `session.create` → `workspace.read`（不授予普通 prompt / steer） |
 | `session.inject` / `session.steer` | `session.create` → `workspace.read` |
 | `workspace.open` | `workspace.read` |
 | `task.cancel` | `task.read` → `session.observe` |
@@ -254,8 +256,39 @@ dsh-agent-control:
 `target.workspace.path`（按绝对路径寻址）时**还要求 `workspace.open`**——登记新项目
 比给已登记项目下单是更大的能力。用 `workspaceId` 下单不需要它。
 
+`dsh_dispatch_plan` 同样在按路径寻址时额外要求 `workspace.open`。它使用独立的
+`session.plan` 权限；已有 token 的显式操作列表需添加该项，仅有 `session.prompt` 不够。
+
 **路径引用规则**：文档引用里，**相对路径必须留在本工作区内**（含 `..` 段一律拒绝）；
 要引用另一个 `allowedRoots` 下的文件，必须写**绝对路径**。
+
+### 原生计划派发
+
+先调用 `dsh_control_info` 查看当前权限和策略，再调用：
+
+```json
+{
+  "requestId": "plan-demo-001",
+  "target": { "workspace": { "workspaceId": "workspace-xxx" }, "session": "new" },
+  "task": "制定一个两步计划：批准后只回复 PLAN_OK，不修改任何文件。用 exit_plan_mode 提交计划供 Web 评审。",
+  "wait": { "until": "running", "timeoutMs": 10000 }
+}
+```
+
+工具名为 `dsh_dispatch_plan`。目标会话也可用 `{ "sessionId": "..." }` 或
+`{ "forkFrom": "...", "atSeq": 12 }`。可选 `documentRefs`、`metadata` 沿用普通派发的
+文档引用和调用方策略检查；metadata 仅供审计，Agent 要读的内容写入 `task` 或文档引用。
+空任务和单独的 `off` 会被拒绝（后者是原生退出命令）。
+
+实现通过宿主 `commands.execute(agent, "/plan <task>", [], signal)` 进入原生计划模式。
+Agent 提交 `exit_plan_mode` 后，在 DSH Web 打开返回的 `sessionId`，通过原生卡片批准或
+给出反馈。批准会退出计划模式并继续执行；本工具不代替用户审批。
+
+返回格式、任务查询、取消和会话锁与普通派发一致。`requestId` 与其他派发工具共用
+调用方幂等空间，应为每个新任务生成唯一值。`wait.until` 不含“等待评审”状态，
+`running` 也不代表计划已生成；计划正文与审批进度以 Web 卡片为准。
+宿主缺少 commands 服务或目标 preset 没有 `/plan` 时返回
+`dsh-control/capability-unavailable`，原生命令失败返回脱敏的 `dsh-control/host-unavailable`。
 
 ### 3.2 可选回调 webhook
 
@@ -321,6 +354,7 @@ dsh-control/policy-document-missing      dsh-control/session-workspace-mismatch
 dsh-control/policy-document-invalid      dsh-control/session-locked
 dsh-control/policy-forbidden-content     dsh-control/task-not-found
 dsh-control/limit-exceeded               dsh-control/host-unavailable
+dsh-control/capability-unavailable
 dsh-control/internal
 ```
 

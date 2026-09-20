@@ -134,6 +134,8 @@ describe("panel: operation vocabulary", () => {
     // from the runtime.
     const byValue = new Map(manifest().operations!.map((op) => [op.value, op]));
     expect(byValue.get("session.prompt")!.implies.sort()).toEqual(["session.create", "workspace.read"]);
+    expect(byValue.get("session.plan")!.implies.sort()).toEqual(["session.create", "workspace.read"]);
+    expect(byValue.get("session.plan")!.label).toContain("Web 评审");
     expect(byValue.get("task.cancel")!.implies.sort()).toEqual(["session.observe", "task.read"]);
     expect(byValue.get("workspace.read")!.implies).toEqual([]);
     // Every operation implied by one entry must itself be a catalogued entry,

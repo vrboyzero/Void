@@ -26,6 +26,8 @@ import {
   cancelTaskInputShape,
   dispatchInputSchema,
   dispatchInputShape,
+  dispatchPlanInputSchema,
+  dispatchPlanInputShape,
   documentRefSchema,
   getTaskInputSchema,
   getTaskInputShape,
@@ -150,7 +152,8 @@ function infoPayload(deps: ControlToolDeps, identity: CallerIdentity): Record<st
     callerPolicy: describePolicy(policy),
     notes: [
       "callerPolicy is live: re-read this tool after the user changes settings.",
-      "metadata is audit-only; anything the DSH agent must see belongs in messages[].text.",
+      "metadata is audit-only; anything the DSH agent must see belongs in messages[].text or the planning task.",
+      "dsh_dispatch_plan requires session.plan and enters native plan mode; approve or return the plan in the DSH Web review card. wait.until is not a plan-review status.",
       "wait.until controls only this MCP response, never the agent's running policy.",
       "inject does not wake an idle agent; the task reports prompt_queued and stops.",
       "A relative documentRef must stay inside the workspace; address another allowed root with an absolute path.",
@@ -283,6 +286,37 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
           workspace: input.target.workspace,
           session: toSessionCommand(input.target.session),
           messages: prepared.messages,
+          wait: input.wait ?? { until: "accepted", timeoutMs: 0 },
+          ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+        });
+        return ok(result);
+      })(),
+  );
+
+  server.registerTool(
+    "dsh_dispatch_plan",
+    {
+      title: "Dispatch a native plan",
+      description:
+        "Resolve a workspace and create/resume/fork a session, then enter native DSH plan mode with the task. Requires session.plan; path addressing also requires workspace.open. The agent submits its plan to the native Web review card for approval or feedback. This tool does not approve plans. requestId shares the caller's idempotency namespace with other dispatch tools.",
+      inputSchema: dispatchPlanInputShape,
+    },
+    async (args) =>
+      guarded(async () => {
+        authorize("dsh_dispatch_plan");
+        const input = dispatchPlanInputSchema.parse(args);
+        assertConditionalOperations(identity, "dsh_dispatch_plan", input.target.workspace.path !== undefined);
+        const prepared = await prepareDispatch(deps, {
+          requestId: input.requestId,
+          target: input.target,
+          messages: [{ text: input.task, mode: "steer", documentRefs: input.documentRefs }],
+          ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+        });
+        const result = await deps.orchestrator.dispatchPlan(identity, {
+          requestId: input.requestId,
+          workspace: input.target.workspace,
+          session: toSessionCommand(input.target.session),
+          task: prepared.messages[0]!.text,
           wait: input.wait ?? { until: "accepted", timeoutMs: 0 },
           ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
         });

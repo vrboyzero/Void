@@ -76,6 +76,8 @@ export interface HostPorts {
   inspectSession(sessionId: string): Promise<{ exists: boolean; cwd?: string }>;
   /** Admit one prompt through the Session prompt entry point. */
   promptSession(request: HostPromptRequest): Promise<void>;
+  /** Enter native plan mode and steer the task; review remains in the Web UI. */
+  planSession?(request: { sessionId: string; task: string }): Promise<void>;
   /** Inject model-facing context without waking an idle agent. */
   injectContext(request: { sessionId: string; text: string; requestId: string }): Promise<void>;
   /** Cancel the active turn of one Session. */
@@ -96,6 +98,11 @@ export interface DispatchCommand {
   readonly messages: readonly PreparedMessage[];
   readonly wait: { until: DispatchWaitTarget; timeoutMs: number };
   readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+/** Native planning uses the same admission chain as ordinary message dispatch. */
+export interface PlanCommand extends Omit<DispatchCommand, "messages"> {
+  readonly task: string;
 }
 
 /** Input of {@link ControlOrchestrator.sendMessage}. */
@@ -238,7 +245,12 @@ export class ControlOrchestrator {
     return await this.track(this.runDispatch(identity, command));
   }
 
-  private async runDispatch(identity: CallerIdentity, command: DispatchCommand): Promise<DispatchResult> {
+  /** Enter native plan mode; plan review and approval remain owned by DSH Web. */
+  async dispatchPlan(identity: CallerIdentity, command: PlanCommand): Promise<DispatchResult> {
+    return await this.track(this.runDispatch(identity, command));
+  }
+
+  private async runDispatch(identity: CallerIdentity, command: DispatchCommand | PlanCommand): Promise<DispatchResult> {
     this.assertAccepting();
 
     const key = idempotencyKey(identity.callerId, command.requestId);
@@ -255,7 +267,10 @@ export class ControlOrchestrator {
       }
 
       this.assertCallerCapacity(identity.callerId);
-      this.checkTexts(command.messages.map((message) => message.text));
+      this.checkTexts("task" in command ? [command.task] : command.messages.map((message) => message.text));
+      if ("task" in command && this.hosts.planSession === undefined) {
+        throw new ControlError("dsh-control/capability-unavailable", "native planning is unavailable on this host");
+      }
 
       const workspace = await this.resolveWorkspace(command.workspace);
       const task = await this.createTask(identity, command, workspace.workspaceId);
@@ -267,11 +282,16 @@ export class ControlOrchestrator {
         // Ownership is claimed before anything is delivered: a second task that
         // finds this session locked must fail here rather than steal the event
         // stream from the task that actually drives it (plan §7.3).
-        if (startsTurn(command.messages)) this.claimSession(sessionId, task.taskId);
+        if ("task" in command || startsTurn(command.messages)) this.claimSession(sessionId, task.taskId);
         await this.bindSession(task.taskId, sessionId);
 
-        await this.deliver(command.messages, sessionId, command.requestId);
-        await this.record(task.taskId, "prompt_queued", "prompt_queued", `${command.messages.length} message(s) delivered`);
+        if ("task" in command) {
+          await this.hosts.planSession!({ sessionId, task: command.task });
+          await this.record(task.taskId, "prompt_queued", "prompt_queued", "native /plan task delivered; review in DSH Web");
+        } else {
+          await this.deliver(command.messages, sessionId, command.requestId);
+          await this.record(task.taskId, "prompt_queued", "prompt_queued", `${command.messages.length} message(s) delivered`);
+        }
 
         const settled = await this.awaitStatus(task.taskId, command.wait.until, command.wait.timeoutMs);
         return this.toDispatchResult(settled);
@@ -756,7 +776,7 @@ export class ControlOrchestrator {
 
   private async resolveSession(
     taskId: string,
-    command: DispatchCommand,
+    command: Pick<DispatchCommand, "session">,
     workspace: HostWorkspace,
   ): Promise<string> {
     const target = command.session;
@@ -1126,6 +1146,7 @@ export function toEventView(event: TaskEventRecord): TaskEventView {
  */
 export const TOOL_OPERATIONS: Readonly<Record<string, ControlOperation>> = Object.freeze({
   dsh_dispatch_session_task: "session.prompt",
+  dsh_dispatch_plan: "session.plan",
   dsh_send_message: "session.prompt",
   dsh_inject_context: "session.inject",
   dsh_list_workspaces: "workspace.read",
@@ -1147,6 +1168,12 @@ export const TOOL_OPERATIONS: Readonly<Record<string, ControlOperation>> = Objec
 export const TOOL_CONDITIONAL_OPERATIONS: Readonly<
   Record<string, readonly { readonly when: string; readonly operation: ControlOperation }[]>
 > = Object.freeze({
+  dsh_dispatch_plan: Object.freeze([
+    {
+      when: "target.workspace.path is used (path-based workspace addressing registers a workspace)",
+      operation: "workspace.open" as ControlOperation,
+    },
+  ]),
   dsh_dispatch_session_task: Object.freeze([
     {
       when: "target.workspace.path is used (path-based workspace addressing registers a workspace)",

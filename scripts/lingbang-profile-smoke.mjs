@@ -89,13 +89,14 @@ check("initialize 成功", true);
 
 const tools = await client.listTools();
 const names = tools.tools.map((tool) => tool.name).sort();
-check("9 个工具", names.length === 9, names.join(","));
+check("10 个工具", names.length === 10, names.join(","));
 check(
   "工具名匹配",
   names.join(",") ===
     [
       "dsh_cancel_task",
       "dsh_control_info",
+      "dsh_dispatch_plan",
       "dsh_dispatch_session_task",
       "dsh_get_task",
       "dsh_inject_context",

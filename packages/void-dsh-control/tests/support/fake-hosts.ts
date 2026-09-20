@@ -11,7 +11,7 @@ import type { HostPorts, HostSession, HostWorkspace } from "../../src/orchestrat
 
 /** One delivery the orchestrator asked the host to perform. */
 export interface RecordedDelivery {
-  readonly kind: "prompt" | "inject" | "cancel";
+  readonly kind: "prompt" | "plan" | "inject" | "cancel";
   readonly sessionId: string;
   readonly requestId: string;
   readonly mode?: string;
@@ -133,6 +133,10 @@ export class FakeHosts implements HostPorts {
 
   async injectContext(request: { sessionId: string; text: string; requestId: string }): Promise<void> {
     this.deliveries.push({ kind: "inject", sessionId: request.sessionId, requestId: request.requestId, text: request.text });
+  }
+
+  async planSession(request: { sessionId: string; task: string }): Promise<void> {
+    this.deliveries.push({ kind: "plan", sessionId: request.sessionId, requestId: "", text: request.task });
   }
 
   async cancelSession(sessionId: string): Promise<void> {

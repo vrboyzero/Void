@@ -31,6 +31,7 @@ const OPERATION_LABELS: Record<ControlOperation, string> = {
   "session.list": "列出对话",
   "session.create": "开新对话",
   "session.prompt": "给对话发消息",
+  "session.plan": "派发原生计划（Web 评审）",
   "session.inject": "塞背景资料",
   "session.steer": "干活时插话改方向",
   "session.observe": "看进度与状态",

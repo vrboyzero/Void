@@ -38,6 +38,58 @@ class SlowAppendLedger extends MemoryControlLedger {
 
 const NEW_SESSION = { kind: "new" } as const;
 
+describe("orchestrator: native planning", () => {
+  it.each(["new", "existing", "fork"] as const)("supports %s sessions and concurrent idempotent retries", async (kind) => {
+    const { hosts, orchestrator } = build();
+    const workspace = hosts.seedWorkspace("E:/work/app", ["session-source"]);
+    hosts.seedSession("session-source", workspace.path);
+    const command = {
+      requestId: "plan-once", workspace: { workspaceId: workspace.workspaceId },
+      session: kind === "new" ? NEW_SESSION : { kind, sessionId: "session-source" },
+      task: "生成计划", wait: { until: "accepted", timeoutMs: 0 } as const,
+    };
+    const [first, second] = await Promise.all([
+      orchestrator.dispatchPlan(identity("codex"), command),
+      orchestrator.dispatchPlan(identity("codex"), command),
+    ]);
+    expect(second.taskId).toBe(first.taskId);
+    expect(hosts.deliveries).toEqual([{ kind: "plan", sessionId: first.sessionId, requestId: "", text: command.task }]);
+    expect(kind === "existing" ? first.sessionId === "session-source" : first.sessionId !== "session-source").toBe(true);
+    await orchestrator.applySignal(first.sessionId!, { status: "running", summary: "turn started" });
+    await orchestrator.applySignal(first.sessionId!, { status: "idle", summary: "turn ended" });
+    expect(orchestrator.getTask(identity("codex"), { taskId: first.taskId, limit: 50 }).task.status).toBe("completed");
+  });
+
+  it("holds the shared session lock through planning and releases it on cancellation", async () => {
+    const { hosts, orchestrator } = build();
+    const workspace = hosts.seedWorkspace("E:/work/app", ["s1"]);
+    hosts.seedSession("s1", workspace.path);
+    const plan = { requestId: "p1", workspace: { workspaceId: workspace.workspaceId }, session: { kind: "existing", sessionId: "s1" } as const, task: "生成计划", wait: { until: "accepted", timeoutMs: 0 } as const };
+    const result = await orchestrator.dispatchPlan(identity("codex"), plan);
+    await expect(orchestrator.dispatchPlan(identity("codex"), { ...plan, requestId: "p2" }))
+      .rejects.toMatchObject({ code: "dsh-control/session-locked" });
+    await expect(orchestrator.sendMessage(identity("codex"), { requestId: "message-1", sessionId: "s1", message: { mode: "queue", text: "普通任务" } }))
+      .rejects.toMatchObject({ code: "dsh-control/session-locked" });
+    expect(hosts.deliveries).toHaveLength(1);
+    await orchestrator.cancelTask(identity("codex"), { taskId: result.taskId });
+    await expect(orchestrator.dispatchPlan(identity("codex"), { ...plan, requestId: "p3" })).resolves.toMatchObject({ status: "prompt_queued" });
+  });
+
+  it("records a missing native capability as a failure and frees the session", async () => {
+    const { hosts, orchestrator } = build();
+    const workspace = hosts.seedWorkspace("E:/work/app", ["s1"]);
+    hosts.seedSession("s1", workspace.path);
+    hosts.planSession = async () => { throw new ControlError("dsh-control/capability-unavailable", "no /plan command"); };
+    const command = { requestId: "missing-plan", workspace: { workspaceId: workspace.workspaceId }, session: { kind: "existing", sessionId: "s1" } as const, task: "生成计划", wait: { until: "accepted", timeoutMs: 0 } as const };
+    await expect(orchestrator.dispatchPlan(identity("codex"), command)).rejects.toMatchObject({ code: "dsh-control/capability-unavailable" });
+    const replay = await orchestrator.dispatchPlan(identity("codex"), command);
+    expect(replay.status).toBe("failed");
+    expect(orchestrator.getTask(identity("codex"), { taskId: replay.taskId, limit: 50 }).events.some((event) => event.kind === "prompt_queued")).toBe(false);
+    await expect(orchestrator.sendMessage(identity("codex"), { requestId: "ordinary", sessionId: "s1", message: { mode: "queue", text: "普通任务" } }))
+      .resolves.toMatchObject({ status: "prompt_queued" });
+  });
+});
+
 describe("orchestrator: scenario A — open a project path and create a session", () => {
   it("registers the workspace, creates a session, delivers the message and returns a cursor", async () => {
     const { hosts, orchestrator } = build();

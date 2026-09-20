@@ -7,6 +7,7 @@ import {
   boundAssistantText,
   cancelTaskInputShape,
   dispatchInputSchema,
+  dispatchPlanInputSchema,
   expandOperations,
   formatCursor,
   parseCursor,
@@ -26,6 +27,13 @@ import {
 import { z } from "zod";
 
 describe("protocol: targets", () => {
+  it("rejects empty, oversized and reserved planning tasks", () => {
+    const base = { requestId: "p1", target: { workspace: { workspaceId: "w1" }, session: "new" } };
+    for (const task of ["", " \n ", " off\n", "x".repeat(LIMITS.maxMessageChars + 1)]) {
+      expect(dispatchPlanInputSchema.safeParse({ ...base, task }).success).toBe(false);
+    }
+    expect(dispatchPlanInputSchema.parse({ ...base, task: "做计划\n第二行" }).task).toBe("做计划\n第二行");
+  });
   it("accepts exactly one workspace addressing mode", () => {
     expect(workspaceTargetSchema.parse({ workspaceId: "w1" })).toEqual({ workspaceId: "w1" });
     expect(workspaceTargetSchema.parse({ path: "E:/work/app" })).toEqual({ path: "E:/work/app" });
@@ -120,6 +128,10 @@ describe("protocol: cursors", () => {
 });
 
 describe("protocol: operations", () => {
+  it("keeps plan dispatch independent of prompt and steer grants", () => {
+    expect([...expandOperations(["session.plan"])].sort()).toEqual(["session.create", "session.plan", "workspace.read"]);
+    expect(expandOperations(["session.prompt", "session.steer"]).has("session.plan")).toBe(false);
+  });
   it("expands grants downward", () => {
     const granted = expandOperations(["session.prompt"]);
     expect(granted.has("session.prompt")).toBe(true);

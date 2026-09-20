@@ -1,5 +1,65 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHostPorts } from "../src/hosts.js";
+
+describe("host port adapter: native planning", () => {
+  it.each(["", "  \n", "off", " off\n"])("rejects reserved or empty task %j before any command", async (task) => {
+    const get = vi.fn();
+    await expect(createHostPorts({ get } as never).planSession!({ sessionId: "s1", task }))
+      .rejects.toMatchObject({ code: "dsh-control/invalid-request" });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { execution: undefined, code: "dsh-control/capability-unavailable" },
+    { execution: { result: { kind: "error", text: "private host details" } }, code: "dsh-control/host-unavailable" },
+  ])("normalizes native command rejection as $code", async ({ execution, code }) => {
+    const ctx = {
+      sessionController: { resolveAgent: async () => ({ agent: {} }) },
+      get: () => ({ execute: async () => execution }),
+    } as never;
+    await expect(createHostPorts(ctx).planSession!({ sessionId: "s1", task: "计划测试" }))
+      .rejects.toMatchObject({ code, message: expect.not.stringContaining("private host details") });
+  });
+
+  it("reports an unavailable command service without resolving an agent", async () => {
+    await expect(createHostPorts({ get: () => undefined } as never).planSession!({ sessionId: "s1", task: "计划测试" }))
+      .rejects.toMatchObject({ code: "dsh-control/capability-unavailable" });
+  });
+
+  it("reports an unresolved session without issuing a command", async () => {
+    const execute = vi.fn();
+    const ctx = {
+      sessionController: { resolveAgent: async () => ({ error: "not found" }) },
+      get: () => ({ execute }),
+    } as never;
+    await expect(createHostPorts(ctx).planSession!({ sessionId: "s1", task: "计划测试" }))
+      .rejects.toMatchObject({ code: "dsh-control/session-not-found" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("does not expose a thrown host error", async () => {
+    const ctx = {
+      sessionController: { resolveAgent: async () => ({ agent: {} }) },
+      get: () => ({ execute: async () => { throw new Error("private host details"); } }),
+    } as never;
+    await expect(createHostPorts(ctx).planSession!({ sessionId: "s1", task: "计划测试" }))
+      .rejects.toMatchObject({ code: "dsh-control/host-unavailable", message: "host rejected the planSession request" });
+  });
+
+  it("executes the native plan command with the resolved agent", async () => {
+    const agent = { id: "agent-plan" };
+    const execute = vi.fn().mockResolvedValue({ commandId: "command-1", result: { kind: "success" } });
+    const resolveAgent = vi.fn().mockResolvedValue({ agent });
+    const prompt = vi.fn();
+    const ctx = { sessionController: { resolveAgent, prompt }, get: () => ({ execute }) } as never;
+
+    await createHostPorts(ctx).planSession!({ sessionId: "session-1", task: "生成两步计划\n等待 Web 批准" });
+
+    expect(resolveAgent).toHaveBeenCalledWith("session-1");
+    expect(execute).toHaveBeenCalledWith(agent, "/plan 生成两步计划\n等待 Web 批准", [], expect.any(AbortSignal));
+    expect(prompt).not.toHaveBeenCalled();
+  });
+});
 
 /**
  * 记录每次 `sessionController.create()` 收到的参数，并按 rc.2 宿主的真实契约校验。

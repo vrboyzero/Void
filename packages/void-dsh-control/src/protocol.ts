@@ -61,6 +61,7 @@ export const CONTROL_ERROR_CODES = [
   "dsh-control/task-not-found",
   "dsh-control/limit-exceeded",
   "dsh-control/host-unavailable",
+  "dsh-control/capability-unavailable",
   "dsh-control/internal",
 ] as const;
 
@@ -147,6 +148,7 @@ export const CONTROL_OPERATIONS = [
   "session.list",
   "session.create",
   "session.prompt",
+  "session.plan",
   "session.inject",
   "session.steer",
   "session.observe",
@@ -164,6 +166,7 @@ const OPERATION_IMPLICATIONS: Readonly<Record<ControlOperation, readonly Control
   "session.list": [],
   "session.create": ["workspace.read"],
   "session.prompt": ["session.create"],
+  "session.plan": ["session.create"],
   "session.inject": ["session.create"],
   "session.steer": ["session.create"],
   "session.observe": [],
@@ -282,6 +285,21 @@ export const dispatchInputShape = {
 
 /** Zod object for {@link dispatchInputShape}. */
 export const dispatchInputSchema = z.object(dispatchInputShape);
+
+/** Native planning shares dispatch targeting and policy, but fixes delivery to /plan. */
+export const dispatchPlanInputShape = {
+  requestId: dispatchInputShape.requestId,
+  target: dispatchInputShape.target,
+  task: z.string().trim().min(1).max(LIMITS.maxMessageChars)
+    .refine((text) => text !== "off", "off is reserved by the native /plan command")
+    .describe("Task to plan. The agent submits its plan for approval in the native Web review card."),
+  documentRefs: messageShape.documentRefs,
+  wait: dispatchInputShape.wait,
+  metadata: dispatchInputShape.metadata,
+};
+
+/** Validated native plan dispatch input. */
+export const dispatchPlanInputSchema = z.object(dispatchPlanInputShape);
 
 /** Input shape of `dsh_send_message`. */
 export const sendMessageInputShape = {

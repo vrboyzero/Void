@@ -13,6 +13,7 @@ import { ApiSessionNotFound } from "@deepseek-ai/dsh-api-session-controller";
 // Type-only side-effect imports: they load the `declare module` augmentations
 // that put `sessionController` / `workspaceController` on `Context`.
 import type {} from "@deepseek-ai/dsh-api-workspace-controller";
+import type {} from "@deepseek-ai/dsh-commands";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { WorkspaceId } from "@deepseek-ai/dsh-workspace";
 import { boundContextSummary, createUserMessage } from "@deepseek-ai/dsh-llm";
@@ -191,6 +192,33 @@ export function createHostPorts(ctx: Context): HostPorts {
         );
       } catch (error) {
         throw toControlError(error, "promptSession");
+      }
+    },
+
+    async planSession(request): Promise<void> {
+      try {
+        // 空消息不会唤醒 Agent，而 off 是原生命令的退出分支。
+        if (request.task.trim() === "" || request.task.trim() === "off") {
+          throw new ControlError("dsh-control/invalid-request", "planning requires a non-empty task other than off");
+        }
+        const commands = ctx.get("commands");
+        if (commands === undefined) {
+          throw new ControlError("dsh-control/capability-unavailable", "native plan commands are unavailable");
+        }
+        const resolved = await ctx.sessionController.resolveAgent(SessionId(request.sessionId));
+        if ("error" in resolved) {
+          throw new ControlError("dsh-control/session-not-found", "session agent could not be resolved");
+        }
+        // 走 Web 同一命令通道，由 preset 自己应用计划模式和 turn boundary。
+        const execution = await commands.execute(resolved.agent, `/plan ${request.task}`, [], neverAbort());
+        if (execution === undefined) {
+          throw new ControlError("dsh-control/capability-unavailable", "the session preset does not provide the /plan command");
+        }
+        if (execution.result.kind !== "success") {
+          throw new ControlError("dsh-control/host-unavailable", "host rejected the native plan command");
+        }
+      } catch (error) {
+        throw toControlError(error, "planSession");
       }
     },
 

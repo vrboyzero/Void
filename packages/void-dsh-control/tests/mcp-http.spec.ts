@@ -19,6 +19,7 @@ const ENDPOINT = "/mcp/dsh-agent-control";
 const TOKEN_FULL = "token-full-access";
 const TOKEN_READONLY = "token-read-only";
 const TOKEN_PROMPT_ONLY = "token-prompt-only";
+const TOKEN_PLAN_ONLY = "token-plan-only";
 
 interface Harness {
   readonly url: string;
@@ -49,6 +50,7 @@ async function start(options: { policy?: CallerPolicy; guard?: PathGuard; tokens
     "session.list",
     "session.create",
     "session.prompt",
+    "session.plan",
     "session.inject",
     "session.steer",
     "session.observe",
@@ -65,6 +67,7 @@ async function start(options: { policy?: CallerPolicy; guard?: PathGuard; tokens
             // `session.prompt` expands to session.create → workspace.read, but deliberately
             // not to workspace.open, which is what §26.1-1 is about.
             { callerId: "promptonly", token: TOKEN_PROMPT_ONLY, operations: ["session.prompt", "task.read"] },
+            { callerId: "planonly", token: TOKEN_PLAN_ONLY, operations: ["session.plan", "task.read"] },
           ],
     allowAnonymous: false,
   });
@@ -130,6 +133,92 @@ function errorPayload(result: unknown): { code: string; message: string; details
   if (body.error === undefined) throw new Error(`expected an error payload, got ${JSON.stringify(body)}`);
   return body.error;
 }
+
+describe("mcp-http: native plan dispatch", () => {
+  it("requires a separate plan grant before touching the workspace", async () => {
+    const harness = await start();
+    const client = await connect(harness.url, TOKEN_PROMPT_ONLY);
+    try {
+      const result = await client.callTool({ name: "dsh_dispatch_plan", arguments: {
+        requestId: "denied-plan", target: { workspace: { path: "E:/work/app" }, session: "new" }, task: "计划测试",
+      } });
+      expect(errorPayload(result)).toMatchObject({ code: "dsh-control/forbidden-operation", details: { operation: "session.plan" } });
+      expect(harness.hosts.registeredPaths).toEqual([]);
+      expect(harness.hosts.sessions.size).toBe(0);
+    } finally { await client.close(); }
+  });
+
+  it("allows plan-only callers in registered workspaces but requires workspace.open for paths", async () => {
+    const harness = await start();
+    const workspace = harness.hosts.seedWorkspace("E:/work/app");
+    const client = await connect(harness.url, TOKEN_PLAN_ONLY);
+    try {
+      const denied = await client.callTool({ name: "dsh_dispatch_plan", arguments: {
+        requestId: "plan-path", target: { workspace: { path: "E:/work/app" }, session: "new" }, task: "计划测试",
+      } });
+      expect(errorPayload(denied)).toMatchObject({ code: "dsh-control/forbidden-operation", details: { operation: "workspace.open" } });
+      const allowed = payload(await client.callTool({ name: "dsh_dispatch_plan", arguments: {
+        requestId: "plan-id", target: { workspace: { workspaceId: workspace.workspaceId }, session: "new" }, task: "计划测试",
+      } }));
+      expect(allowed.status).toBe("prompt_queued");
+      expect(harness.hosts.registeredPaths).toEqual([]);
+    } finally { await client.close(); }
+  });
+
+  it.each([
+    { policy: { requiredFields: ["objective"] }, code: "dsh-control/policy-required-field" },
+    { policy: { forbiddenPatterns: ["blocked"] }, code: "dsh-control/policy-forbidden-content" },
+    { policy: { requiredDocumentRules: [{ id: "spec", description: "规格", required: true, pathPattern: "^docs/" }] }, code: "dsh-control/policy-document-missing" },
+  ])("enforces planning caller policy: $code", async ({ policy, code }) => {
+    const harness = await start({ policy: { ...EMPTY_CALLER_POLICY, ...policy } });
+    const workspace = harness.hosts.seedWorkspace("E:/work/app");
+    const client = await connect(harness.url, TOKEN_FULL);
+    try {
+      const result = await client.callTool({ name: "dsh_dispatch_plan", arguments: {
+        requestId: "plan-policy", target: { workspace: { workspaceId: workspace.workspaceId }, session: "new" }, task: "blocked",
+      } });
+      expect(errorPayload(result).code).toBe(code);
+      expect(harness.hosts.sessions.size).toBe(0);
+      expect(harness.hosts.deliveries).toEqual([]);
+    } finally { await client.close(); }
+  });
+
+  it("enforces allowedRoots before opening a planning workspace", async () => {
+    const harness = await start();
+    const client = await connect(harness.url, TOKEN_FULL);
+    try {
+      const result = await client.callTool({ name: "dsh_dispatch_plan", arguments: {
+        requestId: "plan-root", target: { workspace: { path: process.cwd() }, session: "new" }, task: "计划测试",
+      } });
+      expect(errorPayload(result).code).toBe("dsh-control/workspace-not-allowed");
+      expect(harness.hosts.registeredPaths).toEqual([]);
+    } finally { await client.close(); }
+  });
+
+  it("dispatches a native plan once and exposes its task through the existing ledger", async () => {
+    const harness = await start();
+    const workspace = harness.hosts.seedWorkspace("E:/work/app");
+    const client = await connect(harness.url, TOKEN_FULL);
+    try {
+      const args = {
+        requestId: "plan-once",
+        target: { workspace: { workspaceId: workspace.workspaceId }, session: "new" },
+        task: "生成两步计划，等待 Web 原生评审卡批准",
+      };
+      const first = payload(await client.callTool({ name: "dsh_dispatch_plan", arguments: args }));
+      expect(first.status).toBe("prompt_queued");
+      const replay = payload(await client.callTool({ name: "dsh_dispatch_plan", arguments: args }));
+      expect(replay.taskId).toBe(first.taskId);
+      expect(harness.hosts.deliveries).toEqual([
+        { kind: "plan", sessionId: first.sessionId, requestId: "", text: args.task },
+      ]);
+      const snapshot = payload(await client.callTool({ name: "dsh_get_task", arguments: { taskId: first.taskId } }));
+      expect(snapshot.task).toMatchObject({ taskId: first.taskId, status: "prompt_queued" });
+    } finally {
+      await client.close();
+    }
+  });
+});
 
 describe("mcp-http: transport and authentication", () => {
   it("rejects a request without a token", async () => {
@@ -210,6 +299,7 @@ describe("mcp-http: tool catalogue", () => {
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       "dsh_cancel_task",
       "dsh_control_info",
+      "dsh_dispatch_plan",
       "dsh_dispatch_session_task",
       "dsh_get_task",
       "dsh_inject_context",

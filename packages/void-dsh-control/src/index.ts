@@ -141,7 +141,7 @@ transport: z.const("streamable-http").default("streamable-http").description("�
   allowedRoots: z.array(z.string()).default([]).description("允许按路径寻址的根目录。留空则完全禁用路径寻址。"),
   allowedOperations: z
     .array(z.string())
-    .default(["workspace.read", "workspace.open", "session.list", "session.create", "session.prompt", "session.observe"])
+    .default(["workspace.read", "workspace.open", "session.list", "session.create", "session.prompt", "session.plan", "session.observe"])
     .description("token 未显式声明 operations 时使用的默认授权集合。"),
   ledger: z.union([z.const("storage"), z.const("memory")]).default("storage").description("账本后端。memory 重启即丢，不用于生产。"),
   callerInstructions: z.string().default("").description("dsh_control_info 返回给外部 Agent 的调用约束正文。"),
