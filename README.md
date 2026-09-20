@@ -92,10 +92,27 @@ dsh plugin --profile <profile> remove "@void/void-dsh-control"
 
 本节写给**要改这些插件的人**。完整规则见 [`AGENTS.md`](AGENTS.md)；这里讲清楚「为什么」。
 
-### 版本前提
+### 版本前提：`dsh --version` 不够用
 
-我们部署时面对的是**全局 CLI** `@deepseek-ai/dsh@0.1.5-rc.1`，其运行时对应 `0.1.5-rc.2`
-的插件契约。仓库 `devDependencies` 里钉的 `0.1.0-rc.6` 只用于构建与测试，**两者不是一回事**。
+先澄清一个容易踩的点——**`dsh --version` 报的不是插件契约版本**：
+
+```powershell
+$d = "$env:APPDATA\npm\node_modules\@deepseek-ai\dsh"
+dsh --version                                                                   # 0.1.5-rc.1 ← 只是 CLI 外壳
+(Get-Content "$d\node_modules\@deepseek-ai\dsh-web-frontend\package.json" -Raw | ConvertFrom-Json).version  # 0.1.5-rc.2 ← 客户端契约
+(Get-Content "$d\node_modules\@deepseek-ai\dsh-settings\package.json"     -Raw | ConvertFrom-Json).version  # 0.1.5-rc.2 ← 宿主契约
+(Get-Content "$d\node_modules\@deepseek-ai\cordis\package.json"           -Raw | ConvertFrom-Json).version  # 4.0.2
+```
+
+外壳的 dependencies 全是脱字号范围 `^0.1.5-rc.1`，pnpm 解析后装进来的运行时包**全部是 rc.2**。
+**契约由运行时包定，不由外壳定**——所以写插件时以第二、三行的输出为准。
+
+另外两个包**磁盘上根本不存在**：`dsh-client-ui-primitives` 与 `dsh-client-ui-slots` 只活在
+前端 bundle 的冻结模块表里，取不到本地副本。这正是我们的类型生成脚本要用 `npm pack` 按版本号
+去 npm 取的原因（见第 9 节）。
+
+还有两个**不同版本线**的东西别混进来：仓库 `devDependencies` 钉的 `@deepseek-ai/dsh-*@0.1.0-rc.6`
+只用于构建与测试；`deepseek-harness-master/` 是官方源码快照 `0.1.0-rc.5`。
 
 宿主处于**开发者预览**，官方 README 明写「**未来将出现破坏兼容性的变更**」。所以本节的每个
 数字都标了取得方式——**照抄会漂移**。

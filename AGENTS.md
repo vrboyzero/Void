@@ -10,10 +10,23 @@
 
 ## 1. 版本前提
 
-宿主 `dsh 0.1.5-rc.1`（CLI），对应 `0.1.5-rc.2` 的插件契约；仓库 devDependencies 里的
-`0.1.0-rc.6` 只用于构建测试，**不是部署对象**。
+**`dsh --version` 报的不是插件契约版本。** 它报的是 CLI 外壳（`0.1.5-rc.1`），而外壳的
+dependencies 用的是脱字号范围 `^0.1.5-rc.1`，pnpm 实际装进来的运行时包**全都是 `0.1.5-rc.2`**。
+契约由运行时包定，不由外壳定。查真正的版本：
 
-`deepseek-harness-master/` 是官方源码快照 **0.1.0-rc.5**——**版本线不同**。
+```powershell
+$d = "$env:APPDATA\npm\node_modules\@deepseek-ai\dsh"
+dsh --version                                                                   # 外壳，别拿它当契约
+(Get-Content "$d\node_modules\@deepseek-ai\dsh-web-frontend\package.json" -Raw | ConvertFrom-Json).version  # 客户端契约 ← 最关心这个
+(Get-Content "$d\node_modules\@deepseek-ai\dsh-settings\package.json"     -Raw | ConvertFrom-Json).version  # 宿主契约
+(Get-Content "$d\node_modules\@deepseek-ai\cordis\package.json"           -Raw | ConvertFrom-Json).version  # 装的是 4.0.2
+```
+
+**`dsh-client-ui-primitives` 与 `dsh-client-ui-slots` 磁盘上不存在**——它们只活在前端 bundle 的
+冻结模块表里，所以取不到本地副本，生成器只能用 `npm pack` 按版本号去 npm 取。
+
+仓库 devDependencies 里的 `@deepseek-ai/dsh-*@0.1.0-rc.6` 只用于构建测试，**不是部署对象**。
+`deepseek-harness-master/` 是官方源码快照 **0.1.0-rc.5**——**版本线又不同**。
 
 宿主处于开发者预览，官方明说会有破坏兼容性的变更。**契约数字一律现查现核**：本地快照没有的
 东西，不等于宿主不支持（`installSection` 就是这样——rc.2 安装包里已有，rc.5 快照里还没有讲它
