@@ -583,7 +583,17 @@ function PluginCard(props: {
         plugin.description || '这个插件没有可配置项。')
 
   return h('div', {
-    style: { border: `1px solid ${BORDER}`, borderRadius: 10, overflow: 'hidden' },
+    style: {
+      border: `1px solid ${BORDER}`,
+      borderRadius: 10,
+      overflow: 'hidden',
+      // 卡片原来只有 border、没有 padding，实测四边间隙都恰好是 1px——那 1px 就是边框本身，
+      // 内容是完全贴着边框的，标题行的开关与底部的最后一行看起来像要压到框上。
+      //
+      // 注意：本卡片宽度由父容器决定（撑满），所以加 padding **不会**让框变宽，只会把内容
+      // 往内收、把高度撑高 2×padding。
+      padding: 5,
+    },
   },
     h(DisclosureRow, {
       icon: h(IconCordisPluginOutline14, { size: 14 }),
