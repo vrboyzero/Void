@@ -25,6 +25,7 @@ import {
 import { ConnectBlock } from './connect.js'
 import { TEXT_SECONDARY, BORDER, WARN, WARN_SURFACE, ROW_TITLE_CLASS, ensureStyles } from './theme.js'
 import { draftOps, editDraft, isDirty, saveBlockers, shownValue, type Draft } from './draft.js'
+import { readonlyText } from './display.js'
 import {
   ChoicesField,
   Group,
@@ -72,6 +73,14 @@ interface PanelField {
   help?: string
   danger?: boolean
   readOnly?: boolean
+  /**
+   * 取值来源。
+   *
+   * `settings`（默认）读设置命名空间；`runtime` 读清单里的 `runtime` 块——那是组合入口
+   * 决定、**不在设置 schema 里**的值（启用开关、端点路径、账本后端、传输方式）。这类值
+   * 在 `describe()` 的 `value` 和 `base` 里都不存在，只能由宿主半边写进清单。
+   */
+  source?: 'settings' | 'runtime'
 }
 
 interface PanelManifest {
@@ -85,6 +94,13 @@ interface PanelManifest {
     block?: string
   }>
   operations?: OperationEntry[]
+  /**
+   * 组合入口决定的运行时值（启用开关、端点路径、账本后端、传输方式）。
+   *
+   * 这几项不在设置 schema 里，所以 `describe()` 的 `value` 与 `base` 都没有它们；
+   * `source: 'runtime'` 的字段从这里取值。
+   */
+  runtime?: Record<string, unknown>
   /** MCP 接入信息：主机与端口由面板用 window.location.origin 补。 */
   connect?: { path: string; transport?: string }
 }
@@ -590,7 +606,12 @@ function FieldControl(props: {
   onEdit: (path: readonly string[], value: unknown) => void
 }): React.ReactElement {
   const { field, view, draft } = props
-  const value = shownValue(view?.value, draft, field.path)
+  // 运行时字段（启用/路径/账本/传输）不在设置命名空间里，只能从清单读；它们一律只读，
+  // 不参与草稿。
+  const value =
+    field.source === 'runtime'
+      ? readPath(props.manifest.runtime, field.path)
+      : shownValue(view?.value, draft, field.path)
   const label = field.label ?? field.path[field.path.length - 1]!
   // 「已自定义」说的是服务端解析结果里有这一层；「已修改」说的是草稿里有。两者不同：
   // 前者表示这个值不再来自默认，后者表示这次改动还没保存。
@@ -598,7 +619,7 @@ function FieldControl(props: {
   const dirty = isDirty(draft, field.path)
   const node = view === undefined ? undefined : nodeAt(view.schema, field.path)
   const widget = field.widget ?? inferWidget(node, value)
-  const disabled = view === undefined || props.busy !== null
+  const disabled = field.source === 'runtime' ? true : view === undefined || props.busy !== null
   const set = (next: unknown) => props.onEdit(field.path, next)
 
   if (field.readOnly === true) {
@@ -608,7 +629,9 @@ function FieldControl(props: {
         h('span', {
           style: { fontSize: 11, color: TEXT_SECONDARY, border: `1px solid ${TEXT_SECONDARY}`, borderRadius: 4, padding: '0 4px' },
         }, '只读'),
-        h('code', { style: { fontSize: 12 } }, value === undefined ? '—' : JSON.stringify(value)),
+        // 字符串直接显示，不要 JSON.stringify——那会把 path 渲染成 "/mcp/x"（带引号），
+        // 看起来像值里真有引号。只有数组/对象这类需要界定边界的值才用 JSON。
+        h('code', { style: { fontSize: 12 } }, readonlyText(value)),
       ),
       field.help ? h('div', { style: { fontSize: 11, color: TEXT_SECONDARY, marginTop: 4 } }, field.help) : null,
     )

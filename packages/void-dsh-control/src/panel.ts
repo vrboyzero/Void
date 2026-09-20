@@ -57,25 +57,55 @@ export function impliedOperations(selected: readonly ControlOperation[]): Contro
 }
 
 /**
+ * 「基本」组展示的运行时值。
+ *
+ * 这四项由组合入口决定，**不在设置 schema 里**（`controlSchema` 刻意不含它们，
+ * 见 index.ts 的说明），所以它们既不在 `describe()` 的 `value` 里，也不在 `base` 里
+ * ——`base` 是 `sectionFromEntry()` 的产物，本身就只含 schema 的键。面板没法从设置
+ * 视图读到它们。
+ *
+ * 它们属于「插件自己的运行时知识」，所以由宿主半边写进清单。`connect.path` 早就是这么
+ * 做的（路径必须取实际配置，写死的话用户改了 path，面板生成的配置会指向不存在的端点），
+ * 这里只是把同一做法扩到另外三项。
+ */
+export interface RuntimeConfig {
+  /** 主开关；关闭时插件不注册端点。 */
+  enabled: boolean;
+  /** 挂到 WebServer 上的精确路径。 */
+  path: string;
+  /** 账本后端。 */
+  ledger: string;
+  /** 传输方式；当前只接受 `streamable-http`。 */
+  transport: string;
+}
+
+/**
  * 构建面板清单。
  *
- * @returns 分组、字段提示与业务词汇表。
+ * @param runtime - 组合入口里实际生效的运行时值。
+ * @returns 分组、字段提示、运行时值与业务词汇表。
  */
-export function buildPanelManifest(endpointPath: string): unknown {
+export function buildPanelManifest(runtime: RuntimeConfig): unknown {
   return {
     namespace: "dsh-agent-control",
+    runtime,
     // 路径取组合入口里的实际配置，不写死；写死的话用户改了 path，面板生成的配置
     // 就会指向一个不存在的端点。
-    connect: { path: endpointPath, transport: "streamable-http" },
+    connect: { path: runtime.path, transport: runtime.transport },
     groups: [
       {
         id: "basic",
         title: "基本",
         fields: [
-          { path: ["enabled"], label: "启用控制面", widget: "switch", readOnly: true, help: "关闭后不注册端点。由组合入口 cordis.patch.yml 决定，改后需重启" },
-          { path: ["path"], label: "端点路径", widget: "text", readOnly: true, help: "由组合入口决定，改后需重启" },
-          { path: ["ledger"], label: "账本后端", widget: "text", readOnly: true, help: "storage 持久 / memory 重启即丢。由组合入口决定，改后需重启" },
-          { path: ["transport"], label: "传输方式", widget: "text", readOnly: true, help: "目前只实现 streamable-http。由组合入口决定" },
+          // `source: "runtime"` 表示取值来自清单里的 `runtime` 块，而不是设置命名空间。
+          //
+          // 「改后无需重启」是实测结论，不是推测：往 profile 的 `cordis.patch.yml` 写
+          // `enabled: false` 或改 `path`，端点会在数秒内消失/搬家，进程不用重启。
+          // dsh 的 `watchUserPatches` 监视用户层 patch 并事务性重新应用。
+          { path: ["enabled"], source: "runtime", label: "启用控制面", widget: "switch", readOnly: true, help: "关闭后不注册端点。由组合入口 cordis.patch.yml 决定，改后数秒内生效，无需重启" },
+          { path: ["path"], source: "runtime", label: "端点路径", widget: "text", readOnly: true, help: "由组合入口决定，改后数秒内生效，无需重启" },
+          { path: ["ledger"], source: "runtime", label: "账本后端", widget: "text", readOnly: true, help: "storage 持久、memory 重启即丢；选 storage 需宿主已挂载 storage 域，否则插件启动即失败。由组合入口决定，改后数秒内生效" },
+          { path: ["transport"], source: "runtime", label: "传输方式", widget: "text", readOnly: true, help: "只接受 streamable-http。加载时配成别的值会直接失败并拒绝启动；运行中改错则不生效、仍用原值。由组合入口决定，改对后数秒内生效" },
         ],
       },
       {
@@ -185,12 +215,12 @@ export function buildPanelManifest(endpointPath: string): unknown {
  * @param ctx - 插件上下文。
  * @param endpointPath - 组合入口里配置的端点路径。
  */
-export function registerVoidPanel(ctx: Context, endpointPath: string): void {
+export function registerVoidPanel(ctx: Context, runtime: RuntimeConfig): void {
   ctx.inject(["voidSuite"], (panelCtx) => {
     const host = panelCtx.get("voidSuite") as PanelHost | undefined;
     if (host === undefined || typeof host.registerPanel !== "function") return;
     panelCtx.effect(
-      () => host.registerPanel(PACKAGE, buildPanelManifest(endpointPath)),
+      () => host.registerPanel(PACKAGE, buildPanelManifest(runtime)),
       "void-dsh-control: panel manifest",
     );
   });

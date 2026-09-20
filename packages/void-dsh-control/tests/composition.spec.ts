@@ -9,6 +9,20 @@ import { bootControl, disposeContexts, ENDPOINT, findFiber, TOKEN_ENV, trackCont
 
 afterEach(disposeContexts);
 
+describe("composition: Config schema rejects a transport that is not implemented", () => {
+  // transport 曾经是死字段：声明了、面板也显示，但**没有任何代码读它**（路由直接构造
+  // StreamableHTTPServerTransport）。自由字符串意味着 `transport: sse` 被静默接受、
+  // 然后什么都不发生。改成常量后，配错在加载时就被拒绝。
+  it("accepts the implemented transport and defaults to it", () => {
+    expect(Control.Config({}).transport).toBe("streamable-http");
+    expect(Control.Config({ transport: "streamable-http" }).transport).toBe("streamable-http");
+  });
+
+  it("refuses any other value instead of silently ignoring it", () => {
+    expect(() => Control.Config({ transport: "sse" })).toThrow();
+    expect(() => Control.Config({ transport: "" })).toThrow();
+  });
+});
 describe("composition: plugin activation", () => {
   it("registers the MCP route, publishes the service and wires host events", async () => {
     const ctx = await bootControl();

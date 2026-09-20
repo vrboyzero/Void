@@ -49,11 +49,6 @@
         forbiddenPatterns: []
         instructionsVersion: 0
 
-        notifyEvents:
-          - accepted
-          - completed
-          - failed
-
         # 可选回调 webhook：给不能一直保持 MCP 连接的调用方用。
         # 默认关闭。开启前必须在环境变量里放好 HMAC 共享密钥，否则插件启动即失败。
         # 负载只含任务摘要与游标；模型产出的助手文本需要显式打开

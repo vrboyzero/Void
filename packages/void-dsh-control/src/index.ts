@@ -88,8 +88,8 @@ export interface CallbackConfig {
 export interface Config {
   /** Master switch. `false` keeps the plugin inert so rollback is one line. */
   enabled: boolean;
-  /** Transport; only Streamable HTTP is implemented. */
-  transport: string;
+  /** Transport. Only `streamable-http` is accepted; the schema rejects anything else. */
+  transport: "streamable-http";
   /** Absolute endpoint path registered on the existing WebServer. */
   path: string;
   /** Machine tokens. An empty list plus `allowAnonymous: false` refuses every caller. */
@@ -122,7 +122,10 @@ const SETTINGS_NAMESPACE = "dsh-agent-control";
 /** Schemastery schema for {@link Config}. */
 export const Config: z<Config> = z.object({
   enabled: z.boolean().default(true).description("主开关。设为 false 时插件完全不注册端点，回滚只需改这一行。"),
-  transport: z.string().default("streamable-http").description("传输方式，目前只实现 Streamable HTTP。"),
+  // 只有 Streamable HTTP 实现了，而**没有任何代码读这个值**（路由那边直接构造
+// StreamableHTTPServerTransport）。自由字符串意味着 `transport: sse` 会被静默接受、
+// 然后什么都不发生。改成常量，配错在加载时就被 schema 拒绝。
+transport: z.const("streamable-http").default("streamable-http").description("传输方式，目前只实现 Streamable HTTP。"),
   path: z.string().default("/mcp/dsh-agent-control").description("挂到现有 WebServer 上的精确路径。"),
   tokens: z
     .array(
@@ -563,7 +566,12 @@ export function apply(ctx: Context, config: Config): void {
   // Contribute the configuration panel to the Void entry, when one is installed.
   // Outside the async effect: registration is synchronous and must not wait on
   // the ledger or the host ports.
-  registerVoidPanel(ctx, config.path);
+  registerVoidPanel(ctx, {
+        enabled: config.enabled,
+        path: config.path,
+        ledger: config.ledger,
+        transport: config.transport,
+      });
 
   void ctx.effect(async () => {
     const log = ctx.logger("void-dsh-control");

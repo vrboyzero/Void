@@ -8,17 +8,19 @@ afterEach(disposeContexts);
 
 interface Manifest {
   namespace: string;
+  runtime?: { enabled: boolean; path: string; ledger: string; transport: string };
   connect?: { path: string; transport?: string };
   groups: Array<{
     id: string;
     title: string;
-    fields: Array<{ path: string[]; widget?: string; readOnly?: boolean }>;
+    fields: Array<{ path: string[]; widget?: string; readOnly?: boolean; source?: string }>;
   }>;
   operations?: Array<{ value: string; label: string; implies: string[] }>;
 }
 
 const ENDPOINT = "/mcp/dsh-agent-control";
-const manifest = (): Manifest => buildPanelManifest(ENDPOINT) as Manifest;
+const RUNTIME = { enabled: true, path: ENDPOINT, ledger: "storage", transport: "streamable-http" };
+const manifest = (): Manifest => buildPanelManifest(RUNTIME) as Manifest;
 
 /** Walk a path through a resolved settings value. */
 function at(value: unknown, path: readonly string[]): { found: boolean; value: unknown } {
@@ -32,6 +34,63 @@ function at(value: unknown, path: readonly string[]): { found: boolean; value: u
   return { found: true, value: cursor };
 }
 
+describe("void-dsh-control panel: 基本 组的说明与实现一致", () => {
+  const fields = (): Array<{ path: string[]; help?: string }> => {
+    const m = buildPanelManifest(RUNTIME) as unknown as {
+      groups: Array<{ id: string; fields: Array<{ path: string[]; help?: string }> }>;
+    };
+    return m.groups.find((g) => g.id === "basic")!.fields;
+  };
+
+  it("declares exactly the four runtime fields, all marked as runtime-sourced", () => {
+    // 这四项**不在设置 schema 里**（controlSchema 刻意不含它们），所以 describe() 的 value
+    // 与 base 都没有它们——base 是 sectionFromEntry() 的产物，本身只含 schema 的键。
+    // 面板无法从设置视图读到，必须标 source: "runtime" 从清单的 runtime 块取。
+    expect(fields().map((f) => f.path.join("."))).toEqual(["enabled", "path", "ledger", "transport"]);
+    expect(fields().map((f) => f.source)).toEqual(["runtime", "runtime", "runtime", "runtime"]);
+  });
+
+  it("carries the runtime block the runtime-sourced fields read", () => {
+    const m = buildPanelManifest(RUNTIME) as unknown as { runtime?: Record<string, unknown> };
+    expect(m.runtime).toEqual(RUNTIME);
+  });
+
+  it("no field claims a runtime source without one", () => {
+    // 反过来也要成立：标了 runtime 就必须真在 runtime 里有值，否则又是四个空。
+    const m = buildPanelManifest(RUNTIME) as unknown as {
+      runtime?: Record<string, unknown>;
+      groups: Array<{ fields: Array<{ path: string[]; source?: string }> }>;
+    };
+    for (const group of m.groups) {
+      for (const field of group.fields) {
+        if (field.source !== "runtime") continue;
+        expect(m.runtime).toHaveProperty(field.path[0]!);
+      }
+    }
+  });
+
+  it("never promises a restart, because the user patch layer applies live", () => {
+    // 实测：往 profile 的 cordis.patch.yml 写 enabled: false 或改 path，端点数秒内消失/
+    // 搬家，进程不用重启。原先三处写「改后需重启」，与 dsh 的 watchUserPatches 行为相反。
+    // 只针对那三个错词。`ledger` 的「memory 重启即丢」是描述语义，不是重启承诺。
+    const stale = fields().filter((f) => /(?<!无)需重启|需要重启/.test(f.help ?? ""));
+    expect(stale.map((f) => f.path.join("."))).toEqual([]);
+  });
+
+  it("says out loud that a bad transport is rejected instead of ignored", () => {
+    // transport 曾是死字段：声明了、显示了，但没有任何代码读它，配错也不报错。
+    const transport = fields().find((f) => f.path.join(".") === "transport")!;
+    expect(transport.help).toContain("拒绝启动");
+  });
+
+  it("warns that storage needs a mounted storage domain", () => {
+    // openLedger 在 ledger: storage 且没有 ctx.storageDomain 时抛错，插件起不来。原文案
+    // 只说「storage 持久」，漏了这条会让用户以为只是「不持久」。
+    const ledger = fields().find((f) => f.path.join(".") === "ledger")!;
+    expect(ledger.help).toContain("storage 域");
+    expect(ledger.help).toContain("失败");
+  });
+});
 describe("panel: operation vocabulary", () => {
   it("lists every grantable operation exactly once", () => {
     const values = manifest().operations!.map((op) => op.value);
@@ -127,7 +186,7 @@ describe("panel: manifest against the registered schema", () => {
     // A hard-coded path would generate client configs pointing at an endpoint the
     // user had already moved.
     expect(manifest().connect).toEqual({ path: ENDPOINT, transport: "streamable-http" });
-    expect((buildPanelManifest("/custom/mcp") as Manifest).connect!.path).toBe("/custom/mcp");
+    expect((buildPanelManifest({ ...RUNTIME, path: "/custom/mcp" }) as Manifest).connect!.path).toBe("/custom/mcp");
   });
 
   it("keeps the connect group free of fields", () => {
