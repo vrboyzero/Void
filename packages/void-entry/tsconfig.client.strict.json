@@ -1,0 +1,14 @@
+{
+  // 只做一件事：把 skipLibCheck 关掉，验证 src/client/primitives.d.ts 内部没有错误。
+  //
+  // 为什么必须单独有一份：根 tsconfig.base.json 设了 skipLibCheck: true，于是 .d.ts
+  // 内部的悬空引用、非法的 declare 修饰符等等**全部静默通过**。生成器（见
+  // scripts/gen-primitives-types.mjs）漏带类型、或生成出 `export declare function`
+  // 这类在 ambient 上下文里非法的写法时，普通 typecheck 是发现不了的——这两类错误
+  // 都是关掉 skipLibCheck 才暴露出来的。
+  "extends": "./tsconfig.client.json",
+  "compilerOptions": {
+    "skipLibCheck": false,
+    "noEmit": true
+  }
+}

@@ -33,7 +33,7 @@
   },
   "scripts": {
     "build": "tsc && tsc -p tsconfig.client.json && tsdown",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.client.strict.json",
     "test": "vitest run"
   },
   "peerDependencies": {

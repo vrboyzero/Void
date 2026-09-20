@@ -11,6 +11,8 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
+    "gen:primitives": "node scripts/gen-primitives-types.mjs",
+    "check:primitives": "node scripts/gen-primitives-types.mjs --check",
     "verify:star-memory-snapshot": "node scripts/verify-star-memory-snapshot.mjs"
   },
   "devDependencies": {
