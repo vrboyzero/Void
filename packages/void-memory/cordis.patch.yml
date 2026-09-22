@@ -1,6 +1,13 @@
 # Bundle layer for @void/void-memory. Applied when a profile lists this bundle.
+#
+# 面板的两条是可选的：缺了 `void-memory-library` 时视图不会出现（入口里没有
+# `voidMemoryLibrary` 可注入），记忆本身照常工作——模型工具、索引、隔离都不依赖面板。
 - insert:
-    - id: void-memory-sqlite
-      name: "@void/void-memory/sqlite"
+    - id: void-memory-provider
+      name: "@void/void-memory/provider"
     - id: void-memory-tool
       name: "@void/void-memory/tool"
+    - id: void-memory-library
+      name: "@void/void-memory/memory-service"
+    - id: void-memory-detail
+      name: "@void/void-memory/detail-view"

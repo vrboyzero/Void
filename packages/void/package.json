@@ -1,7 +1,7 @@
 {
   "name": "@void/void",
   "version": "0.1.0",
-  "description": "Void composition bundle: memory + tools + legion in one profile layer",
+  "description": "Void composition bundle: entry + soul + memory + tools + legion in one profile layer",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -24,8 +24,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@void/void-entry": "workspace:*",
     "@void/void-legion": "workspace:*",
     "@void/void-memory": "workspace:*",
+    "@void/void-soul": "workspace:*",
     "@void/void-tools": "workspace:*"
   },
   "peerDependencies": {

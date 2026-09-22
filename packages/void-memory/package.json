@@ -11,6 +11,10 @@
       "default": "./lib/index.js"
     },
     "./service": "./lib/service.js",
+    "./provider": "./lib/provider.js",
+    "./memory-service": "./lib/memory-service.js",
+    "./memory-library": "./lib/memory-library.js",
+    "./detail-view": "./lib/detail-view.js",
     "./sqlite": "./lib/sqlite.js",
     "./tool": "./lib/tool.js",
     "./invariant": "./lib/invariant.js",
@@ -31,6 +35,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@void/void-soul": "workspace:*",
     "better-sqlite3": "^11.9.1",
     "chokidar": "^5.0.0",
     "ipaddr.js": "2.4.0",

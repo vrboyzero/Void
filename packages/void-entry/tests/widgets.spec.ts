@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createVoidWidgetsService } from "../src/client/widgets.js";
+import { createVoidWidgetsService, parseFacetVersionPayload, readOnlyWidgetLines } from "../src/client/widgets.js";
 
 describe("void-entry widgets service (壳 A 服务化扩展点)", () => {
   it("registers widgets and returns a sorted snapshot", () => {
@@ -29,6 +29,26 @@ describe("void-entry widgets service (壳 A 服务化扩展点)", () => {
     dispose();
     expect(service.getWidgets()).toHaveLength(0);
     expect(notified).toBe(2); // register + dispose
+    expect(readOnlyWidgetLines(service)).toEqual([]);
     off();
+  });
+
+  it("renders registered read-only lines without an input", () => {
+    const service = createVoidWidgetsService();
+    service.registerWidget({
+      id: "void-soul:facet-version",
+      title: "当前角色",
+      lines: ["已保存：开发专家（写代码），待下一次请求生效", "本次生效：无模组"],
+      agentId: "xiaobei",
+      selectionRevision: 2,
+      component: null,
+    });
+    expect(parseFacetVersionPayload({ versions: readOnlyWidgetLines(service), extra: "<input>" })).toEqual([{
+      id: "void-soul:facet-version",
+      title: "当前角色",
+      lines: ["已保存：开发专家（写代码），待下一次请求生效", "本次生效：无模组"],
+      agentId: "xiaobei",
+      selectionRevision: 2,
+    }]);
   });
 });

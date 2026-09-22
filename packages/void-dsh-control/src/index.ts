@@ -25,6 +25,8 @@ import type {} from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import { Authenticator, describeTokenSetup, readTokenGrants, userEnvFilePath, type AuthPolicy } from "./auth.js";
 import { WebhookCallbackDispatcher, resolveCallbackUrl } from "./callback.js";
+import { LEGION_RUN_TERMINAL_EVENT, LegionRunDelivery } from "./legion-delivery.js";
+import type { LegionServiceLike } from "./legion-delivery.js";
 import { CONTROL_OPERATIONS, ControlError, type ControlOperation } from "./protocol.js";
 import { compilePolicy, EMPTY_CALLER_POLICY, type CallerPolicy, type CompiledCallerPolicy } from "./policy.js";
 import { MemoryControlLedger, StorageControlLedger, type ControlLedger } from "./ledger.js";
@@ -82,6 +84,14 @@ export interface CallbackConfig {
   allowedHosts?: string[];
   /** Whether the payload may carry model-produced assistant text. */
   includeAssistantSummary?: boolean;
+  /**
+   * Whether legion run-terminal events ride the same webhook (plan §16.2 L9).
+   *
+   * One switch on the existing target: same URL, secret, allowlist, timeout,
+   * retry budget and event filter. Legion is not required — without it the
+   * adapter simply never mounts.
+   */
+  includeLegionRuns?: boolean;
 }
 
 /** Plugin configuration, as written in a profile's `cordis.patch.yml`. */
@@ -169,6 +179,7 @@ transport: z.const("streamable-http").default("streamable-http").description("�
       maxAttempts: z.natural().default(5),
       allowedHosts: z.array(z.string()).default([]).description("回调 URL 主机白名单；留空表示接受配置里写的地址。"),
       includeAssistantSummary: z.boolean().default(false).description("是否把模型产出的助手摘要放进回调负载（默认不发送）。"),
+      includeLegionRuns: z.boolean().default(false).description("是否把军团的运行终态也投给同一个 webhook（默认关闭）。"),
     })
     .default({
       enabled: false,
@@ -179,6 +190,7 @@ transport: z.const("streamable-http").default("streamable-http").description("�
       maxAttempts: 5,
       allowedHosts: [],
       includeAssistantSummary: false,
+      includeLegionRuns: false,
     })
     .description("可选回调 webhook，默认关闭。"),
 });
@@ -237,6 +249,7 @@ interface ControlSection {
     maxAttempts: number;
     allowedHosts: string[];
     includeAssistantSummary: boolean;
+    includeLegionRuns: boolean;
   };
 }
 
@@ -278,6 +291,7 @@ function sectionFromEntry(config: Config): ControlSection {
       maxAttempts: config.callback.maxAttempts ?? 5,
       allowedHosts: [...(config.callback.allowedHosts ?? [])],
       includeAssistantSummary: config.callback.includeAssistantSummary ?? false,
+      includeLegionRuns: config.callback.includeLegionRuns ?? false,
     },
   };
 }
@@ -330,6 +344,7 @@ function controlSchema(entry: ControlSection): z<ControlSection> {
         maxAttempts: z.natural().default(entry.callback.maxAttempts),
         allowedHosts: z.array(z.string()).default([...entry.callback.allowedHosts]),
         includeAssistantSummary: z.boolean().default(entry.callback.includeAssistantSummary),
+        includeLegionRuns: z.boolean().default(entry.callback.includeLegionRuns),
       })
       .default({ ...entry.callback }),
   });
@@ -486,7 +501,11 @@ function createConfigSource(ctx: Context, config: Config): ConfigSource {
   };
 
   return {
-    live: read,
+    // Indirection, not the function itself: `setSource` rebinds `read` when a
+    // settings provider attaches, and copying the value here would freeze every
+    // `live()` caller on the composition entry — the panel would look editable
+    // and change nothing.
+    live: () => read(),
     policy,
     auth,
     watch: (listener) => {
@@ -672,6 +691,50 @@ export function apply(ctx: Context, config: Config): void {
       if (resumed > 0) log.info(`re-scheduled ${resumed} pending callback delivery(ies)`);
     }
 
+    // Legion run-terminal delivery (plan §16.2 L9). Optional and mounted
+    // reactively: `ctx.inject` only runs while a legion service exists, so
+    // installing or removing legion never touches this plugin's own injection
+    // list, and unmounting drains the adapter before the ledger closes. The
+    // adapter rides the same webhook target as the task callbacks — one target,
+    // one secret, one retry budget, one event filter.
+    const legionDeliveryEnabled = (): boolean => source.live().callback.includeLegionRuns === true;
+    ctx.inject(["voidTeam"], (legionCtx) => {
+      // The legion service publishes its notification store; the store — not the
+      // service — is the host this adapter talks to, because the store is what
+      // owns the durable file and the `delivery` bookkeeping. Restated
+      // structurally on purpose: control never imports legion's source, and a
+      // legion installed without a data root exposes no store at all, in which
+      // case there is nowhere to record a delivery and the adapter stays off.
+      const service = legionCtx.get("voidTeam") as unknown as LegionServiceLike | undefined;
+      const host = service?.notifications;
+      if (host === undefined || typeof host.list !== "function" || typeof host.markDelivery !== "function") {
+        log.warn("legion service is present but publishes no notification store; run-terminal delivery stays off");
+        return;
+      }
+      const delivery = new LegionRunDelivery({
+        target: () => source.live().callback,
+        host,
+        secretSource: () => process.env[source.live().callback.secretEnv] ?? "",
+        // Read per event, so flipping the switch in the panel takes effect on the
+        // next terminal state instead of at the next restart.
+        enabled: legionDeliveryEnabled,
+        log: { warn: (message) => log.warn(message) },
+      });
+      ctx.on(LEGION_RUN_TERMINAL_EVENT, (event) => delivery.onTerminal(event), { global: true });
+      log.info("legion run-terminal delivery mounted");
+      // Catch up on terminal states nobody was listening for: an endpoint that
+      // was down, or a process that died before the delivery landed. Delivery
+      // never changes a run outcome and never re-runs a member task (L9), and
+      // the switch still applies — a disabled adapter schedules nothing.
+      void delivery.start().then(
+        (scheduled) => {
+          if (scheduled > 0) log.info(`re-scheduled ${scheduled} legion run notification(s)`);
+        },
+        () => undefined,
+      );
+      return () => delivery.drain();
+    });
+
     const orchestrator = new ControlOrchestrator({
       ledger,
       hosts,
@@ -775,4 +838,15 @@ export { ControlOrchestrator } from "./orchestrator.js";
 export { createMcpHttpHandler, createControlMcpServer } from "./mcp.js";
 export { createHostPorts } from "./hosts.js";
 export { WebhookCallbackDispatcher, signCallbackBody, callbackPayload } from "./callback.js";
+export {
+  LEGION_RUN_TERMINAL_EVENT,
+  LegionRunDelivery,
+  legionCallbackPayload,
+  type LegionCallbackPayload,
+  type LegionDeliveryState,
+  type LegionNotificationHost,
+  type LegionRunDeliveryOptions,
+  type LegionRunEvent,
+  type LegionServiceLike,
+} from "./legion-delivery.js";
 export { EMPTY_CALLER_POLICY };

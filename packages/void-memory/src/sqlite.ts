@@ -1,6 +1,6 @@
 import { MemoryStore } from "./star/store.js";
 import type { Context } from "@deepseek-ai/cordis";
-import { VoidMemory, type MemorySearchResult } from "./service.js";
+import { VoidMemoryLegacy, type LegacyMemorySearchResult } from "./service.js";
 
 export interface VoidMemorySqliteConfig {
   path?: string;
@@ -14,12 +14,12 @@ function nextChunkId(): string {
 }
 
 /**
- * Provider: wraps the full Star belldandy-memory MemoryStore snapshot (FTS5 +
- * sqlite-vec + experience/tree/task schema), exposing the minimal knowledge
- * seam surface. The richer MemoryStore API (dream/tree/experience) stays
- * reachable for later stages.
+ * 旧 provider：包装完整的 Star belldandy-memory MemoryStore 快照（FTS5 +
+ * sqlite-vec + experience/tree/task 表）。它没有执行身份，因此只登记
+ * `voidMemoryLegacy`，供隔离的旧 profile 使用；新记忆一律走
+ * `@void/void-memory/provider`。
  */
-export class VoidMemorySqlite extends VoidMemory {
+export class VoidMemorySqlite extends VoidMemoryLegacy {
   private readonly memoryStore: MemoryStore;
 
   constructor(ctx: Context, config: VoidMemorySqliteConfig = {}) {
@@ -44,11 +44,11 @@ export class VoidMemorySqlite extends VoidMemory {
     return id;
   }
 
-  search(query: string, k: number): MemorySearchResult[] {
+  search(query: string, k: number): LegacyMemorySearchResult[] {
     return this.memoryStore.searchKeyword(query, k).map(toResult);
   }
 
-  searchByVector(embedding: Float32Array, k: number): MemorySearchResult[] {
+  searchByVector(embedding: Float32Array, k: number): LegacyMemorySearchResult[] {
     return this.memoryStore.searchVector(Array.from(embedding), k).map(toResult);
   }
 
@@ -70,7 +70,7 @@ export class VoidMemorySqlite extends VoidMemory {
   }
 }
 
-function toResult(result: { id: string; content?: string; snippet: string; score: number }): MemorySearchResult {
+function toResult(result: { id: string; content?: string; snippet: string; score: number }): LegacyMemorySearchResult {
   return {
     id: result.id,
     content: result.content ?? result.snippet,

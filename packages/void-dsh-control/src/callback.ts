@@ -76,6 +76,68 @@ export interface CallbackDispatcherOptions {
   readonly now?: () => number;
 }
 
+/**
+ * One delivery's local bookkeeping, as the transport sees it.
+ *
+ * Deliberately **not** the ledger's `CallbackDeliveryRecord`: that table is keyed
+ * by `taskId`, and a delivery that is not a control-plane task — a legion run
+ * terminal (plan §16.2 L9) — must not fabricate a `TaskRecord` just to be
+ * recorded. The transport only needs these fields; where they live is the
+ * adapter's business.
+ */
+export interface CallbackDeliveryState {
+  /** Stable id the receiver deduplicates by. */
+  readonly deliveryId: string;
+  /** Event status this delivery carries, sent as the event header. */
+  readonly event: string;
+  /** Attempts made for this delivery, including earlier chains when counted. */
+  readonly attempts: number;
+  readonly status: "pending" | "delivered" | "failed";
+  readonly lastError?: string;
+  readonly updatedAt: string;
+}
+
+/** Where a delivery chain records what happened (the adapter half of §16.2 L9). */
+export interface CallbackDeliveryStore {
+  /**
+   * Whether this delivery was already accepted.
+   *
+   * Store-backed on purpose: a retry after a restart must not re-notify a
+   * receiver that already took the event.
+   */
+  isDelivered(deliveryId: string): boolean;
+  /**
+   * Attempts already recorded for this delivery by earlier chains (0 when
+   * unknown). Optional: a store that counts per chain omits it.
+   */
+  attemptsBefore?(deliveryId: string): number;
+  /** Persist the current state of one delivery. */
+  save(state: CallbackDeliveryState): void | Promise<void>;
+}
+
+/** Options of {@link CallbackTransport}. */
+export interface CallbackTransportOptions {
+  /**
+   * Target, or a provider for it. Prefer the provider form: the settings panel
+   * can retarget or disable the webhook while the endpoint is live.
+   */
+  readonly target: CallbackTarget | (() => CallbackTarget);
+  /** Fixed secret value. Ignored when {@link secretSource} is given. */
+  readonly secret?: string;
+  /** Secret provider, consulted per delivery so a rotated value is picked up. */
+  readonly secretSource?: () => string;
+  /** Where delivery outcomes are recorded. */
+  readonly store: CallbackDeliveryStore;
+  /** Transport, injectable for tests. Defaults to global `fetch`. */
+  readonly send?: (url: string, init: RequestInit) => Promise<{ ok: boolean; status: number }>;
+  /** Delay primitive, injectable so backoff does not slow tests down. */
+  readonly sleep?: (ms: number) => Promise<void>;
+  /** Clock, injectable for deterministic timestamps. */
+  readonly now?: () => number;
+  /** Consulted before every attempt, so disposal truncates a retry chain. */
+  readonly isStopped?: () => boolean;
+}
+
 /** First retry delay; each further attempt doubles it up to the cap. */
 export const CALLBACK_BASE_BACKOFF_MS = 1_000;
 
@@ -187,36 +249,42 @@ export function signCallbackBody(secret: string, timestamp: number, body: string
 }
 
 /**
- * Fire-and-forget webhook dispatcher with retry, backoff and ledger-backed
- * deduplication.
+ * One signed, retried HTTP delivery — the transport half of the callback
+ * boundary (plan §16.2 L9).
+ *
+ * It knows how to sign, how long to wait, how many times to try and how to
+ * record the outcome; it does **not** know what the body means, nor where the
+ * record lives. That split is what lets the control plane's task callbacks and
+ * the legion run-terminal adapter share one transport while writing to
+ * different stores.
  */
-export class WebhookCallbackDispatcher {
+export class CallbackTransport {
   private readonly targetSource: () => CallbackTarget;
-  private readonly ledger: ControlLedger;
   private readonly secretSource: () => string;
+  private readonly store: CallbackDeliveryStore;
   private readonly send: (url: string, init: RequestInit) => Promise<{ ok: boolean; status: number }>;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
-  private readonly inflight = new Set<Promise<void>>();
-  private stopped = false;
+  private readonly isStopped: () => boolean;
 
-  constructor(options: CallbackDispatcherOptions) {
+  constructor(options: CallbackTransportOptions) {
     this.targetSource = typeof options.target === "function" ? options.target : () => options.target as CallbackTarget;
-    this.ledger = options.ledger;
     const fixedSecret = options.secret ?? "";
     this.secretSource = options.secretSource ?? (() => fixedSecret);
+    this.store = options.store;
     this.send = options.send ?? ((url, init) => fetch(url, init));
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = options.now ?? (() => Date.now());
+    this.isStopped = options.isStopped ?? (() => false);
   }
 
   /** The target in force right now. */
-  private get target(): CallbackTarget {
+  get target(): CallbackTarget {
     return this.targetSource();
   }
 
   /** The shared secret in force right now. */
-  private get secret(): string {
+  get secret(): string {
     return this.secretSource();
   }
 
@@ -227,8 +295,233 @@ export class WebhookCallbackDispatcher {
    * is a URL parse plus a host-list check, and caching it would freeze the
    * retarget the settings panel can perform while the endpoint is live.
    */
-  private get url(): string | undefined {
+  get url(): string | undefined {
     return resolveCallbackUrl(this.target, this.secret);
+  }
+
+  /** Whether this transport will actually deliver anything. */
+  get active(): boolean {
+    return this.url !== undefined;
+  }
+
+  /**
+   * Run one delivery chain to completion.
+   *
+   * @param deliveryId - Stable id the receiver deduplicates by.
+   * @param event - Event status, sent as the `x-dsh-control-event` header.
+   * @param body - Exact serialized body to sign and send.
+   */
+  async deliver(deliveryId: string, event: string, body: string): Promise<void> {
+    const url = this.url;
+    if (url === undefined) return;
+    // Cumulative attempt count: a delivery that failed in an earlier process
+    // keeps counting instead of restarting from one.
+    const before = this.store.attemptsBefore?.(deliveryId) ?? 0;
+
+    for (let attempt = 0; attempt < this.target.maxAttempts; attempt += 1) {
+      if (this.isStopped()) return;
+      if (attempt > 0) await this.sleep(backoffDelayMs(attempt - 1));
+
+      const timestamp = Math.floor(this.now() / 1000);
+      const signature = signCallbackBody(this.secret, timestamp, body);
+      const updatedAt = new Date(this.now()).toISOString();
+      const attempts = before + attempt + 1;
+      // Whether this chain has run out of attempts, which is what decides
+      // "failed" versus "pending" — not the cumulative count.
+      const exhausted = attempt + 1 >= this.target.maxAttempts;
+
+      try {
+        const response = await this.send(url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-dsh-control-delivery": deliveryId,
+            "x-dsh-control-event": event,
+            "x-dsh-control-timestamp": String(timestamp),
+            "x-dsh-control-signature": signature,
+          },
+          body,
+          signal: AbortSignal.timeout(this.target.timeoutMs),
+        });
+
+        if (response.ok) {
+          await this.store.save({ deliveryId, event, attempts, status: "delivered", updatedAt });
+          return;
+        }
+
+        await this.store.save({
+          deliveryId,
+          event,
+          attempts,
+          status: exhausted ? "failed" : "pending",
+          // The status code is a protocol fact, not receiver content.
+          lastError: `HTTP ${response.status}`,
+          updatedAt,
+        });
+      } catch (error) {
+        await this.store.save({
+          deliveryId,
+          event,
+          attempts,
+          status: exhausted ? "failed" : "pending",
+          // The transport error message is summarized: it may embed the URL.
+          lastError: error instanceof Error ? error.name : "unknown transport failure",
+          updatedAt,
+        });
+      }
+    }
+  }
+}
+
+/** Options of {@link CallbackDeliveryQueue}. */
+export interface CallbackDeliveryQueueOptions {
+  readonly transport: CallbackTransport;
+  readonly store: CallbackDeliveryStore;
+}
+
+/**
+ * Fire-and-forget delivery chains with store-backed deduplication.
+ *
+ * Both callback sources need the same three things: never send what the store
+ * already accepted, never let a chain escape as an unhandled rejection, and be
+ * able to settle or drain at disposal. None of that depends on the payload.
+ */
+export class CallbackDeliveryQueue {
+  private readonly transport: CallbackTransport;
+  private readonly store: CallbackDeliveryStore;
+  private readonly inflight = new Set<Promise<void>>();
+  private halted = false;
+
+  constructor(options: CallbackDeliveryQueueOptions) {
+    this.transport = options.transport;
+    this.store = options.store;
+  }
+
+  /** Whether disposal has refused further deliveries. */
+  get stopped(): boolean {
+    return this.halted;
+  }
+
+  /** The delivery URL in force right now, for callers holding only the queue. */
+  get url(): string | undefined {
+    return this.transport.url;
+  }
+
+  /** Delivery chains still running, for diagnostics. */
+  get inflightCount(): number {
+    return this.inflight.size;
+  }
+
+  /**
+   * Start one fire-and-forget delivery chain.
+   *
+   * @param deliveryId - Stable id the receiver deduplicates by.
+   * @param event - Event status, sent as the event header.
+   * @param body - Exact serialized body to sign and send.
+   * @returns Whether a chain was started.
+   */
+  schedule(deliveryId: string, event: string, body: string): boolean {
+    if (this.halted) return false;
+    // Deduplication is store-backed, so a retry after a restart does not
+    // re-notify a receiver that already accepted the event.
+    if (this.store.isDelivered(deliveryId)) return false;
+
+    const chain = this.transport.deliver(deliveryId, event, body).catch(() => {
+      // Delivery failures are already recorded in the store; never let one
+      // escape as an unhandled rejection.
+    });
+    this.inflight.add(chain);
+    void chain.then(
+      () => this.inflight.delete(chain),
+      () => this.inflight.delete(chain),
+    );
+    return true;
+  }
+
+  /**
+   * Wait for in-flight delivery chains without refusing new ones.
+   *
+   * Separate from {@link drain} because the two answer different questions:
+   * "has the work I scheduled finished?" versus "stop, and let the work already
+   * scheduled finish". Only the latter may truncate a retry chain.
+   */
+  async settle(): Promise<void> {
+    while (this.inflight.size > 0) {
+      await Promise.allSettled([...this.inflight]);
+    }
+  }
+
+  /**
+   * Stop accepting new deliveries and wait for in-flight chains to settle.
+   *
+   * A chain that is mid-retry finishes its current attempt and then stops, so
+   * shutdown is bounded by one attempt timeout rather than by the whole backoff
+   * schedule.
+   */
+  async drain(): Promise<void> {
+    this.halted = true;
+    await this.settle();
+  }
+}
+
+/**
+ * Fire-and-forget webhook dispatcher with retry, backoff and ledger-backed
+ * deduplication.
+ */
+export class WebhookCallbackDispatcher {
+  private readonly targetSource: () => CallbackTarget;
+  private readonly ledger: ControlLedger;
+  private readonly queue: CallbackDeliveryQueue;
+
+  constructor(options: CallbackDispatcherOptions) {
+    this.targetSource = typeof options.target === "function" ? options.target : () => options.target as CallbackTarget;
+    this.ledger = options.ledger;
+
+    // The ledger adapter: the shared transport writes through the control
+    // plane's `callback_deliveries` table, whose `taskId` column is recovered
+    // from the delivery id this dispatcher minted (`<taskId>:<seq>`).
+    const store: CallbackDeliveryStore = {
+      isDelivered: (deliveryId) => this.ledger.findCallbackDelivery(deliveryId)?.status === "delivered",
+      save: async (state) => {
+        const taskId = parseDeliveryId(state.deliveryId)?.taskId;
+        // A delivery id that does not parse is not a control-plane delivery, so
+        // there is no row to write — never invent a task id to fill the column.
+        if (taskId === undefined) return;
+        await this.ledger.putCallbackDelivery({
+          deliveryId: state.deliveryId,
+          taskId,
+          event: state.event,
+          attempts: state.attempts,
+          status: state.status,
+          ...(state.lastError === undefined ? {} : { lastError: state.lastError }),
+          updatedAt: state.updatedAt,
+        });
+      },
+    };
+
+    this.queue = new CallbackDeliveryQueue({
+      store,
+      transport: new CallbackTransport({
+        target: options.target,
+        store,
+        ...(options.secret === undefined ? {} : { secret: options.secret }),
+        ...(options.secretSource === undefined ? {} : { secretSource: options.secretSource }),
+        ...(options.send === undefined ? {} : { send: options.send }),
+        ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+        ...(options.now === undefined ? {} : { now: options.now }),
+        isStopped: () => this.queue.stopped,
+      }),
+    });
+  }
+
+  /** The target in force right now. */
+  private get target(): CallbackTarget {
+    return this.targetSource();
+  }
+
+  /** The delivery URL in force right now. */
+  get url(): string | undefined {
+    return this.queue.url;
   }
 
   /** Whether this dispatcher will actually deliver anything. */
@@ -248,7 +541,7 @@ export class WebhookCallbackDispatcher {
    * @param event - The committed event.
    */
   onTaskEvent(record: TaskRecord, event: TaskEventRecord): void {
-    if (this.url === undefined || this.stopped) return;
+    if (this.url === undefined || this.queue.stopped) return;
     if (!this.target.events.includes(event.status)) return;
     this.schedule(record, event);
   }
@@ -286,9 +579,7 @@ export class WebhookCallbackDispatcher {
    * scheduled finish". Only the latter may truncate a retry chain.
    */
   async settle(): Promise<void> {
-    while (this.inflight.size > 0) {
-      await Promise.allSettled([...this.inflight]);
-    }
+    await this.queue.settle();
   }
 
   /**
@@ -300,13 +591,12 @@ export class WebhookCallbackDispatcher {
    * timeout rather than by the whole backoff schedule.
    */
   async drain(): Promise<void> {
-    this.stopped = true;
-    await this.settle();
+    await this.queue.drain();
   }
 
   /** Delivery chains still running, for diagnostics. */
   get inflightCount(): number {
-    return this.inflight.size;
+    return this.queue.inflightCount;
   }
 
   /**
@@ -317,83 +607,7 @@ export class WebhookCallbackDispatcher {
    */
   private schedule(record: TaskRecord, event: TaskEventRecord): void {
     const deliveryId = `${record.taskId}:${event.seq}`;
-    // Deduplication is ledger-backed, so a retry after a restart does not
-    // re-notify a receiver that already accepted the event.
-    if (this.ledger.findCallbackDelivery(deliveryId)?.status === "delivered") return;
-
-    const chain = this.deliver(record, event, deliveryId).catch(() => {
-      // Delivery failures are already recorded in the ledger; never let one
-      // escape as an unhandled rejection.
-    });
-    this.inflight.add(chain);
-    void chain.then(
-      () => this.inflight.delete(chain),
-      () => this.inflight.delete(chain),
-    );
-  }
-
-  private async deliver(record: TaskRecord, event: TaskEventRecord, deliveryId: string): Promise<void> {
-    const url = this.url;
-    if (url === undefined) return;
-
     const body = JSON.stringify(callbackPayload(record, event, this.target.includeAssistantSummary === true));
-
-    for (let attempt = 0; attempt < this.target.maxAttempts; attempt += 1) {
-      if (this.stopped) return;
-      if (attempt > 0) await this.sleep(backoffDelayMs(attempt - 1));
-
-      const timestamp = Math.floor(this.now() / 1000);
-      const signature = signCallbackBody(this.secret, timestamp, body);
-      const updatedAt = new Date(this.now()).toISOString();
-
-      try {
-        const response = await this.send(url, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-dsh-control-delivery": deliveryId,
-            "x-dsh-control-event": event.status,
-            "x-dsh-control-timestamp": String(timestamp),
-            "x-dsh-control-signature": signature,
-          },
-          body,
-          signal: AbortSignal.timeout(this.target.timeoutMs),
-        });
-
-        if (response.ok) {
-          await this.ledger.putCallbackDelivery({
-            deliveryId,
-            taskId: record.taskId,
-            event: event.status,
-            attempts: attempt + 1,
-            status: "delivered",
-            updatedAt,
-          });
-          return;
-        }
-
-        await this.ledger.putCallbackDelivery({
-          deliveryId,
-          taskId: record.taskId,
-          event: event.status,
-          attempts: attempt + 1,
-          status: attempt + 1 >= this.target.maxAttempts ? "failed" : "pending",
-          // The status code is a protocol fact, not receiver content.
-          lastError: `HTTP ${response.status}`,
-          updatedAt,
-        });
-      } catch (error) {
-        await this.ledger.putCallbackDelivery({
-          deliveryId,
-          taskId: record.taskId,
-          event: event.status,
-          attempts: attempt + 1,
-          status: attempt + 1 >= this.target.maxAttempts ? "failed" : "pending",
-          // The transport error message is summarized: it may embed the URL.
-          lastError: error instanceof Error ? error.name : "unknown transport failure",
-          updatedAt,
-        });
-      }
-    }
+    this.queue.schedule(deliveryId, event.status, body);
   }
 }

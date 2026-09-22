@@ -13,6 +13,7 @@
     "./contract": "./lib/contract.js",
     "./registry": "./lib/registry.js",
     "./policy": "./lib/policy.js",
+    "./local-fetch": "./lib/local-fetch.js",
     "./package.json": "./package.json"
   },
   "files": [

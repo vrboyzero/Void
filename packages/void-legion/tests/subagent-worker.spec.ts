@@ -20,20 +20,29 @@ function laneInput(overrides: Partial<LaneWorkerInput> = {}): LaneWorkerInput {
   };
 }
 
+/**
+ * 假 ctx：真宿主上取服务走 `ctx.get`（属性访问要过 cordis 的 inject 检查，没声明就抛
+ * `cannot get property "subagents" without inject`），这里照同一个形状来。
+ */
+function fakeCtx(subagents: unknown): Context {
+  return {
+    subagents,
+    get: (name: string) => (name === "subagents" ? subagents : undefined),
+  } as unknown as Context;
+}
+
 describe("createSubagentWorker (真实 ctx.subagents worker)", () => {
   it("派活给 ctx.subagents.start，返回 completed 结果", async () => {
     const started: Array<{ name: string; request: Record<string, unknown> }> = [];
-    const ctx = {
-      subagents: {
-        async start(name: string, request: Record<string, unknown>): Promise<MockRun> {
-          started.push({ name, request });
-          return {
-            result: Promise.resolve({ stopReason: "completed", output: [{ type: "text", text: "done" }] }),
-            async dispose() {},
-          };
-        },
+    const ctx = fakeCtx({
+      async start(name: string, request: Record<string, unknown>): Promise<MockRun> {
+        started.push({ name, request });
+        return {
+          result: Promise.resolve({ stopReason: "completed", output: [{ type: "text", text: "done" }] }),
+          async dispose() {},
+        };
       },
-    } as unknown as Context;
+    });
     const parent = { id: "parent-session-1" } as unknown as Agent;
 
     const worker = createSubagentWorker(ctx, parent);
@@ -50,16 +59,14 @@ describe("createSubagentWorker (真实 ctx.subagents worker)", () => {
   });
 
   it("子代理非 completed 时抛错（触发 lane failed）", async () => {
-    const ctx = {
-      subagents: {
-        async start(): Promise<MockRun> {
-          return {
-            result: Promise.resolve({ stopReason: "error", output: [] }),
-            async dispose() {},
-          };
-        },
+    const ctx = fakeCtx({
+      async start(): Promise<MockRun> {
+        return {
+          result: Promise.resolve({ stopReason: "error", output: [] }),
+          async dispose() {},
+        };
       },
-    } as unknown as Context;
+    });
 
     const worker = createSubagentWorker(ctx, {} as Agent);
     await expect(worker(laneInput())).rejects.toThrow(/error/);
@@ -67,16 +74,14 @@ describe("createSubagentWorker (真实 ctx.subagents worker)", () => {
 
   it("结算后总是 dispose 子代理（finally 释放）", async () => {
     let disposed = false;
-    const ctx = {
-      subagents: {
-        async start(): Promise<MockRun> {
-          return {
-            result: Promise.resolve({ stopReason: "completed", output: [] }),
-            async dispose() { disposed = true; },
-          };
-        },
+    const ctx = fakeCtx({
+      async start(): Promise<MockRun> {
+        return {
+          result: Promise.resolve({ stopReason: "completed", output: [] }),
+          async dispose() { disposed = true; },
+        };
       },
-    } as unknown as Context;
+    });
 
     const worker = createSubagentWorker(ctx, {} as Agent);
     await worker(laneInput());

@@ -35,9 +35,9 @@ function at(value: unknown, path: readonly string[]): { found: boolean; value: u
 }
 
 describe("void-dsh-control panel: 基本 组的说明与实现一致", () => {
-  const fields = (): Array<{ path: string[]; help?: string }> => {
+  const fields = (): Array<{ path: string[]; help?: string; source?: string }> => {
     const m = buildPanelManifest(RUNTIME) as unknown as {
-      groups: Array<{ id: string; fields: Array<{ path: string[]; help?: string }> }>;
+      groups: Array<{ id: string; fields: Array<{ path: string[]; help?: string; source?: string }> }>;
     };
     return m.groups.find((g) => g.id === "basic")!.fields;
   };
@@ -249,7 +249,7 @@ describe("panel: registration", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Re-run the contribution against the now-present service.
-    registerVoidPanel(ctx as never, ENDPOINT);
+    registerVoidPanel(ctx as never, RUNTIME);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(registered.has("@void/void-dsh-control")).toBe(true);

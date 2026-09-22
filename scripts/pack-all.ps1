@@ -37,8 +37,11 @@ $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root "dist"
 $trash = Join-Path $dist ".trash"
 
-# 依赖顺序：先基础插件，再组合 bundle。
+# 依赖顺序：先基础插件，再组合 bundle。void-soul 排在 memory/legion 之前——那两个包
+# 依赖它（记忆的数据根解析、军团的身份图都来自 soul），漏掉它会打出一份装不起来的
+# 组合包：memory/legion 的 tarball 在，被依赖的 soul 不在。
 $packages = @(
+  "packages/void-soul",
   "packages/void-memory",
   "packages/void-tools",
   "packages/void-legion",
@@ -160,3 +163,7 @@ foreach ($entry in $externallyBuilt.GetEnumerator()) {
 }
 Write-Host "`n安装（必须用 tarball，不要用目录）：" -ForegroundColor Green
 Write-Host "  dsh plugin --profile <profile> add `"$dist\<name>.tgz`"" -ForegroundColor Green
+Write-Host "  路径必须写绝对路径；装 memory/legion 前先在 profile 的 package.json 里加" -ForegroundColor DarkGray
+Write-Host "  pnpm.overrides（@void/void-soul 未发布）+ pnpm.onlyBuiltDependencies: [better-sqlite3]；" -ForegroundColor DarkGray
+Write-Host "  重打包后要先删 profile 的 pnpm-lock.yaml 与 node_modules/，否则 add 不会换文件。" -ForegroundColor DarkGray
+Write-Host "  详见 Void使用指南.md 2.6。" -ForegroundColor DarkGray

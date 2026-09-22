@@ -13,6 +13,10 @@
     "./team": "./lib/team.js",
     "./service": "./lib/service.js",
     "./tool": "./lib/tool.js",
+    "./run-tool": "./lib/run-tool.js",
+    "./detail-view": "./lib/detail-view.js",
+    "./notifications": "./lib/notifications.js",
+    "./notification-source": "./lib/notification-source.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -35,6 +39,9 @@
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-subagent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+  },
+  "dependencies": {
+    "@void/void-soul": "workspace:*"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",

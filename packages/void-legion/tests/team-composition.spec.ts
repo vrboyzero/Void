@@ -94,7 +94,7 @@ describe("void legion seam through the Loader", () => {
     const team = context.get("voidTeam") as VoidTeam;
     team.defineTeam(fiveLaneTeam);
 
-    const result = await team.launch("legion-demo");
+    const result = await team.launch("legion-demo", { worker: async () => ({ ok: true }) });
     // plan → plan_doc → code → verify → progress (dependsOn-respecting order).
     expect(result.order[0]).toBe("lane_plan");
     expect(result.order[1]).toBe("lane_plan_doc");
@@ -104,6 +104,50 @@ describe("void legion seam through the Loader", () => {
 
     expect(team.getCheckpoint("legion-demo", "lane_code")).toBe("completed");
     expect(team.getCheckpoint("legion-demo", "lane_progress")).toBe("completed");
+  });
+
+  // §19.1「默认 no-op worker 让任何队伍都空跑成功」——最危险的一种假成功，必须拒绝。
+  it("refuses to launch without a worker instead of silently succeeding", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam(fiveLaneTeam);
+
+    await expect(team.launch("legion-demo")).rejects.toThrow(/派活缺少执行体/);
+    // 拒绝发生在派发之前：一条 checkpoint 都不该被写成 completed。
+    expect(team.getCheckpoint("legion-demo", "lane_plan")).toBeUndefined();
+  });
+
+  // §19.1「未知依赖被忽略」：少写一个成员，旧实现会当没写这条边继续跑。
+  it("rejects a roster whose dependency points outside the roster", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      id: "legion-broken",
+      mode: "parallel_subtasks",
+      memberRoster: [
+        { laneId: "lane_a", authorityRelationToManager: "peer" },
+        { laneId: "lane_b", authorityRelationToManager: "peer", dependsOn: ["lane_missing"] },
+      ],
+    });
+
+    await expect(team.launch("legion-broken", { worker: async () => ({ ok: true }) })).rejects.toThrow(
+      /成员 lane_b 的依赖不在名单里: lane_missing/,
+    );
+  });
+
+  it("rejects a roster whose dependencies form a cycle", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      id: "legion-cycle",
+      mode: "parallel_subtasks",
+      memberRoster: [
+        { laneId: "lane_a", authorityRelationToManager: "peer", dependsOn: ["lane_b"] },
+        { laneId: "lane_b", authorityRelationToManager: "peer", dependsOn: ["lane_a"] },
+      ],
+    });
+
+    await expect(team.launch("legion-cycle", { worker: async () => ({ ok: true }) })).rejects.toThrow(/成员依赖成环/);
   });
 
   it("dispatches lanes in order, passing upstream outputs to downstream workers", async () => {
@@ -143,13 +187,15 @@ describe("void legion seam through the Loader", () => {
 
     const code = result.results.find((r) => r.laneId === "lane_code")!;
     expect(code.status).toBe("failed");
-    // lane_verify 直接依赖 lane_code → 被阻断，不派发。
+    // lane_verify 直接依赖 lane_code → 被阻断，不派发；错误文案要指名是哪个上游没干成。
     const verify = result.results.find((r) => r.laneId === "lane_verify")!;
     expect(verify.status).toBe("failed");
-    expect(verify.error).toContain("blocked");
-    // lane_progress 依赖 lane_verify（也依赖 lane_code）→ 被阻断。
+    expect(verify.error).toContain("上游任务 lane_code 没干成");
+    // lane_progress 依赖 lane_verify 和 lane_code → 也被阻断；两个上游都没干成时
+    // 指名名单里靠前的那个（确定性：同一个计划每次给的文案一样）。
     const progress = result.results.find((r) => r.laneId === "lane_progress")!;
     expect(progress.status).toBe("failed");
+    expect(progress.error).toContain("上游任务 lane_code 没干成");
     // 无依赖的 lane_plan 仍正常完成。
     expect(result.results.find((r) => r.laneId === "lane_plan")!.status).toBe("completed");
   });

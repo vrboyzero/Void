@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Context } from "@deepseek-ai/cordis";
 import Loader from "@deepseek-ai/cordis-plugin-loader";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
-import * as VoidMemorySqlite from "../src/sqlite.js";
+import * as VoidMemoryFiles from "../src/provider.js";
 import * as VoidMemoryTool from "../src/tool.js";
 import type { VoidMemory } from "../src/service.js";
 
@@ -11,10 +14,16 @@ import type { VoidMemory } from "../src/service.js";
 const ACTIVE = 2;
 
 let context: Context | undefined;
+let dataDir: string;
+
+beforeEach(async () => {
+  dataDir = await mkdtemp(join(tmpdir(), "void-memory-composition-"));
+});
 
 afterEach(async () => {
   await context?.fiber.dispose();
   context = undefined;
+  await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 function findFiber(ctx: Context, pluginName: string) {
@@ -32,7 +41,7 @@ async function boot(): Promise<Context> {
   const modules = new Map<string, unknown>([
     ["@deepseek-ai/dsh-system-prompt", SystemPrompt],
     ["@deepseek-ai/dsh-tools", ToolRuntime],
-    ["@void/void-memory/sqlite", VoidMemorySqlite],
+    ["@void/void-memory/provider", VoidMemoryFiles],
     ["@void/void-memory/tool", VoidMemoryTool],
   ]);
   ctx.loader.internal = {
@@ -45,68 +54,57 @@ async function boot(): Promise<Context> {
   // Sequential: Include's Promise.allSettled fan-out drops nested-service providers (Spike finding).
   await ctx.loader.create({ name: "@deepseek-ai/dsh-system-prompt" });
   await ctx.loader.create({ name: "@deepseek-ai/dsh-tools" });
-  await ctx.loader.create({ name: "@void/void-memory/sqlite" });
+  await ctx.loader.create({ name: "@void/void-memory/provider", config: { dataDir } });
   await ctx.loader.create({ name: "@void/void-memory/tool" });
   await ctx.loader.await();
   return ctx;
 }
 
 describe("void memory through the Loader", () => {
-  it("provides voidMemory and round-trips FTS5 + vec0 search", async () => {
+  it("provides voidMemory and keeps two archives mutually invisible", async () => {
     context = await boot();
     const memory = context.get("voidMemory") as VoidMemory;
     expect(memory).toBeDefined();
 
-    const id = memory.store("the void remembers hello world", new Float32Array([0.1, 0.2, 0.3, 0.4]));
-    expect(typeof id).toBe("string");
-    expect(id.length).toBeGreaterThan(0);
+    const xiaobei = memory.forAgent({ agentId: "xiaobei" });
+    const xiaoma = memory.forAgent({ agentId: "xiaoma" });
 
-    const fts = memory.search("void", 5);
-    expect(fts.length).toBeGreaterThan(0);
-    expect(fts[0]!.content).toContain("hello world");
+    const written = await xiaobei.write({ body: "小贝记住：虚空之钥在星港第三码头", target: "long-term" });
+    expect(written.revision).toBe(1);
+    expect(written.indexSynced).toBe(true);
 
-    const vec = memory.searchByVector(new Float32Array([0.1, 0.2, 0.3, 0.4]), 5);
-    expect(vec.length).toBeGreaterThan(0);
-    expect(vec[0]!.content).toContain("hello world");
-    expect(vec[0]!.score).toBeGreaterThan(0);
+    const own = await xiaobei.search({ query: "虚空之钥" });
+    expect(own.length).toBeGreaterThan(0);
+    expect(own[0]!.snippet).toContain("星港");
 
-    // Consumer tool registered + model-visible.
-    expect(context.tools.get("memory_search")).toBeDefined();
-    expect(context.tools.schemas().some((s) => s.name === "memory_search")).toBe(true);
+    // A 记的 B 查不到。
+    expect(await xiaoma.search({ query: "虚空之钥" })).toEqual([]);
+    expect(await xiaoma.list()).toMatchObject({ total: 0, entries: [] });
+
+    // 落盘是 Markdown，模型不参与路径选择。
+    const longTerm = await readFile(join(dataDir, "agents", "xiaobei", "MEMORY.md"), "utf8");
+    expect(longTerm).toContain("虚空之钥");
+  });
+
+  it("registers the six memory tools model-visibly", async () => {
+    context = await boot();
+    const names = context.tools
+      .schemas()
+      .map((schema) => schema.name)
+      .filter((name) => name.startsWith("memory_"))
+      .sort();
+    expect(names).toEqual(["memory_list", "memory_read", "memory_retract", "memory_search", "memory_update", "memory_write"]);
   });
 
   it("releases voidMemory when the provider is disposed (HMR-safe)", async () => {
     context = await boot();
     expect(context.get("voidMemory")).toBeDefined();
 
-    const provider = findFiber(context, "VoidMemorySqlite");
+    const provider = findFiber(context, "VoidMemoryFiles");
     expect(provider).toBeDefined();
     await provider!.dispose();
 
     expect(context.get("voidMemory")).toBeUndefined();
     expect(context.tools.get("memory_search")).toBeUndefined();
-  });
-
-  it("rebuilds the vector table on a dimension change without residue", async () => {
-    context = await boot();
-    const memory = context.get("voidMemory") as VoidMemory;
-
-    memory.store("first chunk with four dims", new Float32Array([1, 2, 3, 4]));
-    // Dimension change triggers a vec0 rebuild (snapshot semantics: no throw, no residue).
-    memory.store("second chunk with three dims", new Float32Array([1, 2, 3]));
-
-    // Both chunks remain keyword-searchable (no corruption after rebuild).
-    expect(memory.search("first", 5).length).toBeGreaterThan(0);
-    expect(memory.search("second", 5).length).toBeGreaterThan(0);
-  });
-
-  it("ingests a document into blank-line-delimited chunks", async () => {
-    context = await boot();
-    const memory = context.get("voidMemory") as VoidMemory;
-
-    const count = memory.ingest("chunk one about void\n\nchunk two about memory\n\nchunk three about legion");
-    expect(count).toBe(3);
-    expect(memory.search("legion", 5).length).toBeGreaterThan(0);
-    expect(memory.search("memory", 5).length).toBeGreaterThan(0);
   });
 });

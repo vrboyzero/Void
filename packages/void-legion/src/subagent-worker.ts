@@ -34,7 +34,13 @@ export function createSubagentWorker(
   const signal = options.signal ?? new AbortController().signal;
   const buildPrompt = options.buildPrompt ?? defaultBuildPrompt;
   return async (input: LaneWorkerInput): Promise<unknown> => {
-    const run = await ctx.subagents.start(provider, {
+    // 用 `ctx.get` 而不是 `ctx.subagents`：属性访问要过 cordis 的 inject 检查，没声明就抛
+    // `cannot get property "subagents" without inject`（真机派活撞过，见 subagent-provider.ts）。
+    const subagents = ctx.get("subagents") as Context["subagents"] | undefined;
+    if (subagents === undefined) {
+      throw new Error("派活缺少子代理 seam：宿主没有装 subagents（@deepseek-ai/dsh-subagent）");
+    }
+    const run = await subagents.start(provider, {
       parent,
       label: input.member.identityLabel ?? input.laneId,
       prompt: buildPrompt(input),

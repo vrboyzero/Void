@@ -19,8 +19,49 @@ export interface VoidWidgetDescriptor {
   title: string | (() => string);
   /** 排序（升序）；默认 100。 */
   order?: number;
+  /** 只读文本。入口只显示，不提供编辑或保存。 */
+  lines?: readonly string[];
+  agentId?: string;
+  selectionRevision?: number;
   /** 渲染体。结构无关：React 壳传 ReactNode，Web Component 壳传元素工厂。 */
   component: unknown;
+}
+
+/** 只读文本节点。用普通对象避开客户端渲染依赖，页面只负责原样显示。 */
+export interface ReadOnlyWidgetNode {
+  id: string;
+  title: string;
+  lines: readonly string[];
+  agentId?: string;
+  selectionRevision?: number;
+}
+
+/** 把已登记小部件收成只读行。没有 lines 的小部件不在这个列表里显示。 */
+/** 只接受带 id、标题和非空文本行的响应。其他字段丢弃，避免接口夹带可执行内容。 */
+export function parseFacetVersionPayload(payload: unknown): readonly ReadOnlyWidgetNode[] {
+  if (typeof payload !== "object" || payload === null || !("versions" in payload) || !Array.isArray(payload.versions)) return [];
+  return payload.versions.flatMap((item) => {
+    if (typeof item !== "object" || item === null || !("id" in item) || !("title" in item) || !("lines" in item)) return [];
+    const { id, title, lines } = item as { id: unknown; title: unknown; lines: unknown };
+    if (typeof id !== "string" || typeof title !== "string" || !Array.isArray(lines) || lines.some((line) => typeof line !== "string") || lines.length === 0) return [];
+    const agentId = "agentId" in item && typeof item.agentId === "string" ? item.agentId : undefined;
+    const selectionRevision = "selectionRevision" in item && typeof item.selectionRevision === "number" ? item.selectionRevision : undefined;
+    return [{ id, title, lines: lines as string[], ...(agentId ? { agentId } : {}), ...(selectionRevision !== undefined ? { selectionRevision } : {}) }];
+  });
+}
+
+export function readOnlyWidgetLines(service: VoidWidgetsService): readonly ReadOnlyWidgetNode[] {
+  return service.getWidgets().flatMap((widget) => {
+    if (!widget.lines || widget.lines.length === 0) return [];
+    const title = typeof widget.title === "function" ? widget.title() : widget.title;
+    return [{
+      id: widget.id,
+      title,
+      lines: widget.lines,
+      ...("agentId" in widget && typeof widget.agentId === "string" ? { agentId: widget.agentId } : {}),
+      ...("selectionRevision" in widget && typeof widget.selectionRevision === "number" ? { selectionRevision: widget.selectionRevision } : {}),
+    }];
+  });
 }
 
 export interface VoidWidgetsService {

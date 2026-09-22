@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Context } from "@deepseek-ai/cordis";
 import Loader from "@deepseek-ai/cordis-plugin-loader";
 import * as VoidEntry from "../src/index.js";
+import { resolveProfileLocation } from "../src/index.js";
 import type { VoidSuite } from "../src/index.js";
 
 /** 最小合法 Cordis 插件替身：只用来占住一条 entry 行。 */
@@ -137,7 +138,20 @@ describe("void-entry host routes (webServer is optional and late)", () => {
     await ctx.loader.await();
 
     const webServer = ctx.get("webServer") as unknown as { routes: Map<string, unknown> };
-    expect([...webServer.routes.keys()].sort()).toEqual(["/void/api/panels", "/void/api/status", "/void/api/toggle"]);
+    expect([...webServer.routes.keys()].sort()).toEqual(["/void/api/detail", "/void/api/facet-selection", "/void/api/facet-versions", "/void/api/notifications", "/void/api/panels", "/void/api/status", "/void/api/toggle"]);
+  });
+
+  it("uses an explicit isolated home and never falls back to the default home", () => {
+    expect(resolveProfileLocation({ get: () => undefined }, { DSH_HOME: "E:/isolated", DSH_PROFILE: "web" })).toEqual({ home: "E:/isolated", name: "web" });
+    expect(resolveProfileLocation({ get: () => undefined }, {})).toBeUndefined();
+  });
+
+  it("returns no facet versions until a source and profile are both present", async () => {
+    context = await boot(ENTRY_ONLY);
+    const response = { statusCode: 0, body: "", setHeader() {}, end(body: string) { this.body = body; } };
+    await (suiteOf(context) as unknown as { handleFacetVersions(ctx: Context, res: typeof response): Promise<void> })
+      .handleFacetVersions(context, response);
+    expect(JSON.parse(response.body)).toEqual({ versions: [] });
   });
 
   it("does not fail to load when no webServer ever appears (headless)", async () => {

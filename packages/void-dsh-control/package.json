@@ -15,6 +15,8 @@
     "./state-machine": "./lib/state-machine.js",
     "./policy": "./lib/policy.js",
     "./auth": "./lib/auth.js",
+    "./callback": "./lib/callback.js",
+    "./legion-delivery": "./lib/legion-delivery.js",
     "./service": "./lib/service.js",
     "./package.json": "./package.json"
   },

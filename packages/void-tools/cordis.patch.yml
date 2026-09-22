@@ -15,4 +15,10 @@
           role: researcher
           allowedToolFamilies:
             - workspace-read
+            # 本机抓取（local_fetch）属于 network-read；白名单为空时它照样谁都不放行。
+            - network-read
           maxToolRiskLevel: medium
+    # 本机抓取：只 GET、只去下面 allow 里逐条写明的本机地址（默认空 = 谁都不许去）。
+    # 要开口子就在 profile 的 patch 里用同一个 id 覆盖，写 allow: [{ host, port }]。
+    - id: void-tools-local-fetch
+      name: "@void/void-tools/local-fetch"

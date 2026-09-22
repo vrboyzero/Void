@@ -73,6 +73,7 @@ describe("settings: namespace coverage", () => {
       "enabled",
       "events",
       "includeAssistantSummary",
+      "includeLegionRuns",
       "maxAttempts",
       "secretEnv",
       "timeoutMs",

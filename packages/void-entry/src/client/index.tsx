@@ -1,6 +1,7 @@
 import { createElement as h, useCallback, useEffect, useRef, useState } from 'react'
 import type { Context } from './context-types.ts'
-import { createVoidWidgetsService } from './widgets.js'
+import { openSession } from './session-jump.js'
+import { createVoidWidgetsService, parseFacetVersionPayload, readOnlyWidgetLines, type VoidWidgetsService } from './widgets.js'
 import {
   Button,
   DisclosureRow,
@@ -26,6 +27,8 @@ import { ConnectBlock } from './connect.js'
 import { TEXT_SECONDARY, BORDER, WARN, WARN_SURFACE, ROW_TITLE_CLASS, ensureStyles } from './theme.js'
 import { draftOps, editDraft, isDirty, saveBlockers, shownValue, type Draft } from './draft.js'
 import { readonlyText } from './display.js'
+import { VOID_REQUEST_HEADER, VoidDetails, type DetailViewManifest } from './details.js'
+import { VoidNotifications, type NotificationSourceManifest } from './notifications.js'
 import {
   ChoicesField,
   Group,
@@ -54,6 +57,14 @@ const SECTION_LABEL = '虚空（Void）'
  * 之前，正好和其他第三方扩展聚在一起。
  */
 const SECTION_ORDER = 45
+
+/**
+ * 改动请求的头。
+ *
+ * 宿主侧对 `/void/api/*` 的写路由要求一个自定义头（跨站页面发不出自定义头，发得出
+ * 就得先过 preflight，而宿主不回应 CORS 预检）。三条写调用都用这一份，别各写各的。
+ */
+const MUTATION_HEADERS = { 'Content-Type': 'application/json', [VOID_REQUEST_HEADER]: '1' }
 
 
 interface PluginState {
@@ -143,7 +154,7 @@ export function apply(ctx: Context): void {
     id: 'void',
     order: SECTION_ORDER,
     label: () => SECTION_LABEL,
-  }, VoidSection))
+  }, () => h(VoidSection, { widgets: ctx.voidWidgets, openSession: (sessionId) => openSession(ctx, sessionId) })))
 }
 
 // ── schema 读取 ────────────────────────────────────────────────────────────
@@ -207,9 +218,12 @@ function summarize(manifest: PanelManifest, view: NamespaceView | undefined, gro
 
 // ── 面板 ───────────────────────────────────────────────────────────────────
 
-function VoidSection(): React.ReactElement {
+function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessionId: string) => boolean | Promise<boolean> }): React.ReactElement {
   const [plugins, setPlugins] = useState<PluginState[] | null>(null)
   const [manifests, setManifests] = useState<Record<string, PanelManifest>>({})
+  const [detailViews, setDetailViews] = useState<DetailViewManifest[]>([])
+  // 通知来源的目录同样由 host 侧给出（§16.2 L9 第五条）：面板不硬编码任何来源 id。
+  const [notificationSources, setNotificationSources] = useState<NotificationSourceManifest[]>([])
   const [views, setViews] = useState<Record<string, NamespaceView>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -224,6 +238,7 @@ function VoidSection(): React.ReactElement {
    * 过滤）都不再需要。
    */
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
+  const [readOnlyRows, setReadOnlyRows] = useState(() => props.widgets ? readOnlyWidgetLines(props.widgets) : [])
   // 写回时要读最新视图，但不想让 `edit` 依赖 `views` 而频繁重建。
   const viewsRef = useRef<Record<string, NamespaceView>>({})
   viewsRef.current = views
@@ -244,23 +259,36 @@ function VoidSection(): React.ReactElement {
     let cancelled = false
     Promise.all([
       fetch('/void/api/status').then((r) => r.json() as Promise<{ plugins?: PluginState[] }>),
-      fetch('/void/api/panels').then((r) => r.json() as Promise<{ panels?: Record<string, PanelManifest> }>),
+      fetch('/void/api/panels').then((r) => r.json() as Promise<{ panels?: Record<string, PanelManifest>; details?: DetailViewManifest[]; notifications?: NotificationSourceManifest[] }>),
     ])
       .then(([status, panels]) => {
         if (cancelled) return
         const list = status.plugins ?? []
         setPlugins(list)
         setManifests(panels.panels ?? {})
+        // 业务视图的目录由 host 侧给出：客户端不认识任何具体业务 id。
+        setDetailViews(panels.details ?? [])
+        setNotificationSources(panels.notifications ?? [])
         setOpenPlugin(list.find((p) => p.toggleable)?.id ?? null)
       })
       .catch(() => {
         if (!cancelled) setPlugins([])
       })
     void refreshViews()
+    void fetch('/void/api/facet-versions')
+      .then((response) => response.ok ? response.json() : { versions: [] })
+      .then((payload) => { if (!cancelled) setReadOnlyRows(parseFacetVersionPayload(payload)) })
+      .catch(() => { if (!cancelled) setReadOnlyRows([]) })
     return () => {
       cancelled = true
     }
   }, [refreshViews])
+
+  useEffect(() => {
+    if (!props.widgets) return undefined
+    setReadOnlyRows(readOnlyWidgetLines(props.widgets))
+    return props.widgets.subscribe(() => setReadOnlyRows(readOnlyWidgetLines(props.widgets!)))
+  }, [props.widgets])
 
   const applyEnabled = (ids: string[], enabled: boolean) => {
     setPlugins((ps) => (ps ?? []).map((p) => (ids.includes(p.id) ? { ...p, enabled } : p)))
@@ -271,7 +299,7 @@ function VoidSection(): React.ReactElement {
     setError(null)
     fetch('/void/api/toggle', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: MUTATION_HEADERS,
       body: JSON.stringify({ pluginId: id, enabled }),
     })
       .then(async (r) => {
@@ -359,7 +387,7 @@ function VoidSection(): React.ReactElement {
           ? Promise.resolve()
           : fetch('/void/api/toggle', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: MUTATION_HEADERS,
               body: JSON.stringify({ pluginId: p.id, enabled: target }),
             }).then(async (r) => {
               if (!r.ok) throw new Error(((await r.json()) as { error?: string }).error ?? `HTTP ${r.status}`)
@@ -372,6 +400,25 @@ function VoidSection(): React.ReactElement {
   }
 
   return h('div', { 'data-void-entry': '', style: { display: 'flex', flexDirection: 'column' } },
+    readOnlyRows.length > 0
+      ? h('div', { 'data-void-readonly-widgets': '', style: { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 } },
+          ...readOnlyRows.map((row) => h('section', { key: row.id, 'data-widget-id': row.id },
+            h('div', { style: { fontSize: 13, marginBottom: 4 } }, row.title),
+            ...row.lines.map((line) => h('p', { key: line, style: { color: TEXT_SECONDARY, fontSize: 12, margin: 0 } }, line)),
+            row.agentId && row.selectionRevision !== undefined
+              ? h('button', {
+                  type: 'button',
+                  'data-clear-facet': row.agentId,
+                  onClick: () => fetch('/void/api/facet-selection', {
+                    method: 'POST',
+                    headers: MUTATION_HEADERS,
+                    body: JSON.stringify({ agentId: row.agentId, facetId: null, expectedRevision: row.selectionRevision }),
+                  }).then(() => fetch('/void/api/facet-versions').then((response) => response.json()).then((payload) => setReadOnlyRows(parseFacetVersionPayload(payload)))),
+                }, '清空已保存角色')
+              : null,
+          )),
+        )
+      : null,
     // ── 状态条：计数 + 整套开关，压成一行，把纵向空间让给配置 ─────────────
     h('div', {
       style: {
@@ -403,6 +450,10 @@ function VoidSection(): React.ReactElement {
           )
         : null,
     ),
+
+    // 通知栏：运行结束这类事发生在面板没开的时候，重连后按未读补读（§16.2 L9 第五条）。
+    // 紧跟状态条——「你不在的时候出过事」比插件列表更该先看到；没有来源登记时整栏不画。
+    h(VoidNotifications, { sources: notificationSources }),
 
     list.length > 1
       ? h('div', { style: { marginBottom: 12 } },
@@ -446,6 +497,9 @@ function VoidSection(): React.ReactElement {
                 }),
               ),
             ),
+
+    // 业务详情视图（队伍/任务/记忆/…）：目录来自 host，这里只负责渲染。
+    h(VoidDetails, { views: detailViews, onOpenSession: props.openSession }),
 
     error
       ? h('div', { style: { marginTop: 12 } }, h(Hint, { text: error, tone: 'danger' }))

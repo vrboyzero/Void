@@ -1,14 +1,69 @@
-# Void composition bundle: memory + tools + legion in one profile layer.
+# Void 组合 bundle：把灵魂、记忆、工具治理、军团与虚空入口装进同一个 profile 层。
+#
+# 这一层是各包自带 bundle 层的**并集**，内容必须与它们保持一致：某个包新挂了插件，
+# 这里也要跟上，否则「装组合 bundle」与「逐个装包」会得到两套不同的运行形态——
+# 而后者正是本地开发最常用的装法，两边不一致时问题只在发布后才暴露。
+# 对照清单：`packages/void-soul/cordis.patch.yml`、`packages/void-memory/cordis.patch.yml`、
+# `packages/void-tools/cordis.patch.yml`、`packages/void-legion/cordis.patch.yml`、
+# `packages/void-entry/cordis.patch.yml`；`packages/void/tests/bundle-parity.spec.ts`
+# 会逐条比对，漏了就红。
 - insert:
-    - id: void-memory-sqlite
-      name: "@void/void-memory/sqlite"
+    # 虚空入口：面板壳 + 业务视图/通知来源注册表。没有它，下面的详情视图与通知
+    # 只是注册进空注册表，模型与宿主侧功能照常。
+    - id: void-entry
+      name: "@void/void-entry"
+    # 灵魂：说明书解析与注入、身份图（`voidAuthority`）、人类管理入口（`voidSoul`）。
+    - id: void-soul
+      name: "@void/void-soul/plugin"
+    - id: void-authority
+      name: "@void/void-soul/authority-service"
+    - id: void-soul-library
+      name: "@void/void-soul/soul-service"
+    - id: void-soul-detail
+      name: "@void/void-soul/detail-view"
+    # 记忆：新 provider（每份档案一个 Markdown 记忆仓 + 只服务检索的 memory.sqlite）、
+    # 模型工具、人类管理入口与记忆详情视图。
+    # 注意是 `/provider` 而不是旧的 `/sqlite`：后者是内嵌 Star 快照的**旧** provider，
+    # 只登记 `voidMemoryLegacy`，新记忆一律走前者。
+    - id: void-memory-provider
+      name: "@void/void-memory/provider"
     - id: void-memory-tool
       name: "@void/void-memory/tool"
+    - id: void-memory-library
+      name: "@void/void-memory/memory-service"
+    - id: void-memory-detail
+      name: "@void/void-memory/detail-view"
+    # 工具治理：契约注册表 + 角色策略映射（示例配置与 void-tools 自带层一致）。
     - id: void-tools-contracts
       name: "@void/void-tools/registry"
     - id: void-tools-policy
       name: "@void/void-tools/policy"
+      config:
+        contracts:
+          - name: void_exec
+            family: command-exec
+            isReadOnly: false
+            needsPermission: true
+            riskLevel: high
+        rolePolicy:
+          role: researcher
+          allowedToolFamilies:
+            - workspace-read
+            # 本机抓取（local_fetch）属于 network-read；白名单为空时它照样谁都不放行。
+            - network-read
+          maxToolRiskLevel: medium
+    # 本机抓取：只 GET、只去下面 allow 里逐条写明的本机地址（默认空 = 谁都不许去）。
+    # 要开口子就在 profile 的 patch 里用同一个 id 覆盖，写 allow: [{ host, port }]。
+    - id: void-tools-local-fetch
+      name: "@void/void-tools/local-fetch"
+    # 军团：派活、运行工具、队伍/任务详情视图与终态通知来源。
     - id: void-legion
       name: "@void/void-legion/service"
     - id: void-legion-tool
       name: "@void/void-legion/tool"
+    - id: void-legion-run-tool
+      name: "@void/void-legion/run-tool"
+    - id: void-legion-detail
+      name: "@void/void-legion/detail-view"
+    - id: void-legion-notifications
+      name: "@void/void-legion/notification-source"

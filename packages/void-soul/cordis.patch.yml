@@ -1,0 +1,14 @@
+# Bundle layer for @void/void-soul. Applied when a profile lists this bundle.
+- insert:
+    - id: void-soul
+      name: "@void/void-soul/plugin"
+    # 身份图来源（`voidAuthority`）。军团靠它按会话解析派活者；少了这一条时
+    # `launch_legion` 会明确抛「派活缺少权威档案」，而不是拿默认身份放行。
+    - id: void-authority
+      name: "@void/void-soul/authority-service"
+    # 人类管理入口（`voidSoul`）。只给面板用，不发布给模型工具；缺了它面板里
+    # 灵魂档案/模组库两个视图不出现，灵魂本身照常工作。
+    - id: void-soul-library
+      name: "@void/void-soul/soul-service"
+    - id: void-soul-detail
+      name: "@void/void-soul/detail-view"

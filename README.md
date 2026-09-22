@@ -1,56 +1,69 @@
-# Void MVP（首版）说明
+# Void —— 寄生在 dsh 上的虚空插件集
 
-> 阶段 3 Void MVP 的首版边界（完成标准 #8）。
+> 把「灵魂（人格底线 + 模组）」「人格记忆（按 Agent 隔离的 Markdown 记忆仓）」「军团（真实子代理派活）」
+> 做成 dsh 插件，并合到一个 Web 界面入口里。
+>
+> 计划与进度：[`docs/灵魂记忆与军团.md`](docs/灵魂记忆与军团.md)｜安装与使用：[`Void使用指南.md`](Void使用指南.md)｜
+> 方案总纲：[`虚空寄生实施方案计划.md`](虚空寄生实施方案计划.md)｜来源清单：[`SOURCES.md`](SOURCES.md)
 
-## 首版包含
+## 现在包含什么
 
-- `@void/void-memory`：`ctx.voidMemory` knowledge seam（FTS5 + sqlite-vec 检索/写入，最小闭环）。
-- `@void/void-tools`：`ctx.voidToolContracts` 契约注册表 + `ctx.tools.guard` 角色策略映射。
-- `@void/void-legion`：`ctx.voidTeam` 军团 seam（roster + 权威关系 + checkpoint）。
-- `@void/void`：组合 bundle（三 seam 合到一个 profile 层）。
-- `@void/void-channel-feishu`：渠道 seam（`ctx.voidChannels` 注册表 + mock Feishu 传输，receive→ingress→reply 形状）。
-- `@void/void-dsh-control`：灵榜控制面（MCP Streamable HTTP，让外部 AI 指挥正在运行的 DSH Web profile）。**独立 workspace + tarball 安装，见下节。**
-- 三 seam 纵向闭环（集成测试 `packages/void/tests/vertical-closure.spec.ts`）。
+| 包 | 作用 |
+|---|---|
+| `@void/void-soul` | 灵魂：`ctx.voidAuthority` 权威档案 + `ctx.voidSoul` 灵魂档案与模组库；装进模型前的预算与变量预检，装不下时在通知栏留一条（`void-soul:refusals`）；首次见面引导（档案 front matter 的 `firstMeeting` + `state.json` 的完成位，面板可标完成/重来） |
+| `@void/void-memory` | 人格记忆：`memory_*` 6 个工具 + `ctx.voidMemoryLibrary` 面板视图；另含旧知识层 `/sqlite`（内嵌 Star 快照） |
+| `@void/void-tools` | 工具治理：`ctx.voidToolContracts` 契约注册表 + `ctx.tools.guard` 角色策略 |
+| `@void/void-legion` | 军团：队伍、真实子代理执行、运行记录、终态通知（`launch_legion` / `legion_run` / `legion_cancel`）；逐 lane 把成员自己的 SOUL + 当前角色装进子代理 persona（取不到就整次拒绝派活） |
+| `@void/void-entry` | 界面入口：设置卡片 + `/void/api/*` 路由 + 业务视图注册表 + 详情渲染器 + 通知栏 |
+| `@void/void-channel-feishu` | 渠道：`ctx.voidChannels` 注册表 + mock 飞书传输（receive→ingress→reply 形状）；**发消息侧**另有真实实现 `RealFeishuChannel`（`./real-feishu`，Lark SDK 已是依赖，缺凭据 fail-closed） |
+| `@void/void` | 组合 bundle = entry + soul + memory + tools + legion 五包的**并集**（16 条 entry） |
+| `@void/void-seam-demo` | 阶段 1 的最小 seam 模板（新插件照着抄） |
+| `@void/void-dsh-control` | 灵榜控制面：MCP Streamable HTTP，让外部 AI 指挥**正在运行的** DSH Web profile。**独立 workspace + tarball 安装**，见下 |
 
-## 首版明确排除（未做 / 待后续）
+五个业务包共用一套数据根：`<DSH_HOME>/void-data/<DSH_PROFILE>/`——**`DSH_PROFILE` 必须显式给**
+（`dsh --profile X` 不会替你设），只给 `DSH_HOME` 时插件照样加载、业务视图回 `404 无法确定档案位置`。
+完整说明见 [`Void使用指南.md`](Void使用指南.md) 2.6。
 
-- **真实 Feishu 集成**：`void-channel-feishu` 已有 mock 传输 seam；真实 Lark SDK + webhook + app 凭据未接入（外部依赖）。接入清单：① 依赖 `@larksuiteoapi/node-sdk`；② Feishu 应用 `app_id`/`app_secret` + 事件订阅 webhook URL；③ 实现 `VoidChannel`（webhook 收消息 → `onMessage` ingress → Lark SDK 回消息），源码参考 `belldandy-channels/src/feishu-http-transport.ts`（脱耦 BelldandyAgent 后复用传输形状）。
-- **dream/摄取链路**：dream-* / external-memory-ingest 源码已随全量快照内嵌，但首版未暴露为 `ctx.voidMemory` seam / 工具，待后续接入。
-- **军团执行引擎**：`void-legion` 的 `launch` 已实现"依赖序派发 + 可注入 worker + 失败传播"；接 `ctx.subagents`（真实子代理 spawn）待后续。
-- **UI 深改**：壳 B（Tauri 2）属阶段 4；壳 A（dsh 薄 UI）属阶段 2/3/5 插件 client 半边，首版未做。
+## 还没做（诚实清单）
+
+- **真实飞书的收消息侧**：发消息侧（`RealFeishuChannel`，飞书官方 SDK 主动发到指定 chat）已实现；**webhook 事件订阅 + 回调路由**这另一半未做，默认 bundle 装的仍是 mock 传输。
+- **dream / external-memory-ingest**：源码随全量快照内嵌在 `packages/void-memory/src/star/`，但没暴露成 seam / 工具。
+- **壳 B（Tauri 2）**：属阶段 4，未开始；dsh 自带的 Web 壳（壳 A）已由 `void-entry` 接管。
+- **人工核对**：真机上的界面与交互核对由开发者按 [`docs/灵魂记忆与军团.md`](docs/灵魂记忆与军团.md) 19.3 的清单做，插件侧只保证测试与接口。
 
 ## 本地 profile 启动步骤（一条命令）
 
-> `dsh plugin add <绝对路径>` 会**自动识别 `dsh.bundle` 并加进 profile 的 bundles**，无需手动改（早期文档里的"手动补 bundle"是误判，源自用了错误的相对路径）。
+> `dsh plugin add <绝对路径>` 会**自动识别 `dsh.bundle.patch` 并加进 profile 的 `dsh.profile.bundles`**，无需手动改。
 
 ```powershell
-# 方式一：用脚本（推荐）
-.\scripts\install-profile.ps1 -Profile demo -DshHome "E:\project\star-sanctuary\Void\.dsh-demo"
+# 方式一：用脚本（推荐；装 soul/memory/tools/legion/entry/feishu 六个包）
+.\scripts\install-profile.ps1 -Profile web -DshHome "E:\project\star-sanctuary\Void\.tmp\soul-profile"
 
 # 方式二：手动逐条（等价）
-$env:DSH_HOME = "E:\project\star-sanctuary\Void\.dsh-demo"
-dsh plugin --profile demo add @deepseek-ai/dsh-headless@0.1.0-rc.6   # 显式 rc.6，勿用 latest
-dsh plugin --profile demo add "E:\project\star-sanctuary\Void\packages\void-memory"
-dsh plugin --profile demo add "E:\project\star-sanctuary\Void\packages\void-tools"
-dsh plugin --profile demo add "E:\project\star-sanctuary\Void\packages\void-legion"
-dsh plugin --profile demo add "E:\project\star-sanctuary\Void\packages\void-channel-feishu"
+$env:DSH_HOME = "E:\project\star-sanctuary\Void\.tmp\soul-profile"
+dsh plugin --profile web add @deepseek-ai/dsh-headless@0.1.0-rc.6   # 显式 rc.6，勿用 latest
+foreach ($p in "void-soul","void-memory","void-tools","void-legion","void-entry","void-channel-feishu") {
+  dsh plugin --profile web add "E:\project\star-sanctuary\Void\packages\$p"
+}
 
-# 验证 + 跑任务
-dsh --profile demo --dump-config     # 应看到 # == @void/* 各层
-$env:DEEPSEEK_API_KEY = "..."
-dsh --profile demo "任务"
+# 验证 + 启动（DSH_PROFILE 必须一起给，否则业务视图回 404）
+dsh --profile web --dump-config | Select-String "void-"   # 五包共 16 条 entry
+$env:DSH_PROFILE = "web"
+dsh web --no-open --port 3699
 ```
 
-> 注：本地开发直接装 4 个独立插件包即可（等价于组合 bundle `@void/void`）。组合 bundle 依赖这些包（`workspace:*`），本地 link 时内部依赖无法解析；其用途是"发布后作为单一入口"。
+> 本地开发装独立包即可（与组合 bundle 等价）；组合包 `@void/void` 依赖 `@void/void-*`，本地 link 时内部依赖解析不了，其用途是"发布后作为单一入口"。隔离 profile 的安装 / 备份 / 回滚 / 卸载见 [`Void使用指南.md`](Void使用指南.md) 2.6。
 
 ## 发行形态（打包 / 发布）
 
-- **打包**：`.\scripts\pack-all.ps1` 把所有包 `pnpm pack` 到 `dist/`（`workspace:*` 会自动重写为版本号）。
-- **本地 tarball 互装受限**：`pnpm add <多个 tarball>` 时，包之间的相互依赖仍会去 npm 解析（404）。故**正式发行需 `pnpm publish` 到 npm（或私有 registry）后 `dsh plugin add @void/void`**；tarball 只适用于无相互依赖的单包分发。
+- **打包**：`pwsh -File scripts/pack-all.ps1` 把六个包（soul / memory / tools / legion / entry / feishu）与组合包 `@void/void` 一起 `pnpm pack` 到 `dist/`（`workspace:*` 自动重写为版本号），旧 tarball 归档到 `dist/.trash/pack-<时间戳>`。
+- **`pnpm pack` 不编译**：它只打现成的 `lib/`，所以脚本里先 `pnpm -r build`；漏了构建就会打上一次的代码（命令成功、产物是旧的）。
+- **本地 tarball 互装受限**：`pnpm add <多个 tarball>` 时包之间的相互依赖仍会去 registry 解析（404）。正式发行需 `pnpm publish` 到 npm（或私有 registry）后 `dsh plugin add @void/void`；在隔离 profile 里逐包装 tarball 是可行的（见使用指南 2.6）。
+- 控制面单独打包：`pwsh -File scripts/pack-lingbang.ps1`。
 
 ## `@void/void-dsh-control`（灵榜控制面）单独说明
 
-这个包**与上面 5 个包形态不同**，不要用同一套步骤：
+这个包**与上面这些包形态不同**，不要用同一套步骤：
 
 | 维度 | 其余 Void 包 | `void-dsh-control` |
 |---|---|---|
@@ -78,14 +91,34 @@ dsh plugin --profile <profile> remove "@void/void-dsh-control"
 完整说明见 `packages/void-dsh-control/README.md`，以及
 `docs/灵榜会话功能实现方案计划.md` 第 25 节（普通用户版安装、配置与操作指南）。
 
-## 命名空间与数据目录（完成标准 #7）
+**军团投递（P6g）**：控制面新增可选的回调消费者——军团每次运行进入终态（完成 / 失败 / 取消）时，把
+一条 `legion/run-terminal` 事件按和任务回调同一套传输发出去（签名、超时、允许域、指数退避、稳定
+`deliveryId` = 军团的 `eventId`）。开关是设置卡片里的 `callback.includeLegionRuns`（默认关），
+`callback.enabled` 与 `callback.url` 仍然是总开关。网络侧**只能是「至少一次」**，接收端必须按
+`eventId` 去重；控制面挂载前军团照常运行，挂载后会自动补投未确认的事件。
 
-- 环境变量统一 `VOID_*`（当前已用 `VOID_MEMORY_PATH`、`VOID_FEISHU_APP_ID` / `VOID_FEISHU_APP_SECRET`、`VOID_DSH_CONTROL_TOKEN` / `VOID_DSH_CONTROL_CALLBACK_SECRET`）。
-- 数据目录独立于 `DSH_HOME` / `~/.star_sanctuary`，默认 `:memory:`（测试）或 `VOID_MEMORY_PATH` 指定文件。
+## 命名空间与数据目录
+
+- 环境变量统一 `VOID_*`（已用 `VOID_MEMORY_PATH`、`VOID_FEISHU_APP_ID` / `VOID_FEISHU_APP_SECRET`、`VOID_DSH_CONTROL_TOKEN` / `VOID_DSH_CONTROL_CALLBACK_SECRET`）。
+- **灵魂 / 人格记忆 / 军团的数据根是 `<DSH_HOME>/void-data/<DSH_PROFILE>/`**（按 profile 隔离，不在模型工作区内）：
+  `agents/<agentId>/SOUL.md`、`agents/<agentId>/MEMORY.md` + `memory/*.md` + `memory.sqlite`、
+  `agents/facets/*.md`（共享模组库）、`legion/teams/*.json`、`legion/runs/`、`legion/notifications.json`。
+  显式给绝对 `dataDir` 可覆盖；**没配数据根不会让插件加载失败**——服务照常挂载，用到数据时才报错
+  （`灵魂档案没有数据根…` / `人格记忆没有数据根…` / `军团没有数据根…`），**配错**（相对路径、越界档案名）则当场抛。
+- **链接一律看穿**：数据根内的每次读写先做字符串比、再做一次 realpath 比（`void-soul/src/path-guard.ts` + `void-memory/src/paths.ts`）。
+  `agents/<agentId>`、`agents/facets`、记忆的 `memory/`、`MEMORY.md`、`memory.sqlite` 被换成指向数据根外的链接时抛
+  `路径经链接后越界: …` / `记忆路径经链接后越界: …`，列目录遇到链接直接拒绝（Windows 上 junction 的 `isDirectory()` 是 false，
+  静默跳过会让人以为数据丢了）。数据根**自己**落在链接下（把 `.dsh` 挪到别的盘）是正常部署，照常放行。
+- **`facets` 是保留目录名**（大小写不敏感：Windows 上 `agents/Facets` 就是 `agents/facets`）：它归共享模组库，
+  不能同时当某份档案的目录。判定只有一处——`void-soul/src/profile.ts` 的 `FACET_DIRECTORY_NAME` / `isFacetDirectoryName()`，
+  注册扫描、模组库路径拼接与人格记忆的档案 id 校验都用它；人格记忆里 `facets` 既不能当档案 id，
+  也不会被列成一份「档案」（否则记忆文件会写进模组库、面板上凭空多一份档案）。
+- 旧知识层（`/sqlite`，内嵌 Star 快照）仍用 `VOID_MEMORY_PATH`（缺省 `:memory:`），**与上面的数据根无关**。
 
 ## 升级方式
 
-- 依赖已发布 `@deepseek-ai/dsh-*@0.1.0-rc.6`（npm `next`）；`@deepseek-ai/cordis@4.0.1`（vendor 家族）。
+- 五个业务包依赖已发布 `@deepseek-ai/dsh-*@0.1.0-rc.6`（npm `next`）；`@deepseek-ai/cordis@4.0.1`（vendor 家族）。
+- 控制面 `void-dsh-control` 走另一条版本线（宿主契约 `0.1.5-rc.2`），单独 workspace、单独打包，根 `pnpm -r` 不覆盖它。
 - dsh 基座源码 `master@47f9438`（rc.5）仅作只读参考，与 npm rc.6 存在一版错位。
 
 ## DSH 插件开发要点（官方契约 + 实测）

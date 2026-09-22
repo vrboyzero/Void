@@ -4,3 +4,11 @@
       name: "@void/void-legion/service"
     - id: void-legion-tool
       name: "@void/void-legion/tool"
+    - id: void-legion-run-tool
+      name: "@void/void-legion/run-tool"
+    # 业务详情视图（队伍/任务）。没有 voidSuite 的组合里它不生效，军团照常工作。
+    - id: void-legion-detail
+      name: "@void/void-legion/detail-view"
+    # 终态通知来源（断线补读）。同样：没有入口面板时不生效，军团照常工作。
+    - id: void-legion-notifications
+      name: "@void/void-legion/notification-source"

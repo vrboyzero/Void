@@ -341,6 +341,51 @@ x-dsh-control-signature: sha256=<hex>
 - **失败不影响任务**：投递失败只记 ledger，不会把任务改成失败，也不会阻塞编排。
 - 插件卸载时会先停止接受新请求，再 `drain()` 等投递收敛，最后关闭路由与 ledger。
 
+### 3.3 军团终态投递（可选）
+
+军团（`@void/void-legion`）每次运行进入终态（`completed` / `failed` / `cancelled`）都会发一条
+`legion/run-terminal` 事件。控制面与它装在同一 profile 时，可以把这条事件转成一次回调。**默认关闭**：
+
+```yaml
+- id: void-dsh-control
+  config:
+    callback:
+      enabled: true              # 总开关，与任务回调共用
+      url: 'https://receiver.example/dsh-hook'
+      secretEnv: VOID_DSH_CONTROL_CALLBACK_SECRET
+      events: [completed, failed, cancelled]   # 这份事件过滤同样管军团状态
+      includeLegionRuns: true    # ← 打开军团终态投递
+```
+
+请求走**同一套传输**（同样的签名头、`timeoutMs`、`allowedHosts`、指数退避与投递记账），
+只是 `x-dsh-control-event` 是运行状态、负载换成了军团事件：
+
+```http
+POST /dsh-hook HTTP/1.1
+content-type: application/json
+x-dsh-control-delivery: run-7f3#1
+x-dsh-control-event: completed
+x-dsh-control-timestamp: 1790000000
+x-dsh-control-signature: sha256=<hex>
+
+{"deliveryId":"run-7f3#1","eventId":"run-7f3#1","runId":"run-7f3","teamId":"legion-demo",
+ "status":"completed","finishedAt":"...","counts":{"completed":3},"resultRef":"..."}
+```
+
+约定：
+
+- **`deliveryId` = 军团的 `eventId`**（形如 `<runId>#1`）：同一个终态永远是同一个 id，接收方按它去重。
+- **不伪造任务**：军团事件**不会**变成控制面的 `TaskRecord`，不落 `tasks` / `task_events`——`tasks` 保持
+  「外部调用方派的任务」这个语义。军团事件的投递记账写在**军团自己的通知文件**里
+  （`<数据根>/legion/notifications.json` 的 `delivery` 字段），不进 `callback_deliveries`。
+- **网络侧仍是「至少一次」**：接收端必须按 `eventId` 去重，**不要**假定恰好一次。
+- **负载范围**：只有状态、计数与一个受控的结果引用（`resultRef`，相对路径）；不含成员产出、记忆正文、
+  SOUL 正文或会话文本。接收方按自己的权限去读 `resultRef`。
+- **挂载是反应式的**：没装控制面时军团照常跑（终态落进军团自己的通知仓，界面通知栏照样能看到）；
+  控制面之后挂上、或重启恢复时，未确认的事件会被补投。
+- **不影响运行**：投递失败只记账，不改运行结果、不重跑成员任务、不阻塞军团的写入路径。
+- **军团没有数据根时不投递**：没有落盘的通知仓就没地方记账，适配器自己关掉。
+
 ## 4. 错误码
 
 稳定、可诊断、不含凭据与内部堆栈：
@@ -427,7 +472,7 @@ profile 的 `cordis.patch.yml` 是一个**顶层 YAML 数组**，回滚条目要
 cd packages/void-dsh-control
 pnpm install
 pnpm run typecheck   # src + tests 两套 tsconfig
-pnpm test            # vitest，10 文件 / 215 例
+pnpm test            # vitest，15 文件 / 302 例
 pnpm run build       # tsc -> lib/
 ```
 
