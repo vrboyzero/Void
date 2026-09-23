@@ -30,6 +30,7 @@ export interface AuthoritySource {
    * （文档：必须显式绑定子成员身份，不能误把父身份当子身份）。
    */
   personaFor(agentId: string): Promise<string>;
+  bindChildSession?(sessionId: string, agentId: string): Promise<void>;
 }
 
 /**

@@ -520,7 +520,7 @@ export function startSchedule(options: ScheduleOptions): ScheduleHandle {
             task.status = "completed";
             outputs.set(task.laneId, normalized.value);
             if (normalized.truncated) {
-              emit("task_output_truncated", task.laneId, `产出 ${normalized.bytes} 字节，超过单任务上限，已换成带标记的摘要`);
+              emit("task_output_truncated", task.laneId, "产出无法序列化为 JSON，已换成显式标记");
             }
             emit("task_completed", task.laneId);
           }

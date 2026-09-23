@@ -290,12 +290,8 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
     return props.widgets.subscribe(() => setReadOnlyRows(readOnlyWidgetLines(props.widgets!)))
   }, [props.widgets])
 
-  const applyEnabled = (ids: string[], enabled: boolean) => {
-    setPlugins((ps) => (ps ?? []).map((p) => (ids.includes(p.id) ? { ...p, enabled } : p)))
-  }
-
   const toggle = (id: string, enabled: boolean) => {
-    setBusy(id)
+    setBusy(id === '*' ? 'all' : id)
     setError(null)
     fetch('/void/api/toggle', {
       method: 'POST',
@@ -303,10 +299,18 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
       body: JSON.stringify({ pluginId: id, enabled }),
     })
       .then(async (r) => {
-        if (!r.ok) throw new Error(((await r.json()) as { error?: string }).error ?? `HTTP ${r.status}`)
-        applyEnabled([id], enabled)
+        const payload = await r.json() as { error?: string; plugins?: PluginState[] }
+        if (!r.ok) throw new Error(payload.error ?? `HTTP ${r.status}`)
+        setPlugins(payload.plugins ?? [])
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch(async (e: unknown) => {
+        setError(e instanceof Error ? e.message : String(e))
+        await fetch('/void/api/status')
+          .then(async (response) => {
+            if (response.ok) setPlugins(((await response.json()) as { plugins: PluginState[] }).plugins)
+          })
+          .catch(() => undefined)
+      })
       .finally(() => setBusy(null))
   }
 
@@ -369,6 +373,7 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
   const list = plugins ?? []
   const toggleable = list.filter((p) => p.toggleable)
   const allEnabled = toggleable.length > 0 && toggleable.every((p) => p.enabled)
+  const anyEnabled = toggleable.some((p) => p.enabled)
   const filtered =
     query.trim() === ''
       ? list
@@ -377,26 +382,7 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
         )
 
   const toggleAll = () => {
-    const target = !allEnabled
-    const ids = toggleable.map((p) => p.id)
-    setBusy('all')
-    setError(null)
-    Promise.all(
-      toggleable.map((p) =>
-        p.enabled === target
-          ? Promise.resolve()
-          : fetch('/void/api/toggle', {
-              method: 'POST',
-              headers: MUTATION_HEADERS,
-              body: JSON.stringify({ pluginId: p.id, enabled: target }),
-            }).then(async (r) => {
-              if (!r.ok) throw new Error(((await r.json()) as { error?: string }).error ?? `HTTP ${r.status}`)
-            }),
-      ),
-    )
-      .then(() => applyEnabled(ids, target))
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setBusy(null))
+    toggle('*', !allEnabled)
   }
 
   return h('div', { 'data-void-entry': '', style: { display: 'flex', flexDirection: 'column' } },
@@ -440,16 +426,19 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
       h('span', { style: { flex: 1 } }),
       list.length > 0
         ? h('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13 } },
-            h('span', { style: { color: TEXT_SECONDARY } }, allEnabled ? '整套已开启' : '整套已关闭'),
+            h('span', { style: { color: TEXT_SECONDARY } }, allEnabled ? '整套已开启' : anyEnabled ? '部分已开启' : '整套已关闭'),
             h(Switch, {
               checked: allEnabled,
-              disabled: busy === 'all' || toggleable.length === 0,
+              disabled: busy !== null || toggleable.length === 0,
               label: '整套开关',
               onChange: toggleAll,
             }),
           )
         : null,
     ),
+
+    h('p', { style: { color: TEXT_SECONDARY, fontSize: 12, margin: '4px 0 12px' } },
+      '开关仅本次运行有效。要接近原生 dsh Agent，请先结束军团运行、关闭整套，再开启新会话；入口面板仍保留。'),
 
     // 通知栏：运行结束这类事发生在面板没开的时候，重连后按未读补读（§16.2 L9 第五条）。
     // 紧跟状态条——「你不在的时候出过事」比插件列表更该先看到；没有来源登记时整栏不画。
@@ -558,7 +547,7 @@ function PluginCard(props: {
     plugin.toggleable
       ? h(Switch, {
           checked: plugin.enabled,
-          disabled: busy === plugin.id,
+          disabled: busy !== null,
           label: `${plugin.name} 开关`,
           onChange: props.onToggleEnabled,
         })

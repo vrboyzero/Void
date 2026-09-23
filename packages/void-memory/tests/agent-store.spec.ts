@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentMemoryError, AgentMemoryStore, agentMemoryRoot } from "../src/agent-store.js";
 import { MemoryConflictError } from "../src/documents.js";
 import { MemoryIndexStore } from "../src/index-store.js";
@@ -144,6 +144,46 @@ describe("每档案记忆仓", () => {
     expect(await store.list()).toMatchObject({ total: 0 });
   });
 
+  it("索引删除失败后不返回已撤回正文，重建后仍不命中", async () => {
+    const store = openAgent("xiaobei");
+    const written = await store.write({ body: "要撤回的蓝鲸秘密。" });
+    const index = opened[0]!;
+    vi.spyOn(index, "remove").mockImplementationOnce(() => { throw new Error("disk full"); });
+
+    const result = await store.retract({ target: written.target });
+    expect(result.indexSynced).toBe(false);
+    expect(index.dirty).toBe(true);
+    index.close();
+    const reopened = MemoryIndexStore.open({
+      path: path.join(agentMemoryRoot(dataDir, "xiaobei"), "memory.sqlite"), agentId: "xiaobei",
+    });
+    opened.push(reopened);
+    expect(reopened.dirty).toBe(true);
+    const restarted = new AgentMemoryStore({
+      root: agentMemoryRoot(dataDir, "xiaobei"), dataRoot: dataDir, agentId: "xiaobei", index: reopened,
+      now: () => FIXED_DAY,
+    });
+    expect(await restarted.search({ query: "蓝鲸" })).toEqual([]);
+    expect(reopened.dirty).toBe(false);
+  });
+
+  it("不能预先持久标记 dirty 时拒绝撤回，保留原文", async () => {
+    const plain = openAgent("xiaobei", false);
+    const written = await plain.write({ body: "原文仍在" });
+    const index = {
+      dirty: false,
+      beginMutation: () => { throw new Error("dirty metadata unavailable"); },
+      remove: () => undefined,
+    } as unknown as MemoryIndexStore;
+    const store = new AgentMemoryStore({
+      root: agentMemoryRoot(dataDir, "xiaobei"), dataRoot: dataDir, agentId: "xiaobei", index,
+      now: () => FIXED_DAY,
+    });
+    const source = path.join(agentMemoryRoot(dataDir, "xiaobei"), "memory", "2026-09-22", "20260922-0001.md");
+    await expect(store.retract({ target: written.target })).rejects.toThrow(/dirty metadata unavailable/);
+    expect(await readFile(source, "utf8")).toContain("原文仍在");
+  });
+
   it("并发改动用修订号挡住覆盖", async () => {
     const store = openAgent("xiaobei");
     const written = await store.write({ body: "第一版正文。" });
@@ -206,6 +246,23 @@ describe("每档案记忆仓", () => {
     expect(await readFile(cleared.recoveredPath, "utf8")).toContain("我负责看代码");
   });
 
+  it("多次撤回长期文字保留各自原文，备份失败不清空正文", async () => {
+    const store = openAgent("xiaobei");
+    await store.write({ target: "long-term", body: "第一版守则" });
+    const first = await store.retract({ target: { kind: "long-term" } });
+    await store.write({ target: "long-term", body: "第二版守则" });
+    const second = await store.retract({ target: { kind: "long-term" } });
+    expect(first.recoveredPath).not.toBe(second.recoveredPath);
+    expect(await readFile(first.recoveredPath, "utf8")).toContain("第一版守则");
+    expect(await readFile(second.recoveredPath, "utf8")).toContain("第二版守则");
+
+    await store.write({ target: "long-term", body: "第三版守则" });
+    const root = agentMemoryRoot(dataDir, "xiaobei");
+    await writeFile(path.join(root, "retracted", "MEMORY-rev-5.md"), "已占用", "utf8");
+    await expect(store.retract({ target: { kind: "long-term" } })).rejects.toThrow();
+    expect((await store.readLongTerm()).body).toContain("第三版守则");
+  });
+
   it("撤回过的条目 id 不会被复用", async () => {
     const store = openAgent("xiaobei");
     const first = await store.write({ body: "会被撤回的一条。", date: "2026-09-22" });
@@ -222,6 +279,9 @@ describe("每档案记忆仓", () => {
       dataRoot: dataDir,
       agentId: "xiaobei",
       index: {
+        dirty: false,
+        beginMutation: () => false,
+        finishMutation: () => undefined,
         upsert: () => {
           throw new Error("disk full");
         },

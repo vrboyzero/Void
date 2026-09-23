@@ -213,10 +213,60 @@ export interface ScheduledWorkerOptions {
   providerCapacity?: number;
   /** 逐子代理身份注入（P6 接 SOUL/FACET 修订时填）。 */
   persona?: (context: TaskRunContext) => string | undefined;
+  bindChildSession?: (sessionId: string, agentId: string) => Promise<void>;
   /** 说明书构造器；缺省 `renderLanePrompt(laneBriefFromContext(context))`。 */
   buildPrompt?: (context: TaskRunContext) => ContentBlock[];
   /** 记录本次派活的 provider 名与路由（用于运行记录的诚实交代）。 */
   onDispatch?: (info: { laneId: string; provider: string; modelRef?: string }) => void;
+}
+
+let bindingStartTail: Promise<void> = Promise.resolve();
+
+async function startWithBoundIdentity(
+  ctx: Context,
+  parent: Agent,
+  member: DelegationTeamMember,
+  signal: AbortSignal,
+  bind: (sessionId: string, agentId: string) => Promise<void>,
+  start: () => Promise<Awaited<ReturnType<Context["subagents"]["start"]>>>,
+): Promise<Awaited<ReturnType<Context["subagents"]["start"]>>> {
+  const previous = bindingStartTail;
+  let release!: () => void;
+  bindingStartTail = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try {
+    signal.throwIfAborted();
+    if (member.agentId === undefined) throw new SubagentDispatchError("子代理缺少成员档案，拒绝派活");
+    let allowStep!: () => void;
+    let refuseStep!: (reason: unknown) => void;
+    const ready = new Promise<void>((resolve, reject) => { allowStep = resolve; refuseStep = reject; });
+    void ready.catch(() => undefined);
+    const stopGate = ctx.on("agent/pre-step", async ({ agent }, next) => {
+      if (agent.session.header.parentSession === parent.id && agent.session.header.origin === "subagent") {
+        await ready;
+      }
+      return next();
+    });
+    try {
+      const run = await start();
+      try {
+        await bind(String(run.id), member.agentId);
+        allowStep();
+        return run;
+      } catch (error) {
+        refuseStep(error);
+        await run.dispose();
+        throw error;
+      }
+    } catch (error) {
+      refuseStep(error);
+      throw error;
+    } finally {
+      stopGate();
+    }
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -249,7 +299,7 @@ export function createScheduledWorker(
     });
 
     const buildPrompt = options.buildPrompt ?? ((item: TaskRunContext) => renderLanePrompt(laneBriefFromContext(item)));
-    const run = await subagents.start(providerName, {
+    const start = () => subagents.start(providerName, {
       parent,
       label: brief.member.identityLabel ?? brief.laneId,
       prompt: buildPrompt(context),
@@ -257,6 +307,9 @@ export function createScheduledWorker(
       ...(agentOptions === undefined ? {} : { agentOptions }),
       ...(persona === undefined ? {} : { persona }),
     });
+    const run = options.bindChildSession === undefined
+      ? await start()
+      : await startWithBoundIdentity(ctx, parent, brief.member, context.signal, options.bindChildSession, start);
     // 子会话 id 由调度器转交宿主（逐任务的 `reportChildSession`），
     // 不在 worker 构造时固定——同一个 worker 会被不同 run 复用。
     context.reportChildSession?.(String(run.id));

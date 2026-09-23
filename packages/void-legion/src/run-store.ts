@@ -14,20 +14,21 @@
  *
  * @module @void/void-legion/run-store
  */
-import { readdir, readFile } from "node:fs/promises";
+import { open, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-file.js";
-import { DEFAULT_MAX_CONCURRENT_TASKS } from "./contracts.js";
+import { assertLaneId, DEFAULT_MAX_CONCURRENT_TASKS } from "./contracts.js";
 import type { DelegationTeamMember, TeamSchedule } from "./team.js";
 
 /** 本版本能读写的运行记录版本。 */
 export const RUN_SCHEMA_VERSION = 1;
 
 /** run id 直接当文件名用，所以形状比队伍 id 更严（首字符字母/数字，无路径分隔符）。 */
-export const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{2,79}$/;
+export const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{2,82}$/;
 
-/** 单个任务产出落盘的上限。超了**明确标记**截断，不静默丢。 */
+/** 超过此值的 JSON 产出移入独立文件，运行记录只留引用。 */
 export const MAX_RUN_OUTPUT_BYTES = 262_144;
+export const MAX_RUN_OUTPUT_PAGE_BYTES = 16_384;
 
 export class LegionRunError extends Error {
   constructor(message: string) {
@@ -104,8 +105,9 @@ export interface RunTaskRecord {
   childSessionId?: string;
   startedAt?: string;
   endedAt?: string;
-  /** worker 的完整产出。不丢、不合并、不改写。 */
+  /** 小产出原样存储；大产出在独立文件，这里只留预览。 */
   output?: unknown;
+  outputRef?: { bytes: number };
   error?: string;
   /** 被上游拖住时，记下是哪个 lane 先挂的。 */
   blockedBy?: string;
@@ -139,6 +141,9 @@ export interface RunRecord {
   schemaVersion: number;
   runId: string;
   teamId: string;
+  /** 模型工具发起者；旧记录没有此字段时，工具层拒绝读取和取消。 */
+  initiatedBy?: string;
+  managerAgentId?: string;
   task: string;
   schedule: TeamSchedule;
   status: RunStatus;
@@ -155,7 +160,7 @@ export interface RunRecord {
 
 export function assertRunId(runId: string): string {
   if (!RUN_ID_PATTERN.test(runId)) {
-    throw new LegionRunError(`运行 id 不合法: ${JSON.stringify(runId)}（只允许小写字母、数字、下划线、连字符，3–80 位）`);
+    throw new LegionRunError(`运行 id 不合法: ${JSON.stringify(runId)}（只允许小写字母、数字、下划线、连字符，3–83 位）`);
   }
   return runId;
 }
@@ -181,6 +186,8 @@ export function nextRunId(teamId: string, at: Date, sequence: number): string {
 export interface CreateRunInput {
   runId: string;
   teamId: string;
+  initiatedBy?: string;
+  managerAgentId?: string;
   task?: string | undefined;
   schedule: TeamSchedule;
   roster: readonly DelegationTeamMember[];
@@ -195,6 +202,8 @@ export function createRunRecord(input: CreateRunInput): RunRecord {
     schemaVersion: RUN_SCHEMA_VERSION,
     runId: assertRunId(input.runId),
     teamId: input.teamId,
+    ...(input.initiatedBy === undefined ? {} : { initiatedBy: input.initiatedBy }),
+    ...(input.managerAgentId === undefined ? {} : { managerAgentId: input.managerAgentId }),
     task: input.task ?? "",
     schedule: input.schedule,
     status: "running",
@@ -332,9 +341,8 @@ export function serializeRunRecord(record: RunRecord): string {
 /**
  * 把 worker 的产出整理成能落盘的值。
  *
- * 不做「顺手精简」：能序列化就原样存。真的存不下（循环引用、超出上限）时，
- * 换成一个**显式的**标记对象，并让调用方记一条事件——静默丢产出正是 P5 要修的
- * 老毛病之一，不能换个地方再犯一次。
+ * 能序列化就原样交给存储层；超限时由 RunStore 单独落盘。
+ * 循环引用无法 JSON 序列化，只能显式标记，不能假称已保存完整产出。
  */
 export function normalizeRunOutput(output: unknown): { value: unknown; truncated: boolean; bytes: number } {
   let text: string;
@@ -344,20 +352,15 @@ export function normalizeRunOutput(output: unknown): { value: unknown; truncated
     return { value: { unserializable: true, preview: String(output).slice(0, 4096) }, truncated: true, bytes: 0 };
   }
   const bytes = Buffer.byteLength(text, "utf8");
-  if (bytes <= MAX_RUN_OUTPUT_BYTES) {
-    return { value: JSON.parse(text) as unknown, truncated: false, bytes };
-  }
-  return {
-    value: { truncated: true, bytes, preview: text.slice(0, 4096) },
-    truncated: true,
-    bytes,
-  };
+  return { value: JSON.parse(text) as unknown, truncated: false, bytes };
 }
 
 export interface RunStoreOptions {
   dataDir: string;
   now?: (() => Date) | undefined;
 }
+
+const runSaveTails = new Map<string, Promise<void>>();
 
 /**
  * 运行记录仓库。一个实例对应一个数据根；重启后新建实例，`settleInterrupted()`
@@ -385,10 +388,63 @@ export class RunStore {
     return path.join(this.root, `${assertRunId(runId)}.json`);
   }
 
+  private outputPath(runId: string, laneId: string): string {
+    assertLaneId(laneId);
+    return path.join(this.root, `${assertRunId(runId)}.outputs`, `${laneId}.json`);
+  }
+
   async save(record: RunRecord): Promise<RunRecord> {
+    const target = this.pathOf(record.runId);
+    const previous = runSaveTails.get(target) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(() => this.saveOnce(record));
+    const guarded = current.catch(() => undefined);
+    runSaveTails.set(target, guarded);
+    try {
+      await current;
+      return record;
+    } finally {
+      if (runSaveTails.get(target) === guarded) runSaveTails.delete(target);
+    }
+  }
+
+  private async saveOnce(record: RunRecord): Promise<void> {
+    const existing = await this.load(record.runId);
+    if (existing !== undefined && isTerminalRunStatus(existing.status) && existing.status !== record.status) {
+      throw new LegionRunError(`运行记录已是终态 ${existing.status}，拒绝旧快照覆盖: ${record.runId}`);
+    }
+    for (const task of record.tasks) {
+      if (task.output === undefined || task.outputRef !== undefined) continue;
+      const text = JSON.stringify(task.output);
+      if (text === undefined || Buffer.byteLength(text, "utf8") <= MAX_RUN_OUTPUT_BYTES) continue;
+      const bytes = Buffer.byteLength(text, "utf8");
+      await writeFileAtomic(this.outputPath(record.runId, task.laneId), text);
+      task.outputRef = { bytes };
+      task.output = { external: true, bytes, preview: text.slice(0, 4096) };
+    }
     record.updatedAt = this.now().toISOString();
     await writeFileAtomic(this.pathOf(record.runId), serializeRunRecord(record));
-    return record;
+  }
+
+  async readOutputPage(runId: string, laneId: string, offset: number, length = MAX_RUN_OUTPUT_PAGE_BYTES): Promise<{
+    base64: string; offset: number; nextOffset: number; bytes: number;
+  }> {
+    const record = await this.require(runId);
+    const task = record.tasks.find((item) => item.laneId === laneId);
+    if (task?.outputRef === undefined) throw new LegionRunError(`任务没有独立产出: ${laneId}`);
+    const bytes = task.outputRef.bytes;
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || !Number.isSafeInteger(offset) || offset < 0 || offset > bytes ||
+      !Number.isSafeInteger(length) || length < 1 || length > MAX_RUN_OUTPUT_PAGE_BYTES) {
+      throw new LegionRunError("产出分页边界不合法");
+    }
+    const buffer = Buffer.alloc(Math.min(length, bytes - offset));
+    const file = await open(this.outputPath(runId, laneId), "r");
+    try {
+      const result = await file.read(buffer, 0, buffer.length, offset);
+      if (result.bytesRead !== buffer.length) throw new LegionRunError(`任务产出文件不完整: ${laneId}`);
+    } finally {
+      await file.close();
+    }
+    return { base64: buffer.toString("base64"), offset, nextOffset: offset + buffer.length, bytes };
   }
 
   async load(runId: string): Promise<RunRecord | undefined> {

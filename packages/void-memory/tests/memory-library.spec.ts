@@ -200,7 +200,7 @@ describe("改与撤回", () => {
     await store.write({ target: "long-term", body: "要被撤回的长期文字，关键词 灰鲸。" });
     const service = panel();
     const result = await service.retract({ itemId: "xiaobei/long-term" });
-    expect(result.recoveredPath).toBe(path.join(agentMemoryRoot(dataDir, "xiaobei"), "retracted", "MEMORY.md"));
+    expect(result.recoveredPath).toBe(path.join(agentMemoryRoot(dataDir, "xiaobei"), "retracted", "MEMORY-rev-1.md"));
     expect(await readFile(result.recoveredPath, "utf8")).toContain("灰鲸");
     expect(result.revision).toBe(2);
     const detail = await service.read("xiaobei/long-term");

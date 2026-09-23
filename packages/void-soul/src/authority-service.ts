@@ -4,6 +4,7 @@ import { buildAuthorityProfiles, type AuthoritySnapshot, type AuthoritySource } 
 import { buildMemberPersona } from "./persona.js";
 import { dataRootOptions, SoulProfileError, tryResolveVoidDataRoot } from "./profile.js";
 import { loadSessionBindings, loadSoulRegistry } from "./registry.js";
+import { bindSessionToProfile } from "./soul-library.js";
 
 export interface SoulAuthorityConfig {
   /** 显式数据根（绝对路径）。给了就不再解析 DSH_HOME / profile。 */
@@ -70,6 +71,11 @@ export class SoulAuthority extends Service implements AuthoritySource {
       maxCharacters: this.maxCharacters,
     });
     return persona.text;
+  }
+
+  async bindChildSession(sessionId: string, agentId: string): Promise<void> {
+    if (this.dataDir === undefined) throw new SoulProfileError("子代理绑定缺少数据根");
+    await bindSessionToProfile(this.dataDir, { sessionId, profileId: agentId });
   }
 }
 

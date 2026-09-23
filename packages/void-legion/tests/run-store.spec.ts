@@ -55,6 +55,7 @@ describe("run id", () => {
     expect(nextRunId("legion-demo", at, 1)).toBe("legion-demo-20260922120000-01");
     expect(nextRunId("legion-demo", at, 2)).toBe("legion-demo-20260922120000-02");
     expect(nextRunId("legion-demo", at, 1)).not.toBe(nextRunId("legion-demo", at, 2));
+    expect(nextRunId("a".repeat(64), at, 999)).toHaveLength(83);
   });
 
   it("拒绝带路径分隔符或大写的 id", () => {
@@ -110,6 +111,18 @@ describe("运行记录落盘", () => {
       "legion-demo-20260922120000-02",
       "legion-demo-20260922120000-01",
     ]);
+  });
+
+  it("重启结算为终态后拒绝旧实例的在跑快照覆盖", async () => {
+    const { store, dataDir } = await makeStore();
+    const oldSnapshot = record([member("lane_a")]);
+    await store.save(oldSnapshot);
+    const restarted = new RunStore({ dataDir });
+    const settled = structuredClone(oldSnapshot);
+    settled.status = "interrupted";
+    await restarted.save(settled);
+    await expect(store.save(oldSnapshot)).rejects.toThrow(/终态/);
+    expect((await restarted.require(oldSnapshot.runId)).status).toBe("interrupted");
   });
 
   it("落盘目录是 <数据根>/legion/runs，与队伍配置并列", async () => {
@@ -215,7 +228,7 @@ describe("产出与摘要", () => {
     expect(normalizeRunOutput(undefined).value).toBeNull();
   });
 
-  it("存不下时换成显式标记，不静默丢", () => {
+  it("无法序列化时显式标记；可序列化的大产出不能截断", () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;
     const result = normalizeRunOutput(circular);
@@ -224,9 +237,31 @@ describe("产出与摘要", () => {
 
     const huge = { text: "x".repeat(MAX_RUN_OUTPUT_BYTES + 1) };
     const oversized = normalizeRunOutput(huge);
-    expect(oversized.truncated).toBe(true);
+    expect(oversized.truncated).toBe(false);
     expect(oversized.bytes).toBeGreaterThan(MAX_RUN_OUTPUT_BYTES);
-    expect(oversized.value).toMatchObject({ truncated: true });
+    expect(oversized.value).toEqual(huge);
+  });
+
+  it("大产出完整落独立文件，重启后分片读回且拒绝非法边界", async () => {
+    const { store } = await makeStore();
+    const created = record([member("lane_a")]);
+    const output = { text: "中".repeat(MAX_RUN_OUTPUT_BYTES) };
+    created.tasks[0]!.output = output;
+    await store.save(created);
+    const loaded = await store.require(created.runId);
+    expect(loaded.tasks[0]!.outputRef?.bytes).toBe(Buffer.byteLength(JSON.stringify(output)));
+    expect(JSON.stringify(loaded)).not.toContain(output.text);
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    do {
+      const page = await store.readOutputPage(created.runId, "lane_a", offset, 8192);
+      chunks.push(Buffer.from(page.base64, "base64"));
+      offset = page.nextOffset;
+    } while (offset < loaded.tasks[0]!.outputRef!.bytes);
+    expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toEqual(output);
+    await expect(store.readOutputPage(created.runId, "../escape", 0, 100)).rejects.toThrow();
+    await expect(store.readOutputPage(created.runId, "lane_a", -1, 100)).rejects.toThrow();
+    await expect(store.readOutputPage(created.runId, "lane_a", 0, 100_000)).rejects.toThrow();
   });
 
   it("摘要只数数字，不给假百分比", () => {

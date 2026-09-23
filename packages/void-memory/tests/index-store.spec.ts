@@ -158,5 +158,15 @@ describe("每档案索引", () => {
     store.markDirty("disk full");
     expect(store.dirty).toBe(true);
     expect(store.dirtyReason).toBe("disk full");
+    expect(() => store.search("任何词", 5)).toThrow(/待同步/);
+    store.upsert({
+      entryId: "20260922-0001",
+      kind: "entry",
+      date: "2026-09-22",
+      revision: 1,
+      relativePath: "memory/2026-09-22/20260922-0001.md",
+      body: "新写入的正文",
+    });
+    expect(store.dirty).toBe(true);
   });
 });

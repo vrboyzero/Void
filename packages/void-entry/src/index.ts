@@ -53,6 +53,26 @@ const VOID_SCOPE = "@void/";
 /** 入口包自身：目录里列出但不可关闭。 */
 const SELF_PACKAGE = "@void/void-entry";
 
+const SOUL_PACKAGE = "@void/void-soul";
+const MEMORY_PACKAGE = "@void/void-memory";
+const LEGION_PACKAGE = "@void/void-legion";
+const PREREQUISITES: Readonly<Record<string, readonly string[]>> = {
+  [MEMORY_PACKAGE]: [SOUL_PACKAGE],
+  [LEGION_PACKAGE]: [SOUL_PACKAGE, MEMORY_PACKAGE],
+};
+const DEPENDENCY_ORDER: Readonly<Record<string, number>> = {
+  [SOUL_PACKAGE]: 1,
+  [MEMORY_PACKAGE]: 2,
+  [LEGION_PACKAGE]: 3,
+};
+
+class ToggleConflict extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ToggleConflict";
+  }
+}
+
 /**
  * 展示元数据。目录的**成员**不来自这里——成员由 profile 里实际登记的
  * `@void/*` entry 决定（见 {@link VoidSuite.discover}）。这张表只补人类可读的
@@ -67,6 +87,7 @@ const CATALOG: ReadonlyArray<{ package: string; name: string; description: strin
     name: "灵榜控制面",
     description: "让 Codex 等外部 AI 通过 MCP 指挥正在运行的 DSH",
   },
+  { package: SOUL_PACKAGE, name: "灵魂", description: "档案身份与系统提示词" },
   { package: "@void/void-memory", name: "记忆", description: "FTS5 + sqlite-vec 知识检索" },
   { package: "@void/void-tools", name: "工具治理", description: "契约 + 角色策略" },
   { package: "@void/void-legion", name: "军团", description: "花名册 + 权威 + 派活" },
@@ -107,6 +128,7 @@ interface DiscoveredPlugin {
   package: string;
   entryIds: string[];
   enabled: boolean;
+  active: boolean;
 }
 
 /**
@@ -269,6 +291,8 @@ export interface FacetVersionSource {
 
 export class VoidSuite extends Service {
   static inject = ["loader"];
+
+  private toggleQueue: Promise<void> = Promise.resolve();
 
   /** 各插件贡献的面板清单，按包名索引。 */
   private readonly panels = new Map<string, VoidPanelManifest>();
@@ -473,15 +497,16 @@ export class VoidSuite extends Service {
    * 不会出现——那本来也点不动。
    */
   private discover(): DiscoveredPlugin[] {
-    const groups = new Map<string, { entryIds: string[]; enabled: boolean }>();
+    const groups = new Map<string, { entryIds: string[]; enabled: boolean; active: boolean }>();
     for (const entry of this.ctx.loader.entries()) {
       const name = entry.options.name;
       if (typeof name !== "string") continue;
       const packageName = packageOf(name);
       if (packageName === undefined) continue;
-      const group = groups.get(packageName) ?? { entryIds: [], enabled: true };
+      const group = groups.get(packageName) ?? { entryIds: [], enabled: true, active: false };
       group.entryIds.push(entry.options.id);
       if (entry.disabled) group.enabled = false;
+      else group.active = true;
       groups.set(packageName, group);
     }
 
@@ -533,22 +558,83 @@ export class VoidSuite extends Service {
    * `- id: void-dsh-control` + `disabled: true`）；本插件尚未实现，见方案文档
    * 「开关的持久化边界」。UI 上已如实标注为「本次运行期间」。
    */
-  async setEnabled(pluginId: string, enabled: boolean): Promise<void> {
-    const entryIds = this.listEntryIds(pluginId);
-    const updates: Array<Promise<void>> = [];
-    for (const entry of this.ctx.loader.entries()) {
-      if (entryIds.includes(entry.options.id)) {
-        updates.push(entry.update({ disabled: enabled ? undefined : true }));
-      }
-    }
-    await Promise.all(updates);
+  setEnabled(pluginId: string, enabled: boolean): Promise<void> {
+    return this.queueToggle(() => this.setEnabledNow(pluginId, enabled));
   }
 
   /** 一键开关整套（除入口自身）。 */
-  async setAllEnabled(enabled: boolean): Promise<void> {
-    for (const plugin of this.list()) {
-      if (!plugin.toggleable) continue;
-      await this.setEnabled(plugin.id, enabled);
+  setAllEnabled(enabled: boolean): Promise<void> {
+    return this.queueToggle(async () => {
+      const installed = this.discover().filter((plugin) => plugin.package !== SELF_PACKAGE);
+      if (enabled) {
+        for (const plugin of installed) {
+          for (const prerequisite of PREREQUISITES[plugin.package] ?? []) {
+            if (!installed.some((item) => item.package === prerequisite)) {
+              throw new ToggleConflict(`无法开启整套：${this.pluginName(plugin.package)}缺少已安装的${this.pluginName(prerequisite)}插件`);
+            }
+          }
+        }
+      }
+      installed.sort((left, right) =>
+        (DEPENDENCY_ORDER[left.package] ?? 0) - (DEPENDENCY_ORDER[right.package] ?? 0));
+      if (!enabled) installed.reverse();
+      for (const plugin of installed) await this.setEnabledNow(plugin.package, enabled);
+    });
+  }
+
+  private pluginName(pluginId: string): string {
+    return CATALOG.find((item) => item.package === pluginId)?.name ?? pluginId;
+  }
+
+  private queueToggle(operation: () => Promise<void>): Promise<void> {
+    const pending = this.toggleQueue.then(operation);
+    this.toggleQueue = pending.catch(() => undefined);
+    return pending;
+  }
+
+  private async setEnabledNow(pluginId: string, enabled: boolean): Promise<void> {
+    const installed = this.discover();
+    const target = installed.find((plugin) => plugin.package === pluginId);
+    if (!target || pluginId === SELF_PACKAGE) throw new ToggleConflict(`插件 ${pluginId} 不可切换`);
+    if (enabled) {
+      const missing = (PREREQUISITES[pluginId] ?? [])
+        .filter((prerequisite) => !installed.find((plugin) => plugin.package === prerequisite)?.enabled);
+      if (missing.length > 0) {
+        throw new ToggleConflict(`请先开启${missing.map((id) => this.pluginName(id)).join("、")}，再开启${this.pluginName(pluginId)}`);
+      }
+    } else {
+      const blockers = installed.filter((plugin) => plugin.active &&
+        (PREREQUISITES[plugin.package] ?? []).includes(pluginId));
+      if (blockers.length > 0) {
+        throw new ToggleConflict(`请先关闭${blockers.map((plugin) => this.pluginName(plugin.package)).join("、")}，再关闭${this.pluginName(pluginId)}`);
+      }
+    }
+    const entries = [...this.ctx.loader.entries()].filter((entry) => target.entryIds.includes(entry.options.id));
+    const attempted: Array<{ entry: (typeof entries)[number]; disabled: (typeof entries)[number]["options"]["disabled"] }> = [];
+    try {
+      for (const entry of entries) {
+        attempted.push({ entry, disabled: entry.options.disabled });
+        await entry.update({ disabled: enabled ? undefined : true });
+      }
+      await this.ctx.loader.await();
+      const current = this.discover().find((plugin) => plugin.package === pluginId);
+      if (enabled ? !current?.enabled : current?.active) {
+        throw new ToggleConflict(`${this.pluginName(pluginId)}仍被上层配置禁用或未能完整切换，请检查 profile 配置`);
+      }
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      for (const { entry, disabled } of attempted.reverse()) {
+        try {
+          await entry.update({ disabled });
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      await this.ctx.loader.await();
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError([error, ...rollbackErrors], `${this.pluginName(pluginId)}切换失败且回滚未完成，请重读插件状态`);
+      }
+      throw error;
     }
   }
 
@@ -623,6 +709,11 @@ export class VoidSuite extends Service {
         res.end(JSON.stringify({ ok: false, error: "pluginId + enabled are required" }));
         return;
       }
+      if (pluginId === "*") {
+        await this.setAllEnabled(enabled);
+        sendJson(res, 200, { ok: true, plugins: this.list() });
+        return;
+      }
       const plugin = this.list().find((p) => p.id === pluginId);
       if (!plugin) {
         res.statusCode = 404;
@@ -635,11 +726,13 @@ export class VoidSuite extends Service {
         return;
       }
       await this.setEnabled(pluginId, enabled);
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ ok: true }));
+      sendJson(res, 200, { ok: true, plugins: this.list() });
     } catch (error) {
-      rejectRequest(res, error);
+      if (error instanceof ToggleConflict) {
+        sendJson(res, 409, { ok: false, error: error.message });
+      } else {
+        rejectRequest(res, error);
+      }
     }
   }
 

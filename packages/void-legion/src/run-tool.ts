@@ -1,5 +1,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool, type JsonValue } from "@deepseek-ai/dsh-tools";
+import type { AuthoritySource } from "@void/void-soul";
+import { assertTeamDispatch } from "./authority.js";
 import type { RunRecord } from "./run-store.js";
 import type { VoidTeam } from "./service.js";
 
@@ -13,7 +15,7 @@ export const inject = ["tools", "voidTeam"];
  * 两件事的生命周期不一样（派活一次，之后可能读很多次）。
  */
 
-/** 把运行记录摊平成模型能读的完整视图：**产出一个字都不丢**（§15.2）。 */
+/** 小产出原样展示；大产出展示引用，由 legion_output 分片读取。 */
 function renderRun(record: RunRecord) {
   return {
     runId: record.runId,
@@ -38,8 +40,8 @@ function renderRun(record: RunRecord) {
       ...(task.childSessionId === undefined ? {} : { childSessionId: task.childSessionId }),
       ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
       ...(task.endedAt === undefined ? {} : { endedAt: task.endedAt }),
-      // 完整交付物：原样给，不合并、不改写。
       ...(task.output === undefined ? {} : { output: asJson(task.output) }),
+      ...(task.outputRef === undefined ? {} : { outputRef: task.outputRef }),
       ...(task.error === undefined ? {} : { error: task.error }),
     })),
     events: record.events.map((event) => ({
@@ -91,6 +93,11 @@ const RUN_OUTPUT_SCHEMA = {
           startedAt: { type: "string" },
           endedAt: { type: "string" },
           output: { type: "json" },
+          outputRef: {
+            type: "object",
+            additionalProperties: false,
+            properties: { bytes: { type: "integer", required: true } },
+          },
           error: { type: "string" },
         },
       },
@@ -115,10 +122,29 @@ const RUN_OUTPUT_SCHEMA = {
 export function apply(ctx: Context): void {
   const team = ctx.get("voidTeam") as VoidTeam;
 
+  const authorize = async (record: RunRecord, sessionId: string | undefined): Promise<void> => {
+    if (sessionId === undefined || record.initiatedBy === undefined) {
+      throw new Error("运行记录无权访问：缺少执行会话或发起者绑定");
+    }
+    const authority = ctx.get("voidAuthority") as AuthoritySource | undefined;
+    const snapshot = await authority?.forSession(sessionId);
+    if (snapshot === undefined || snapshot.actorId !== record.initiatedBy) {
+      throw new Error("运行记录无权访问：会话没有绑定发起者档案");
+    }
+    const actor = snapshot.profiles.get(snapshot.actorId);
+    if (actor === undefined) throw new Error("运行记录无权访问：发起者档案不存在");
+    assertTeamDispatch({
+      snapshot: { members: record.frozenRoster, managerAgentId: record.managerAgentId },
+      actor,
+      profiles: snapshot.profiles,
+      targetLaneIds: record.tasks.map((task) => task.laneId),
+    });
+  };
+
   ctx.tools.register(defineTool({
     name: "legion_run",
     description:
-      "Read one legion run by runId: status, per-task state, native child session ids, errors and the full outputs of every lane. Set wait=true to block until the run settles (still cancellable); default returns the current snapshot.",
+      "Read an authorized legion run by runId. Small lane outputs are inline; large outputs carry outputRef and can be read with legion_output. Set wait=true to wait for settlement; default returns the current snapshot.",
     parameters: {
       runId: { type: "string", required: true, description: "The runId returned by launch_legion." },
       wait: {
@@ -130,11 +156,14 @@ export function apply(ctx: Context): void {
       schema: RUN_OUTPUT_SCHEMA,
       render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const { runId, wait = false } = args as { runId: string; wait?: boolean };
+      const current = await team.runRecord(runId);
+      await authorize(current, exec.agent?.id);
       // 不在本进程里跑的（宿主重启过）也给磁盘上那份，如实报它是什么状态，
       // 不假装等到了结果、也不假装它还在跑。
       const record = wait ? await team.waitForRun(runId) : await team.runRecord(runId);
+      if (wait) await authorize(record, exec.agent?.id);
       return renderRun(record);
     },
   }));
@@ -172,8 +201,9 @@ export function apply(ctx: Context): void {
       },
       render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const { runId, laneId, reason } = args as { runId: string; laneId?: string; reason?: string };
+      await authorize(await team.runRecord(runId), exec.agent?.id);
       const record =
         laneId === undefined
           ? await team.cancelRun(runId, reason)
@@ -187,6 +217,35 @@ export function apply(ctx: Context): void {
         scope: laneId === undefined ? ("run" as const) : ("lane" as const),
         cancelled: cancelled.map((task) => ({ laneId: task.laneId, status: task.status })),
       };
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "legion_output",
+    description: "Read a bounded byte page of a large saved lane output. Concatenate base64-decoded pages by nextOffset to recover the original UTF-8 JSON. Requires the same live authority as legion_run.",
+    parameters: {
+      runId: { type: "string", required: true },
+      laneId: { type: "string", required: true },
+      offset: { type: "integer", required: true },
+      length: { type: "integer", description: "Bytes to read (1–16384, default 16384)." },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          base64: { type: "string", required: true },
+          offset: { type: "integer", required: true },
+          nextOffset: { type: "integer", required: true },
+          bytes: { type: "integer", required: true },
+        },
+      },
+      render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }],
+    },
+    async execute(args, exec) {
+      const { runId, laneId, offset, length } = args as { runId: string; laneId: string; offset: number; length?: number };
+      await authorize(await team.runRecord(runId), exec.agent?.id);
+      return team.readRunOutputPage(runId, laneId, offset, length);
     },
   }));
 }

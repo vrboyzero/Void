@@ -73,6 +73,7 @@ export interface VoidTeamConfig {
 /** P5 派活选项：**立刻返回 runId**，执行在后台继续。 */
 export interface DispatchOptions {
   task?: string;
+  initiatedBy?: string;
   /** 真实执行体（`createScheduledWorker` 的产物）。 */
   worker: ScheduleWorker;
   /** 手动计划（Host 校验后才派）。 */
@@ -281,6 +282,7 @@ export class VoidTeam extends Service {
     return coordinator.dispatch({
       teamId,
       team,
+      ...(options.initiatedBy === undefined ? {} : { initiatedBy: options.initiatedBy }),
       ...(options.task === undefined ? {} : { task: options.task }),
       ...(options.plan === undefined ? {} : { plan: options.plan }),
       ...(options.temporaryMembers === undefined ? {} : { temporaryMembers: options.temporaryMembers }),
@@ -307,6 +309,10 @@ export class VoidTeam extends Service {
   /** 取完整运行记录（含每人的完整产出）。 */
   async runRecord(runId: string): Promise<RunRecord> {
     return this.requireCoordinator().require(runId);
+  }
+
+  async readRunOutputPage(runId: string, laneId: string, offset: number, length?: number) {
+    return this.requireCoordinator().readOutputPage(runId, laneId, offset, length);
   }
 
   async listRuns(): Promise<RunRecord[]> {

@@ -90,6 +90,7 @@ function authoritySource(input: {
       if (input.personaError !== undefined) throw new Error(input.personaError);
       return input.personas?.[agentId] ?? `${agentId} 的底线`;
     },
+    bindChildSession: async () => {},
   };
 }
 
@@ -519,6 +520,101 @@ describe("launch_legion tool through the Loader", () => {
     expect(["running", "completed"]).toContain(snapshot.status);
     expect(snapshot.maxConcurrentTasks).toBeGreaterThan(0);
     expect(snapshot.memberLimit).toBeGreaterThan(0);
+  });
+
+  it("denies another session reading, waiting for, or cancelling a run and rechecks revoked authority", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({ ...threeLaneTeam, managerAgentId: "xiaobei", memberRoster: [
+      { laneId: "lane_plan", agentId: "xiaoma" },
+    ] });
+    let bound = true;
+    let permitted = true;
+    context.provide("voidAuthority", {
+      forSession: async (sessionId: string) => sessionId === "parent-session-1" && bound
+        ? { actorId: "xiaobei", profiles: new Map(permitted ? managerAndSubordinate : [
+          ["xiaobei", { id: "xiaobei", superiors: [], subordinates: [] }],
+          ["xiaoma", { id: "xiaoma", superiors: [], subordinates: [] }],
+        ]) }
+        : undefined,
+      personaFor: async () => "成员身份",
+      bindChildSession: async () => {},
+    });
+    const started: Array<{ name: string; request: Record<string, unknown> }> = [];
+    context.provide("subagents", fakeSubagents(started));
+    const owner = mockExec({ id: "parent-session-1" } as Agent);
+    const outsider = mockExec({ id: "other-session" } as Agent);
+    const dispatched = await context.tools.get("launch_legion")!.execute({ teamId: threeLaneTeam.id }, owner) as { runId: string };
+    const run = context.tools.get("legion_run")!;
+    const cancel = context.tools.get("legion_cancel")!;
+    await expect(run.execute({ runId: dispatched.runId }, outsider)).rejects.toThrow(/无权|绑定/);
+    await expect(run.execute({ runId: dispatched.runId, wait: true }, outsider)).rejects.toThrow(/无权|绑定/);
+    await expect(cancel.execute({ runId: dispatched.runId }, outsider)).rejects.toThrow(/无权|绑定/);
+    permitted = false;
+    await expect(run.execute({ runId: dispatched.runId }, owner)).rejects.toThrow(/不能指挥/);
+    await expect(cancel.execute({ runId: dispatched.runId }, owner)).rejects.toThrow(/不能指挥/);
+    permitted = true;
+    bound = false;
+    await expect(run.execute({ runId: dispatched.runId }, owner)).rejects.toThrow(/无权|绑定/);
+    await expect(cancel.execute({ runId: dispatched.runId }, owner)).rejects.toThrow(/无权|绑定/);
+    expect((await team.waitForRun(dispatched.runId)).status).toBe("completed");
+  });
+
+  it("does not infer an owner for legacy or service-created runs", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({ ...threeLaneTeam, managerAgentId: "xiaobei", memberRoster: [
+      { laneId: "lane_plan", agentId: "xiaoma" },
+    ] });
+    context.provide("voidAuthority", authoritySource({
+      sessionId: "parent-session-1", actorId: "xiaobei", profiles: managerAndSubordinate,
+    }));
+    const created = await team.dispatch(threeLaneTeam.id, { worker: async () => ({ done: true }) });
+    await team.waitForRun(created.runId);
+    const owner = mockExec({ id: "parent-session-1" } as Agent);
+    await expect(context.tools.get("legion_run")!.execute({ runId: created.runId }, owner)).rejects.toThrow(/发起者绑定/);
+    await expect(context.tools.get("legion_cancel")!.execute({ runId: created.runId }, owner)).rejects.toThrow(/发起者绑定/);
+    expect((await team.runRecord(created.runId)).status).toBe("completed");
+  });
+
+  it("pages a large saved lane output only for the authorized caller", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "void-legion-output-"));
+    try {
+      context = await boot({ dataDir });
+      const team = context.get("voidTeam") as VoidTeam;
+      team.defineTeam({ ...threeLaneTeam, managerAgentId: "xiaobei", memberRoster: [
+        { laneId: "lane_plan", agentId: "xiaoma" },
+      ] });
+      context.provide("voidAuthority", authoritySource({
+        sessionId: "parent-session-1", actorId: "xiaobei", profiles: managerAndSubordinate,
+      }));
+      const original = { text: "中".repeat(100_000) };
+      context.provide("subagents", fakeSubagents([], { output: original }));
+      const owner = mockExec({ id: "parent-session-1" } as Agent);
+      const dispatched = await context.tools.get("launch_legion")!.execute({ teamId: threeLaneTeam.id }, owner) as { runId: string };
+      await team.waitForRun(dispatched.runId);
+      const run = await context.tools.get("legion_run")!.execute({ runId: dispatched.runId }, owner) as {
+        tasks: Array<{ outputRef?: { bytes: number } }>;
+      };
+      expect(run.tasks[0]!.outputRef?.bytes).toBeGreaterThan(262_144);
+      const outputTool = context.tools.get("legion_output")!;
+      await expect(outputTool.execute({ runId: dispatched.runId, laneId: "lane_plan", offset: 0 },
+        mockExec({ id: "other-session" } as Agent))).rejects.toThrow(/无权|绑定/);
+      const chunks: Buffer[] = [];
+      let offset = 0;
+      do {
+        const page = await outputTool.execute({ runId: dispatched.runId, laneId: "lane_plan", offset }, owner) as {
+          base64: string; nextOffset: number; bytes: number;
+        };
+        chunks.push(Buffer.from(page.base64, "base64"));
+        offset = page.nextOffset;
+      } while (offset < run.tasks[0]!.outputRef!.bytes);
+      expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toMatchObject({ output: original });
+    } finally {
+      await context?.fiber.dispose();
+      context = undefined;
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("legion_cancel stops the whole run and never dispatches the rest", async () => {

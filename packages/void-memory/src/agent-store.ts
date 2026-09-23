@@ -1,4 +1,5 @@
-import { mkdir, readFile, readdir, rename } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, mkdir, readFile, readdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { FACET_DIRECTORY_NAME, isFacetDirectoryName } from "@void/void-soul";
 import {
@@ -202,19 +203,21 @@ export class AgentMemoryStore {
   /** 新条目写入日记，或向长期文字追加一段。正文先过敏感闸门，再排队落盘。 */
   async write(input: { body: string; target?: "entry" | "long-term"; date?: string; source?: string; session?: string }): Promise<MemoryWriteResult> {
     assertNoSensitiveContent(input.body);
-    return this.enqueue(() =>
-      input.target === "long-term" ? this.appendLongTerm(input.body) : this.createEntry(input.body, input.date, input.source, input.session),
+    return this.enqueue(() => this.mutate(
+      () => input.target === "long-term" ? this.appendLongTerm(input.body) : this.createEntry(input.body, input.date, input.source, input.session),
+      "正文已保存、检索待同步",
+    ),
     );
   }
 
   async update(input: { target: MemoryTarget; body: string; expectedRevision: number }): Promise<MemoryWriteResult> {
     assertNoSensitiveContent(input.body);
-    return this.enqueue(() => this.replace(input.target, input.body, input.expectedRevision));
+    return this.enqueue(() => this.mutate(() => this.replace(input.target, input.body, input.expectedRevision), "正文已保存、检索待同步"));
   }
 
   /** 撤回：正文移入不可检索的恢复区，索引同步删除。原文始终可恢复。 */
   async retract(input: { target: MemoryTarget; expectedRevision?: number }): Promise<MemoryRetractResult> {
-    return this.enqueue(() => this.retractTarget(input.target, input.expectedRevision));
+    return this.enqueue(() => this.mutate(() => this.retractTarget(input.target, input.expectedRevision), "正文已撤回、检索待同步"));
   }
 
   async list(input: { limit?: number; cursor?: string } = {}): Promise<MemoryListResult> {
@@ -232,18 +235,20 @@ export class AgentMemoryStore {
   async search(input: { query: string; k?: number }): Promise<MemorySearchResult[]> {
     if (this.index === undefined) throw new AgentMemoryError("记忆检索缺少索引，已拒绝执行");
     const k = normalizeSearchLimit(input.k);
+    if (this.index.dirty) await this.enqueue(() => this.rebuildIndexFromBodies());
     return this.index.search(input.query, k).map((hit) => ({ ...hit }));
   }
 
   /** 从正文重建索引，用于索引损坏或 dirty 之后的修复。 */
   async rebuildIndexFromBodies(): Promise<number> {
     if (this.index === undefined) throw new AgentMemoryError("记忆检索缺少索引，已拒绝执行");
+    const records: Parameters<MemoryIndexStore["replaceAll"]>[0][number][] = [];
     const longTermBytes = await readFile(this.guard(resolveLongTermPath(this.root), "长期记忆")).catch(() => undefined);
     const longTerm = parseLongTermDocument(
       longTermBytes === undefined ? "" : decodeUtf8Text(longTermBytes, "长期记忆正文", LONG_TERM_FILE),
     );
     if (longTerm.body.trim().length > 0) {
-      this.index.upsert({
+      records.push({
         entryId: "long-term",
         kind: "long-term",
         date: memoryDateOf(this.now()),
@@ -255,7 +260,7 @@ export class AgentMemoryStore {
     const summaries = await this.collectEntries();
     for (const summary of summaries) {
       const entry = await this.readEntry(summary.entryId);
-      this.index.upsert({
+      records.push({
         entryId: entry.entryId,
         kind: "entry",
         date: entry.date,
@@ -264,6 +269,7 @@ export class AgentMemoryStore {
         body: entry.body,
       });
     }
+    this.index.replaceAll(records);
     return summaries.length;
   }
 
@@ -274,6 +280,15 @@ export class AgentMemoryStore {
       () => undefined,
     );
     return next;
+  }
+
+  private async mutate<T extends { indexSynced: boolean; warning?: string }>(operation: () => Promise<T>, warning: string): Promise<T> {
+    const index = this.index;
+    const wasDirty = index?.beginMutation();
+    const result = await operation();
+    if (index !== undefined && result.indexSynced && wasDirty !== undefined) index.finishMutation(wasDirty);
+    if (index?.dirty && result.indexSynced) return { ...result, indexSynced: false, warning };
+    return result;
   }
 
   private async createEntry(body: string, date: string | undefined, source: string | undefined, session: string | undefined): Promise<MemoryWriteResult> {
@@ -370,9 +385,10 @@ export class AgentMemoryStore {
     }
     const current = await this.readLongTerm();
     if (expectedRevision !== undefined) assertRevision(expectedRevision, current.revision);
-    const recovered = this.guard(path.resolve(this.root, "retracted", LONG_TERM_FILE), "撤回区");
+    if (current.revision === 0) throw new AgentMemoryError("长期记忆不存在，无法撤回");
+    const recovered = this.guard(path.resolve(this.root, "retracted", `MEMORY-rev-${current.revision}.md`), "撤回区");
     await mkdir(path.dirname(recovered), { recursive: true });
-    await rename(this.guard(resolveLongTermPath(this.root), "长期记忆"), recovered).catch(() => undefined);
+    await copyFile(this.guard(resolveLongTermPath(this.root), "长期记忆"), recovered, constants.COPYFILE_EXCL);
     const cleared = await this.writeLongTerm("", current.revision + 1);
     return {
       target: { kind: "long-term" },

@@ -34,6 +34,7 @@ import type { DelegationTeamMember, DelegationTeamMetadata } from "./team.js";
 export interface LegionDispatchRequest {
   teamId: string;
   team: DelegationTeamMetadata;
+  initiatedBy?: string;
   /** 本次任务书（团队总目标）。 */
   task?: string;
   /** 手动计划；给了就用它，不给就从名单直接生成逐任务记录。 */
@@ -107,6 +108,7 @@ export class RunCoordinator {
   private readonly gate: DispatchGate;
   private readonly now: () => Date;
   private readonly active = new Map<string, ScheduleHandle>();
+  private readonly reserved = new Set<string>();
   /** 没有数据根时的运行记录（只在内存里，进程一退就没了——这一点如实告知）。 */
   private readonly memory = new Map<string, RunRecord>();
 
@@ -181,41 +183,44 @@ export class RunCoordinator {
 
     const at = this.now();
     const runId = await this.allocateRunId(teamId, at);
-    const record = createRunRecord({
-      runId,
-      teamId,
-      task: request.task,
-      schedule,
-      roster,
-      memberLimit,
-      maxConcurrentTasks: request.maxConcurrentTasks ?? request.team.maxConcurrentTasks,
-      at,
-    });
-    await this.save(record);
-
-    const handle = startSchedule({
-      record,
-      worker: request.worker,
-      gate: this.gate,
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
-      now: this.now,
-      // 子代理一起来就把原生子会话 id 记进运行记录（§15.2「原生 child session 链接」）。
-      onLaneStart: () => {
-        void this.saveDuringRun(record);
-      },
-      // 每次落定都落盘：进程没了，磁盘上至少能看到跑到哪一步（§15.2 重启结算）。
-      onUpdate: async (updated) => {
-        await this.saveDuringRun(updated);
-      },
-    });
-    this.active.set(runId, handle);
-    void handle.done
-      .catch(() => undefined)
-      .finally(() => {
-        this.active.delete(runId);
+    try {
+      const record = createRunRecord({
+        runId,
+        teamId,
+        ...(request.initiatedBy === undefined ? {} : { initiatedBy: request.initiatedBy }),
+        ...(request.team.managerAgentId === undefined ? {} : { managerAgentId: request.team.managerAgentId }),
+        task: request.task,
+        schedule,
+        roster,
+        memberLimit,
+        maxConcurrentTasks: request.maxConcurrentTasks ?? request.team.maxConcurrentTasks,
+        at,
       });
+      await this.save(record);
 
-    return record;
+      const handle = startSchedule({
+        record,
+        worker: request.worker,
+        gate: this.gate,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        now: this.now,
+        onLaneStart: () => {
+          void this.saveDuringRun(record);
+        },
+        onUpdate: async (updated) => {
+          await this.saveDuringRun(updated);
+        },
+      });
+      this.active.set(runId, handle);
+      void handle.done
+        .catch(() => undefined)
+        .finally(() => {
+          this.active.delete(runId);
+        });
+      return record;
+    } finally {
+      this.reserved.delete(runId);
+    }
   }
 
   /** 落盘（有数据根）或留内存（没有）。两条路都留最新那份。 */
@@ -301,8 +306,11 @@ export class RunCoordinator {
   private async allocateRunId(teamId: string, at: Date): Promise<string> {
     for (let sequence = 1; sequence <= 999; sequence += 1) {
       const candidate = nextRunId(teamId, at, sequence);
-      if (this.active.has(candidate) || this.memory.has(candidate)) continue;
-      if (this.store === undefined || (await this.store.load(candidate)) === undefined) return candidate;
+      if (this.reserved.has(candidate) || this.active.has(candidate) || this.memory.has(candidate)) continue;
+      if (this.store !== undefined && (await this.store.load(candidate)) !== undefined) continue;
+      if (this.reserved.has(candidate)) continue;
+      this.reserved.add(candidate);
+      return candidate;
     }
     throw new LegionRunInactiveError(`同一秒内同一支队伍派活次数过多，拒绝生成运行 id: ${teamId}`);
   }
@@ -360,6 +368,11 @@ export class RunCoordinator {
       conclusion: describeConclusion(record),
       events: record.events,
     };
+  }
+
+  async readOutputPage(runId: string, laneId: string, offset: number, length?: number) {
+    if (this.store === undefined) throw new LegionRunInactiveError("没有数据根，产出只保存在运行记录内");
+    return this.store.readOutputPage(runId, laneId, offset, length);
   }
 
   async list(): Promise<RunRecord[]> {

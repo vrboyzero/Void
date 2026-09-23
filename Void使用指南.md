@@ -466,19 +466,22 @@ firstMeeting: 先自我介绍，再问主人怎么称呼。
 
 **能力**：把一支队伍真的派出去干活——每条 lane 变成一个 dsh 子智能体，按依赖顺序执行；进度、产出、取消与终态通知都能从工具和面板看到。
 
-**模型层工具**（3 个）：
+**模型层工具**（4 个）：
 
 | 工具 | 作用 |
 |---|---|
 | `launch_legion` | 派活：`{ teamId, task?, plan? }`。`plan` 是可选的手工计划 JSON（`{"goal":…,"tasks":[{laneId,title,brief,dependsOn,stage,modelRef}]}`），非法计划在派发前就被拒。**计划只写「这一步干什么」**——没写的身份与调度字段都从队伍那条 lane 继承（见下面「队伍从哪来、计划管什么」）。立即返回 `runId`，运行在后台继续 |
-| `legion_run` | 读运行进度与各 lane 的完整产出（`{ runId, wait? }`；`wait: true` 阻塞到终态，仍可取消） |
+| `legion_run` | 读运行进度和小产出；超过 256 KiB 的产出返回 `outputRef.bytes` 与预览（`{ runId, wait? }`；`wait: true` 阻塞到终态，仍可取消） |
+| `legion_output` | 分片读大产出的原始 UTF-8 JSON：`{ runId, laneId, offset, length? }`，每次最多 16 KiB；按 `nextOffset` 继续，依次 base64 解码并拼接还原完整内容 |
 | `legion_cancel` | 取消整个 run（也可只取消某条 lane） |
+
+`legion_run`、`legion_output`、`legion_cancel` 每次都重核调用会话的绑定、发起身份与本次冻结名单的指挥权；无发起身份的旧运行记录在模型工具层拒绝读取/取消，面板和服务层的历史记录不删。子代理先绑定自己的档案再进首轮；绑定失败不会借用父身份。
 
 **队伍从哪来**：两个来源，**先内存、后磁盘**——`ctx.voidTeam.defineTeam(...)` 注册在内存里的，以及**保存在磁盘上的**（`<数据根>/legion/teams/<teamId>.json`，也就是**面板里建的那些**）。`launch_legion` 只给 `teamId` 就够了，面板建的队伍照样派得动。（2026-09-23 之前工具层只认内存那一份，面板建的队伍会回「队伍不存在: X」——已修，现在派发前会先 `observe`、再 `loadTeam` 落磁盘。）面板上改的**人数上限 / 并发上限**也是当场落到磁盘上的：点一次保存，两个数各推一格修订，**宿主重启后仍是新值**；把上限改到比名单人数还少会被拒（「队伍人数超出上限: 3 > 2（按档案去重后计数，含指挥者与临时成员；改上限或减人后再派）」），拿改前的修订再保存也会被拒（「队伍配置已被其他保存更新（期望修订 X，实际 Y），请重读后再改」），这两种拒绝都不会碰磁盘。（2026-09-23 真机核对：面板把 8→5、4→2 保存后，换一个进程重启宿主，面板读回仍是「3/5 人 · 修订 7」，磁盘原文逐字未变；再绕过宿主把文件换回改前那一份，面板**当场**读回旧值——面板显示的是磁盘上的真值，不是进程里的快照。）
 
 **队伍管谁来做、计划管这次做什么**：`plan` 只负责「这次跑哪几条 lane、每一步干什么」；**谁来做**由队伍决定——计划里没写 `agentId`/`role`/`writes`/`stage`/`modelRef` 时，按 `laneId` 从队伍那条 lane 继承（身份就是这么来的；少了它，权限检查会直接拒「派活目标缺少档案 id: lane_front」）。计划**可以只跑队伍的一部分 lane**：继承来的跨 lane 引用（`dependsOn`/`reportsTo`/`mayDirect`/`handoffTo`）若指向这次不跑的 lane，会被丢掉——那条 lane 不在名单里，「依赖它」「向它汇报」都无从谈起（否则会被拒「成员 lane_front 的汇报对象不在名单里: lane_plan」）；计划**自己**写的引用不丢，那是计划内部的矛盾，派发前会报出来（如「任务计划的 X 依赖不在名单里: Y」）。
 
-**门禁开着的时候**：`launch_legion`/`legion_run`/`legion_cancel` 在入口策略里都算**管理入口**（名字不在只读名单里就落兜底），`entryPolicy.enabled: true` 时会被拒（「工具 launch_legion 属于管理入口，未开放给 Agent，已拒绝」）。要派活得在 `entryPolicy.allowed` 里显式写上这三个名字——见 3.3 与 Q8。
+**门禁开着的时候**：`launch_legion`/`legion_run`/`legion_output`/`legion_cancel` 在入口策略里都算**管理入口**（名字不在只读名单里就落兜底），`entryPolicy.enabled: true` 时会被拒（「工具 launch_legion 属于管理入口，未开放给 Agent，已拒绝」）。要派活及读取大产出，须在 `entryPolicy.allowed` 里显式写上需要的名字——见 3.3 与 Q8。
 
 **代码层 API（`ctx.voidTeam`）**：
 
@@ -605,6 +608,10 @@ ctx.voidChannels.list();
 | `GET`、`POST /void/api/notifications` | 通知栏读取与标记已读 |
 | `GET /void/api/facet-versions`、`POST /void/api/facet-selection` | 模组版本与切换 |
 
+**插件开关与依赖**：入口按包切换该包的全部 entry。记忆以灵魂为前置，军团以灵魂和记忆为前置；开军团时缺任一前置会返回 409，关灵魂或记忆时若下游仍在运行，也返回 409 并提示先关哪个插件，**不会暗中连带关闭**。整套开关一次请求交给 Host，关闭顺序为军团→记忆→灵魂，开启顺序相反；未安装所需前置时整套开启会在改动前拒绝。直接编辑 profile patch 不经过这个开关门禁，维护者须自行保证依赖组合一致。开关仅在**本次 dsh 进程**有效，重启不会继承；长期禁用需在用户层 `cordis.patch.yml` 对相应的每条 entry 用 `disabled: true` 覆盖（见 README「开关持久化」），不要改每次启动被重置的根 `cordis.yml`。
+
+**回到 dsh 原 Agent**：只关闭灵魂和记忆**不够**，军团、工具治理、灵榜控制面、渠道等 Void 插件可能仍在影响工具和服务。先结束或取消进行中的军团运行，再用整套开关关闭所有可切换的 Void 插件，并**新开会话**核对系统提示与工具列表；旧会话的聊天历史和落盘记忆不会被开关删除，灵魂段又是登记在旧 Agent 作用域里，停用插件也不能保证旧 Agent 下一轮不再携带它。这样只是接近原生 Agent 的运行行为：不可关闭的 `void-entry` 面板仍装着，且本次开关不持久。需要严格的原生 dsh 环境时，使用未安装 Void 的独立 profile，而不是声称仅关闭两项即完全恢复。以上是源码静态边界，alpha.2 真机开关、进行中运行与旧会话的联动仍需在隔离 profile 验证。
+
 **通知栏**：在状态条下方；浏览器重连或标签页回到前台时会补读断线期间的通知（军团终态就是靠它补的）。当前有两个来源：`void-legion:runs`（军团跑完的终态，落盘、重启后还在）与 `void-soul:refusals`（灵魂没装进模型的原因，只在进程内留最近 50 条、重启即清）。
 
 补读有四条触发路径：页面刚打开、浏览器从断网恢复（`online` 事件）、标签页回到前台（`visibilitychange`）、以及每 15 秒一次的轮询兜底。2026-09-23 真机实测：断网期间跑完并取消的那次运行，恢复网络后 `online` 事件当场就发起读取、**8 毫秒**后未读数就从「没有未读」变成「1 条未读」——不是等下一次轮询；整页刷新后已读/未读照样保持（读状态落在 `<数据根>/legion/notifications.json` 的 `readAt` 上，不是浏览器本地）。
@@ -679,7 +686,7 @@ dsh --profile demo "请调用 memory_search 工具搜索 'hello'，然后报告�
 
 ### Q8：模型说「工具 launch_legion 属于管理入口，未开放给 Agent，已拒绝」
 
-**原因**：开了入口门禁（`entryPolicy.enabled: true`）之后，凡是不在只读名单里的工具都按「管理入口」拒——军团三件套（`launch_legion`/`legion_run`/`legion_cancel`）正是管理面：派活会真的拉起子智能体、真的花 token，所以默认不让任何档案随手做。
+**原因**：开了入口门禁（`entryPolicy.enabled: true`）之后，凡是不在只读名单里的工具都按「管理入口」拒——军团工具（`launch_legion`/`legion_run`/`legion_output`/`legion_cancel`）正是管理面：派活会真的拉起子智能体、真的花 token，所以默认不让任何档案随手做。
 
 **解决**：给 `void-soul` 那条补 `entryPolicy.allowed`（**同 id 是整块替换 `config`**，`isolation` 等要一起写全）：
 
@@ -689,7 +696,7 @@ dsh --profile demo "请调用 memory_search 工具搜索 'hello'，然后报告�
     entryPolicy:
       enabled: true
       isolation: { readIsolated: false, writeIsolated: true }
-      allowed: [memory_write, memory_update, memory_retract, launch_legion, legion_run, legion_cancel]
+      allowed: [memory_write, memory_update, memory_retract, launch_legion, legion_run, legion_output, legion_cancel]
 ```
 
 `allowed` 是**整个 profile 一份**的名单，不按档案分开——写进去，所有档案都能派活。不想开这个口子就保持拒绝：门禁的默认姿态是「宁可不让 Agent 自己拉队伍」。

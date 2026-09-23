@@ -279,6 +279,79 @@ describe("createScheduledWorker（真实派活）", () => {
     expect(started[0].request.persona).toBe("你是小贝");
   });
 
+  it("子代理首轮必须等到自己的会话绑定落盘，失败则停止而不借父身份", async () => {
+    let beforeStep: ((input: unknown, next: () => Promise<{ kind: string }>) => Promise<unknown>) | undefined;
+    let releaseBinding: (() => void) | undefined;
+    const bindingGate = new Promise<void>((resolve) => { releaseBinding = resolve; });
+    let firstStepFinished = false;
+    let disposed = false;
+    const bindings: Array<[string, string]> = [];
+    const subagents = {
+      getProvider: () => provider("spawn", { persona: true }),
+      async start() {
+        const firstStep = beforeStep!(
+          { agent: { id: "child-1", session: { header: { parentSession: "parent-1", origin: "subagent" } } } },
+          async () => ({ kind: "enter" }),
+        ).then(() => { firstStepFinished = true; });
+        return {
+          id: "child-1",
+          result: firstStep.then(() => ({ stopReason: "completed", output: [] })),
+          async dispose() { disposed = true; },
+        };
+      },
+    };
+    const ctx = {
+      get: (name: string) => name === "subagents" ? subagents : undefined,
+      on: (_name: string, listener: typeof beforeStep) => { beforeStep = listener; return () => {}; },
+    } as unknown as Context;
+    const worker = createScheduledWorker(ctx, { id: "parent-1" } as Agent, {
+      persona: () => "成员身份",
+      bindChildSession: async (sessionId, agentId) => {
+        bindings.push([sessionId, agentId]);
+        expect(firstStepFinished).toBe(false);
+        await bindingGate;
+      },
+    });
+    const work = worker(context());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(bindings).toEqual([["child-1", "xiaobei"]]);
+    expect(firstStepFinished).toBe(false);
+    releaseBinding?.();
+    await work;
+    expect(firstStepFinished).toBe(true);
+    expect(disposed).toBe(true);
+  });
+
+  it("子代理绑定失败时拒绝首轮并释放子代理", async () => {
+    let beforeStep: ((input: unknown, next: () => Promise<{ kind: string }>) => Promise<unknown>) | undefined;
+    let disposed = false;
+    let entered = false;
+    const subagents = {
+      getProvider: () => provider("spawn", { persona: true }),
+      async start() {
+        const firstStep = beforeStep!(
+          { agent: { id: "child-2", session: { header: { parentSession: "parent-1", origin: "subagent" } } } },
+          async () => { entered = true; return { kind: "enter" }; },
+        );
+        const result = firstStep.then(() => ({ stopReason: "completed", output: [] }));
+        return {
+          id: "child-2",
+          result,
+          async dispose() { disposed = true; await Promise.allSettled([result]); },
+        };
+      },
+    };
+    const ctx = {
+      get: (name: string) => name === "subagents" ? subagents : undefined,
+      on: (_name: string, listener: typeof beforeStep) => { beforeStep = listener; return () => {}; },
+    } as unknown as Context;
+    await expect(createScheduledWorker(ctx, { id: "parent-1" } as Agent, {
+      bindChildSession: async () => { throw new Error("binding failed"); },
+    })(context())).rejects.toThrow("binding failed");
+    expect(entered).toBe(false);
+    expect(disposed).toBe(true);
+  });
+
   it("子代理没跑完就抛错（调度器记 failed）", async () => {
     const { ctx } = fakeCtx({
       result: Promise.resolve({ stopReason: "error", output: [] }),

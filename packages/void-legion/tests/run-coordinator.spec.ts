@@ -193,6 +193,34 @@ describe("RunCoordinator 派活", () => {
     expect(onDisk.map((item) => item.runId).sort()).toEqual([first.runId, second.runId].sort());
   });
 
+  it("同秒并发派活原子占用运行 id，不覆盖两份记录", async () => {
+    const root = await makeRoot();
+    const fixed = new Date("2026-09-22T08:00:00.000Z");
+    let waiting = 0;
+    let releaseFirstChecks: (() => void) | undefined;
+    const firstChecks = new Promise<void>((resolve) => { releaseFirstChecks = resolve; });
+    class DelayedStore extends RunStore {
+      override async load(runId: string) {
+        const loaded = await super.load(runId);
+        if (runId.endsWith("-01")) {
+          waiting += 1;
+          if (waiting === 2) releaseFirstChecks?.();
+          await firstChecks;
+        }
+        return loaded;
+      }
+    }
+    const store = new DelayedStore({ dataDir: root });
+    const runs = new RunCoordinator({ store, now: () => fixed });
+    const [first, second] = await Promise.all([
+      runs.dispatch({ teamId: "legion-demo", team: TEAM, worker: instantWorker() }),
+      runs.dispatch({ teamId: "legion-demo", team: TEAM, worker: instantWorker() }),
+    ]);
+    await Promise.all([runs.waitFor(first.runId), runs.waitFor(second.runId)]);
+    expect(first.runId).not.toBe(second.runId);
+    expect((await store.list()).map((record) => record.runId)).toEqual([first.runId, second.runId].sort());
+  });
+
   it("权限门禁在派出任何任务之前跑，拒绝就一个都不派、也不留运行记录", async () => {
     const control = controllableWorker();
     const runs = new RunCoordinator({});

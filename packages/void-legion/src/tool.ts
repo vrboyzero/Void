@@ -24,7 +24,7 @@ export function apply(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: "launch_legion",
     description:
-      "Dispatch a Void legion (team): every lane becomes a real dsh subagent in dependency order. Returns a runId immediately; the run continues in the background. Use legion_run to read progress and full outputs, legion_cancel to stop it.",
+      "Dispatch a Void legion (team): every lane becomes a real dsh subagent in dependency order. Returns a runId immediately; the run continues in the background. Use legion_run to read progress and output references, legion_output to page large outputs, legion_cancel to stop it.",
     parameters: {
       teamId: { type: "string", required: true, description: "The team id: one registered via ctx.voidTeam.defineTeam, or one saved on disk (the panel's teams)." },
       task: { type: "string", description: "The shared goal for this run (optional)." },
@@ -88,9 +88,14 @@ export function apply(ctx: Context): void {
         // 逐子代理身份：取的是每个 lane 成员**自己的**档案，不是派活会话的身份。
         // 表在下面的 authorize 里、任何 lane 启动之前填满；查不到就抛，不静默无名分。
         persona: (context) => personaOf(personas, context.laneId),
+        bindChildSession: async (sessionId, agentId) => {
+          if (authority.bindChildSession === undefined) throw new Error("子代理缺少会话绑定服务，拒绝首轮执行");
+          await authority.bindChildSession(sessionId, agentId);
+        },
       });
       const record = await team.dispatch(teamId, {
         task,
+        initiatedBy: actor.id,
         worker,
         ...(parsed === undefined ? {} : { plan: parsed }),
         // 权限快照：在派出任何任务之前跑，逐目标检查，不通过就一个子代理都不启动。

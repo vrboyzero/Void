@@ -38,6 +38,17 @@ describe("voidAuthority", () => {
     expect(await authority.forSession("session-a")).toBeUndefined();
   });
 
+  it("子代理绑定自己的档案且不能悄悄改绑为父档案", async () => {
+    const dataDir = await tempDataDir();
+    await writeSoul(dataDir, "小贝", ["---", "id: xiaobei", "name: 小贝", "summary: 统筹", "---"]);
+    await writeSoul(dataDir, "小码", ["---", "id: xiaoma", "name: 小码", "summary: 成员", "---"]);
+    const authority = new SoulAuthority(new Context(), { dataDir });
+    await authority.bindChildSession("child-session-1", "xiaoma");
+    expect((await authority.forSession("child-session-1"))?.actorId).toBe("xiaoma");
+    await expect(authority.bindChildSession("child-session-1", "xiaobei")).rejects.toThrow(/不能改成/);
+    expect((await authority.forSession("child-session-1"))?.actorId).toBe("xiaoma");
+  });
+
   it("绑定后给出派活者与整份身份图，关掉 authority 的档案留在图里但没有任何边", async () => {
     const dataDir = await tempDataDir();
     await writeSoul(dataDir, "小贝", [

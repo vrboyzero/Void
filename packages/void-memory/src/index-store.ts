@@ -117,6 +117,7 @@ export class MemoryIndexStore {
   readonly path: string;
   private readonly database: Database.Database;
   private closed = false;
+  private dirtyInMemory = false;
 
   private constructor(options: MemoryIndexOpenOptions) {
     this.agentId = options.agentId;
@@ -157,11 +158,29 @@ export class MemoryIndexStore {
   }
 
   get dirty(): boolean {
-    return this.readMeta("dirty") === "1";
+    return this.dirtyInMemory || this.readMeta("dirty") === "1";
   }
 
   get dirtyReason(): string | undefined {
     return this.readMeta("dirty_reason") ?? undefined;
+  }
+
+  beginMutation(): boolean {
+    this.assertOpen();
+    const wasDirty = this.dirty;
+    this.writeMeta("dirty", "1");
+    this.dirtyInMemory = true;
+    return wasDirty;
+  }
+
+  finishMutation(wasDirty: boolean): void {
+    if (wasDirty) return;
+    try {
+      this.clearDirty();
+      this.dirtyInMemory = false;
+    } catch (error) {
+      this.markDirty(describe(error));
+    }
   }
 
   size(): number {
@@ -193,7 +212,6 @@ export class MemoryIndexStore {
         this.bumpGeneration();
       });
       apply(record);
-      this.clearDirty();
     } catch (error) {
       throw new MemoryIndexError(`记忆索引写入失败: ${describe(error)}`);
     }
@@ -208,7 +226,6 @@ export class MemoryIndexStore {
         this.bumpGeneration();
       });
       apply(entryId);
-      this.clearDirty();
     } catch (error) {
       throw new MemoryIndexError(`记忆索引删除失败: ${describe(error)}`);
     }
@@ -216,6 +233,7 @@ export class MemoryIndexStore {
 
   /** 索引写不进去时留下 dirty 代际，主流程照常返回“正文已保存、检索待同步”。 */
   markDirty(reason: string): void {
+    this.dirtyInMemory = true;
     if (this.closed) return;
     try {
       this.writeMeta("dirty", "1");
@@ -227,6 +245,7 @@ export class MemoryIndexStore {
 
   search(query: string, k: number): MemoryIndexHit[] {
     this.assertOpen();
+    if (this.dirty) throw new MemoryIndexError("记忆索引待同步，拒绝检索旧正文");
     const limit = normalizeLimit(k);
     const { precise, broad } = memoryQueryTerms(query);
     const attempts = [memoryMatchExpression(precise), memoryMatchExpression(broad)].filter(
@@ -237,6 +256,31 @@ export class MemoryIndexStore {
       if (hits.length > 0) return hits;
     }
     return this.searchSubstring(query, limit);
+  }
+
+  replaceAll(records: readonly MemoryIndexRecord[]): void {
+    this.assertOpen();
+    try {
+      this.database.transaction(() => {
+        this.database.prepare("DELETE FROM memory_fts").run();
+        this.database.prepare("DELETE FROM memory_entries").run();
+        const insertEntry = this.database.prepare(
+          `INSERT INTO memory_entries (entry_id, kind, date, revision, relative_path, body, indexed_at)
+           VALUES (@entryId, @kind, @date, @revision, @relativePath, @body, @indexedAt)`,
+        );
+        const insertTokens = this.database.prepare("INSERT INTO memory_fts (entry_id, tokens) VALUES (?, ?)");
+        for (const record of records) {
+          insertEntry.run({ ...record, indexedAt: new Date().toISOString() });
+          insertTokens.run(record.entryId, memoryTokens(`${record.entryId} ${record.date} ${record.body}`));
+        }
+        this.bumpGeneration();
+        this.clearDirty();
+      })();
+      this.dirtyInMemory = false;
+    } catch (error) {
+      this.markDirty(describe(error));
+      throw new MemoryIndexError(`记忆索引重建失败: ${describe(error)}`);
+    }
   }
 
   list(limit: number, offset: number): MemoryIndexRow[] {
