@@ -536,7 +536,7 @@ describe("void-soul registration", () => {
 });
 
 describe("void-soul entry policy wiring", () => {
-  function fakeContext(options: { withShell?: boolean } = {}) {
+  function fakeContext(options: { withShell?: boolean; withoutTools?: boolean } = {}) {
     const effects: (() => void)[] = [];
     const registered: { name: string; execute: (...args: unknown[]) => Promise<unknown> }[] = [];
     const registry = {
@@ -544,11 +544,22 @@ describe("void-soul entry policy wiring", () => {
     };
     const shell = { async run() { return "ran"; }, start() { return "started"; } };
     const scope = {
-      get: (name: string) => name === "tools" ? registry : options.withShell === true && name === "shell" ? shell : undefined,
+      get: (name: string) => name === "tools" && options.withoutTools !== true ? registry : options.withShell === true && name === "shell" ? shell : undefined,
       effect: (fn: () => void) => { effects.push(fn); },
     };
-    const logger = () => ({ error: () => undefined, info: () => undefined, warn: () => undefined, debug: () => undefined });
-    return { ctx: { logger, on: () => () => undefined, inject: (_names: string[], callback: (s: unknown) => void) => { callback(scope); } }, registry, registered, effects, shell };
+    // 日志要能被断言：门禁装没装上、装在哪条通道，是这次改动的主要可观测面。
+    // 替身照真实行为来：cordis 的 `Logger.format()` 会按 printf 规则把 `%s` 换成实参
+    // （`cordis/lib/index.js` 的 defaultFormatters）。不替换的话断言就得对着格式串写，
+    // 等于在给一个假行为写测试——本仓库已经在这上面栽过一次。
+    const logs: string[] = [];
+    const record = (level: string) => (...args: unknown[]): void => {
+      const [format, ...rest] = args;
+      let index = 0;
+      const text = String(format).replace(/%[a-zA-Z%]/g, (match) => (match === "%%" ? "%" : String(rest[index++])));
+      logs.push(`${level} ${text}${index < rest.length ? ` ${rest.slice(index).map((a) => String(a)).join(" ")}` : ""}`);
+    };
+    const logger = () => ({ error: record("error"), info: record("info"), warn: record("warn"), debug: record("debug") });
+    return { ctx: { logger, on: () => () => undefined, inject: (_names: string[], callback: (s: unknown) => void) => { callback(scope); } }, registry, registered, effects, shell, logs };
   }
 
   it("leaves the tool registry alone unless the entry policy is switched on", async () => {
@@ -587,34 +598,45 @@ describe("void-soul entry policy wiring", () => {
     await expect(registered[0]!.execute({}, {})).rejects.toThrow(/会读到 Host 私人数据/);
   });
 
-  it("把 entryPolicy 的隔离声明同时交给 shell 门禁：工具入口与底层 shell 不分叉", async () => {
-    const { ctx, registry, registered, shell } = fakeContext({ withShell: true });
-    VoidSoul.apply(ctx as never, { entryPolicy: { enabled: true, isolation: { readIsolated: true, writeIsolated: true } } });
-    registry.register({ name: "pwsh", execute: async () => "done" });
-    await expect(registered[0]!.execute({}, {})).resolves.toBe("done");
-    await expect(shell.run({ command: "pwd" })).resolves.toBe("ran");
-  });
-
-  it("allowUnisolated 同样同时放行工具入口与底层 shell", async () => {
-    const { ctx, registry, registered, shell } = fakeContext({ withShell: true });
+  // 2026-10-03：原先这里断言「entryPolicy 的隔离声明同时交给底层 shell 门禁」。那条路包的是
+  // 宿主早就没有的 `shell.run`（ShellExecutor 只有 resolve + execute），从来没装上过，已删。
+  // 现在只留一道：模型的工具入口。底层 shell 由宿主沙箱管。
+  it("门禁打开时只装工具入口门禁，不再包装底层 shell 服务", async () => {
+    const { ctx, registry, registered, shell, effects } = fakeContext({ withShell: true });
     VoidSoul.apply(ctx as never, { entryPolicy: { enabled: true, allowUnisolated: true } });
     registry.register({ name: "write", execute: async () => "done" });
     await expect(registered[0]!.execute({}, {})).resolves.toBe("done");
+    // shell 服务原样可用——被包过的话，默认策略（无隔离）会让它当场抛「缺少读隔离」。
     await expect(shell.run({ command: "pwd" })).resolves.toBe("ran");
-  });
-
-  it("门禁没打开时只装 shell 门禁，底层 shell 照旧拒绝原始命令", async () => {
-    const { ctx, shell, effects } = fakeContext({ withShell: true });
-    VoidSoul.apply(ctx as never, {});
-    await expect(shell.run({ command: "pwd" })).rejects.toThrow(/缺少读隔离/);
-    // 只装 shell 门禁，不装工具入口门禁——和改动前一样。
     expect(effects).toHaveLength(1);
   });
 
-  it("声明了隔离但门禁没打开时也不放行底层 shell（缺省最保守）", async () => {
-    const { ctx, shell } = fakeContext({ withShell: true });
+  it("门禁没打开：不碰底层 shell，并在日志里明说没装", async () => {
+    const { ctx, shell, effects, logs } = fakeContext({ withShell: true });
+    VoidSoul.apply(ctx as never, {});
+    await expect(shell.run({ command: "pwd" })).resolves.toBe("ran");
+    expect(effects).toEqual([]);
+    // 「没装」要说出来。以前这里什么都不说，外面看起来门禁在工作。
+    expect(logs.some((line) => /工具入口门禁未启用/.test(line))).toBe(true);
+  });
+
+  it("声明了隔离但门禁没打开时也不装（缺省最保守），并照旧说明没装", async () => {
+    const { ctx, shell, effects, logs } = fakeContext({ withShell: true });
     VoidSoul.apply(ctx as never, { entryPolicy: { isolation: { readIsolated: true, writeIsolated: true } } });
-    await expect(shell.run({ command: "pwd" })).rejects.toThrow(/缺少读隔离/);
+    await expect(shell.run({ command: "pwd" })).resolves.toBe("ran");
+    expect(effects).toEqual([]);
+    expect(logs.some((line) => /工具入口门禁未启用/.test(line))).toBe(true);
+  });
+
+  it("装上了就报出通道；装不上就报出来，不静默走开", async () => {
+    const on = fakeContext({ withShell: true });
+    VoidSoul.apply(on.ctx as never, { entryPolicy: { enabled: true } });
+    expect(on.logs.some((line) => /工具入口门禁已装（通道=register）/.test(line))).toBe(true);
+
+    const blind = fakeContext({ withoutTools: true });
+    VoidSoul.apply(blind.ctx as never, { entryPolicy: { enabled: true } });
+    expect(blind.logs.some((line) => /工具入口门禁装不上/.test(line))).toBe(true);
+    expect(blind.effects).toEqual([]);
   });
 });
 

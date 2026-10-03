@@ -167,8 +167,8 @@ export function entryDenialReason(input: {
   if (kind === "manage") {
     return `工具 ${input.name} 属于管理入口，未开放给 Agent，已拒绝`;
   }
-  // 与底层 shell 门禁共用同一个判定（`isExecutionAllowed`）：`allowUnisolated` 与
-  // 「读写都隔离」两种放行理由都在里面，同一份配置在两处必须同答。
+  // 与 `execution-policy.ts` 的其他消费者共用同一个判定（`isExecutionAllowed`）：
+  // `allowUnisolated` 与「读写都隔离」两种放行理由都在里面，同一份配置必须同答。
   if (isExecutionAllowed(input.policy)) return undefined;
   const what = kind === "execute" ? "原始执行" : "写入";
   return `工具 ${input.name} 属于${what}入口，需要读隔离执行环境，本机没有，已拒绝`;

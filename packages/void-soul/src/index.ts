@@ -34,7 +34,6 @@ export {
 export { assertRawCommandAllowed, isExecutionAllowed, type ExecutionIsolation, type ExecutionPolicy } from "./execution-policy.js";
 export { buildMemberPersona, personaTextOf, type MemberPersona } from "./persona.js";
 export { runGuardedCommand, type RawCommandRequest } from "./command-gate.js";
-export { guardShell, installShellReadGuard, type GuardedShell } from "./shell-guard.js";
 export {
   assertPathInsideRoots,
   assertRealPathInsideRoots,

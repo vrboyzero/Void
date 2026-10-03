@@ -6,13 +6,15 @@ export interface ExecutionIsolation {
 }
 
 /**
- * 执行面策略：与工具入口门禁同一套判定的入参。
+ * 执行面策略：拦「起进程」这件事的几个消费者共用的判定。
  *
- * 有两道门禁拦「起进程」这件事——模型工具入口（`entry-policy.ts`，拦 `pwsh`/`bash` 这类
- * 工具名）和底层 shell 服务（`shell-guard.ts`，拦真正落到宿主 `shell.run`/`start` 的调用）。
- * 两道门禁必须用同一个函数回答「这里允许原始执行吗」，否则会出现分叉：配置里声明了读隔离
- * 之后工具门禁按声明放行，底层 shell 门禁却还按「本机没有隔离」拒掉，人工清单第 4 条
- * （把 `entryPolicy.isolation.readIsolated` 打开后重跑写/执行入口）永远验不过。
+ * 现在的消费者是 `entry-policy.ts`（按工具名 / 契约判模型的工具入口）与 `command-gate.ts`
+ * （`runGuardedCommand`）。它们必须用同一个函数回答「这里允许原始执行吗」，否则会出现分叉：
+ * 配置里声明了读隔离之后工具门禁按声明放行，另一处却还按「本机没有隔离」拒掉。
+ *
+ * **2026-10-03 删掉了原先的第三个消费者 `shell-guard.ts`**：它包的是宿主 `shell.run` /
+ * `shell.start`，而 `ShellExecutor` 只有 `resolve` + `execute`（`0.1.7-rc.2` 起就是如此），
+ * 所以那个包装从来没装上过。要恢复「拦所有 raw 执行」这条更强的路，得先有读隔离环境。
  */
 export interface ExecutionPolicy {
   /** 当前执行环境的隔离能力。没提供就当作完全没有隔离。 */

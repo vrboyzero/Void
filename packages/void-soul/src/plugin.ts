@@ -6,7 +6,6 @@ import { loadSessionBindings, loadSoulRegistry, resolveBinding, type SoulRecord 
 import { readProfileDirectory, tryResolveVoidDataRoot } from "./profile.js";
 import { createAttachRetry, installFrozenSectionRecovery, registerFrozenAttachDisposal, type FrozenAttach, type FrozenAttachRegistry, type FrozenSection } from "./prompt-recovery.js";
 import { createRefusalNotifications, SoulRefusalLog, type SoulRefusalSource } from "./refusals.js";
-import { installShellReadGuard, type GuardedShell } from "./shell-guard.js";
 import type { ExecutionIsolation } from "./execution-policy.js";
 import { installToolEntryGuard, type GuardedToolRegistry } from "./tool-entry-guard.js";
 
@@ -358,8 +357,9 @@ export interface VoidSoulConfig {
    * profile 的写/执行工具全部失效（风险见文档 19.1）。读隔离落地后在隔离 profile
    * 里显式打开，或先用 `allowUnisolated` 在受控环境里放行。
    *
-   * 打开之后，这里声明的 `isolation` 与 `allowUnisolated` 同时管住底层 shell 服务
-   * （`installShellReadGuard`）——两道门禁共用一个判定，见 `execution-policy.ts`。
+   * 打开或没打开都会在日志里说清楚（装在哪条通道 / 没装），不再有「以为装上了」这种状态。
+   * 它只管模型的工具入口；底层命令执行由宿主沙箱管——原先那道包 `shell.run` 的底层门禁已于
+   * 2026-10-03 删除（宿主没有那个方法，它从来没装上过，理由见 `apply`）。
    */
   entryPolicy?:
     | {
@@ -380,30 +380,32 @@ export interface VoidSoulConfig {
 
 /** 等入口出现后登记只读来源。入口不在时什么都不做，卸载时撤掉登记。 */
 export function apply(ctx: Context, config: VoidSoulConfig = {}): void {
-  // 门禁没打开时按最保守处理（`{}`＝完全没有隔离，照旧拒绝）；打开时把同一份隔离声明与
-  // `allowUnisolated` 一并交给 shell 门禁——两道门禁必须对同一份配置给同一个答案，否则会
-  // 出现「工具门禁放行 pwsh、底层 shell 仍以缺少读隔离拒绝」的分叉（见 execution-policy.ts）。
-  const executionPolicy = config.entryPolicy?.enabled === true ? config.entryPolicy : {};
-  ctx.inject(["shell"], (shellCtx) => {
-    const shell = shellCtx.get("shell") as GuardedShell | undefined;
-    if (!shell?.run) return;
-    const restore = installShellReadGuard(shell, executionPolicy);
-    shellCtx.effect(() => restore, "void-soul: shell read guard");
-  });
+  const log = ctx.logger("void-soul");
+  // 只留一道门禁：模型的工具入口（`ctx.tools.guard`）。2026-10-03 删掉了原来那道「底层 shell
+  // 门禁」——它包的是 `shell.run` / `shell.start`，而宿主的 `ShellExecutor` 只有 `resolve` +
+  // `execute`（0.1.7-rc.2 起就是如此，alpha.2 还有 `run`），所以它从来没装上过；`if (!shell?.run)
+  // return;` 又把这件事藏了起来，让人以为两道门禁都在工作。现在底层命令由宿主沙箱管，Void 不再
+  // 声称自己管过。要恢复这条更强的路（拦所有 raw 执行）得先有读隔离环境，见文档待办。
   if (config.entryPolicy?.enabled === true) {
     const policy = config.entryPolicy;
     ctx.inject(["tools"], (toolsCtx) => {
       const registry = toolsCtx.get("tools") as GuardedToolRegistry | undefined;
-      if (!registry?.register) return;
+      // 装不上就说出来。以前这里是静默 return——外面看起来「门禁已开」，其实一道都没有。
+      if (typeof registry?.guard !== "function" && typeof registry?.register !== "function") {
+        log.warn("工具入口门禁装不上：工具注册表既没有 guard 也没有 register，模型的写/执行入口不受 Void 管。");
+        return;
+      }
       const guard = installToolEntryGuard(registry, {
         isolation: policy.isolation,
         allowUnisolated: policy.allowUnisolated,
         allowed: policy.allowed,
       });
+      log.info("工具入口门禁已装（通道=%s）：写/执行入口按 entryPolicy 判定。", guard.channel());
       toolsCtx.effect(() => guard.restore, "void-soul: tool entry guard");
     });
+  } else {
+    log.info("工具入口门禁未启用（entryPolicy.enabled 不是 true）：模型的写/执行入口不受 Void 限制，由宿主沙箱管。");
   }
-  const log = ctx.logger("void-soul");
   const refusals = new SoulRefusalLog();
   // 宿主从不设 DSH_PROFILE，认档案就靠它给的档案目录（见 readProfileDirectory）。
   const profileDirectory = readProfileDirectory(ctx);
