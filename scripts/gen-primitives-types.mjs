@@ -26,10 +26,10 @@
  * ## 用法
  *
  * ```sh
- * # 从 npm 上同版的包取类型（需联网）
+ * # 默认：读本机已安装的宿主（离线可用）
  * node scripts/gen-primitives-types.mjs
  *
- * # 从已解开的目录取（离线；目录里应有 lib/types）
+ * # 指定别的宿主副本（如隔离验证用的那份）
  * node scripts/gen-primitives-types.mjs --from .tmp/primitives-types/package
  *
  * # 只检查是否最新（不写入，落后则退出码 1）
@@ -49,10 +49,14 @@ const OUTPUT = join(CLIENT_DIR, "primitives.d.ts");
 const MODULE_NAME = "@deepseek-ai/dsh-client-ui-primitives";
 
 /**
- * 宿主 dsh 的版本。必须与正在使用的宿主一致——声明就是从同版包的 `lib/types` 抄的。
- * 宿主升级时改这里，然后重跑本脚本。
+ * 宿主 dsh 的版本。**仅用于兜底**：本机找不到已安装的宿主时才按这个版本去 npm 取。
+ *
+ * 0.1.7 起 `@deepseek-ai/dsh-client-ui-primitives` 随宿主发布到磁盘（此前只活在前端
+ * bundle 的冻结模块表里），所以默认直接读本机那份——拿到的就是当前在跑的类型，
+ * 不存在「忘了改这个常量」的漂移。0.1.5-rc.2 → 0.1.7-rc.1 那次就是漏在这里：图标
+ * 改名了而这个常量没动，声明没跟上，真机白屏。
  */
-const HOST_VERSION = "0.1.5-rc.2";
+const HOST_VERSION = "0.1.7-rc.1";
 
 const args = process.argv.slice(2);
 const check = args.includes("--check");
@@ -117,6 +121,50 @@ function usedNames() {
   return [...names].sort();
 }
 
+/**
+ * 列出台局 npm 全局根目录。
+ *
+ * 查不到不致命（下面还有按 `HOST_VERSION` 去 npm 取的路径），所以要说明原因再继续。
+ *
+ * @returns 候选根目录；一个都没有时返回空数组。
+ */
+function globalRoots() {
+  try {
+    const root = execFileSync("npm", ["root", "-g"], {
+      encoding: "utf8",
+      shell: process.platform === "win32",
+    }).trim();
+    return root === "" ? [] : [root];
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`查全局 npm root 失败（${reason}），改按 ${HOST_VERSION} 取类型。\n`);
+    return [];
+  }
+}
+
+/**
+ * 找本机已安装的 dsh 里的 primitives 包。
+ *
+ * 优先读本机那份而不是按版本号去 npm 取：本机装的就是当前在跑的那份，不受忘记改
+ * `HOST_VERSION` 影响。0.1.7 起这个包随宿主发布到磁盘，所以这条路径可用。
+ *
+ * @returns `lib/types` 的绝对路径；本机没有时返回 undefined。
+ */
+function locateInstalledHost() {
+  const candidates = [];
+  // 显式覆盖：装了多个 dsh（比如隔离 DSH_HOME 做验证）时指哪打哪。
+  const override = process.env.DSH_HOST_PRIMITIVES_DIR;
+  if (override !== undefined && override !== "") candidates.push(resolve(override));
+  for (const root of globalRoots()) {
+    candidates.push(join(root, "@deepseek-ai/dsh/node_modules", MODULE_NAME));
+  }
+  for (const candidate of candidates) {
+    const root = join(candidate, "lib/types");
+    if (statSync(root, { throwIfNoEntry: false })?.isDirectory()) return root;
+  }
+  return undefined;
+}
+
 /** 定位 primitives 包的类型根目录。 */
 function resolveTypesRoot() {
   if (fromDir !== undefined) {
@@ -124,8 +172,13 @@ function resolveTypesRoot() {
     if (!statSync(root, { throwIfNoEntry: false })) throw new Error(`--from 下没有 lib/types：${root}`);
     return { root, cleanup: () => {} };
   }
+  const installed = locateInstalledHost();
+  if (installed !== undefined) {
+    process.stderr.write(`用本机已安装的宿主类型：${installed}\n`);
+    return { root: installed, cleanup: () => {} };
+  }
   const temp = mkdtempSync(join(tmpdir(), "primitives-types-"));
-  process.stderr.write(`从 npm 取 ${MODULE_NAME}@${HOST_VERSION} 的类型...\n`);
+  process.stderr.write(`本机没找到宿主包，从 npm 取 ${MODULE_NAME}@${HOST_VERSION} 的类型...\n`);
   execFileSync("npm", ["pack", `${MODULE_NAME}@${HOST_VERSION}`, "--pack-destination", temp], {
     stdio: ["ignore", "ignore", "inherit"],
     shell: process.platform === "win32",
@@ -269,8 +322,9 @@ const PREAMBLE = `/**
  * 提升到 4.0.2，使 void-tools / void-legion / void-memory 报
  * \`does not provide an export named 'CallId' / 'isJsonValue'\`（方案文档 §20.1）。
  *
- * 声明逐字抄自 npm 上**与宿主同版**的 \`${MODULE_NAME}@${HOST_VERSION}\`
- * 的 \`lib/types/**\`。宿主升级时改脚本里的 \`HOST_VERSION\` 再重跑。
+ * 声明逐字抄自宿主同版的 \`${MODULE_NAME}\` 的 \`lib/types/**\`：默认读**本机已装**
+ * 的那份（可用环境变量 \`DSH_HOST_PRIMITIVES_DIR\` 指定），读不到才按 \`HOST_VERSION\`
+ * 去 npm 取。宿主升级后重跑本脚本即可，不必先改常量。
  */`;
 
 /**

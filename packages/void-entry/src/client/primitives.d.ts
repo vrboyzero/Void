@@ -15,8 +15,9 @@
  * 提升到 4.0.2，使 void-tools / void-legion / void-memory 报
  * `does not provide an export named 'CallId' / 'isJsonValue'`（方案文档 §20.1）。
  *
- * 声明逐字抄自 npm 上**与宿主同版**的 `@deepseek-ai/dsh-client-ui-primitives@0.1.5-rc.2`
- * 的 `lib/types/**`。宿主升级时改脚本里的 `HOST_VERSION` 再重跑。
+ * 声明逐字抄自宿主同版的 `@deepseek-ai/dsh-client-ui-primitives` 的 `lib/types/**`：默认读**本机已装**
+ * 的那份（可用环境变量 `DSH_HOST_PRIMITIVES_DIR` 指定），读不到才按 `HOST_VERSION`
+ * 去 npm 取。宿主升级后重跑本脚本即可，不必先改常量。
  */
 
 declare module "@deepseek-ai/dsh-client-ui-primitives" {
@@ -29,27 +30,29 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
   /**
    * Render a button.
    * @param props.variant - visual family (default 'ghost').
-   * @param props.size - 'md' 36px capsule (figma Button) or 'sm' 28px compact.
+   * @param props.size - 'md' 36px control with 12px corners or 'sm' 28px control with 8px corners.
    * @param props.icon - optional leading 16px icon node.
+   * @param ref - native button for focus management and overlay anchors.
    * @returns the button element; native button attributes pass through.
    */
-  export function Button({ variant, size, icon, className, children, ...rest }: {
+  export const Button: import("react").ForwardRefExoticComponent<{
       variant?: ButtonVariant;
-      size?: 'md' | 'sm';
+      size?: "md" | "sm";
       icon?: ReactNode;
       className?: string | undefined;
       children?: ReactNode;
-  } & ButtonHTMLAttributes<HTMLButtonElement>): import("react").JSX.Element;
+  } & ButtonHTMLAttributes<HTMLButtonElement> & import("react").RefAttributes<HTMLButtonElement>>;
 
   /** Visual variant, each backed by its --dsw-alias-button-* token family. */
   export type ButtonVariant = 'primary' | 'ghost' | 'outline' | 'toolbar';
 
   /**
    * Render one disclosure header and its controlled expanded content.
+   * Shallow prop comparison requires stable callbacks and React nodes to skip unchanged renders.
    * @param props - Visual content, controlled state, and interaction policy.
    * @returns the disclosure row.
    */
-  export function DisclosureRow({ icon, title, open, expandable, onToggle, expandOnRowClick, previewChevron, keepContentWhenOpen, collapsedContent, children, className, rowClassName, leadingClassName, chevronClassName, titleClassName, }: DisclosureRowProps): import("react").JSX.Element;
+  export const DisclosureRow: import("react").MemoExoticComponent<({ icon, title, open, expandable, onToggle, running, expandOnRowClick, previewChevron, keepContentWhenOpen, collapsedContent, children, className, rowClassName, contentClassName, contentLayoutClassName, leadingClassName, chevronClassName, titleClassName, }: DisclosureRowProps) => import("react").JSX.Element>;
 
   /** Shared 24px disclosure chrome for compact flow rows. */
   export interface DisclosureRowProps {
@@ -58,6 +61,8 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
       open: boolean;
       expandable: boolean;
       onToggle: () => void;
+      /** Animate the complete header while its owning operation is running. */
+      running?: boolean | undefined;
       /** Makes the complete title row the disclosure target. */
       expandOnRowClick?: boolean | undefined;
       /** Replaces the collapsed icon with a chevron while the row is hovered. */
@@ -68,18 +73,22 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
       children?: ReactNode;
       className?: string | undefined;
       rowClassName?: string | undefined;
+      /** Sizing class for the header text area, beside the leading icon. */
+      contentClassName?: string | undefined;
+      /** Layout class shared by the header text and its decorative copy. */
+      contentLayoutClassName?: string | undefined;
       leadingClassName?: string | undefined;
       chevronClassName?: string | undefined;
       titleClassName?: string | undefined;
   }
 
-  /** ic_ds_cordis_plugin_outline_14 */
-  export const IconCordisPluginOutline14: ({ size, className }: IconProps) => import("react").JSX.Element;
+  /** Regular one-pixel IconCordisPluginOutline artwork. */
+  export const IconCordisPluginOutlineRegular: (props: IconProps) => import("react").JSX.Element;
 
-  /** ic_ds_plus_outline_16 */
-  export const IconPlusOutline16: ({ size, className }: IconProps) => import("react").JSX.Element;
+  /** Regular one-pixel IconPlusOutline artwork. */
+  export const IconPlusOutlineRegular: (props: IconProps) => import("react").JSX.Element;
 
-  /** Shared props for every ic_ds_* icon component. */
+  /** Shared props for every product icon component. */
   export interface IconProps {
       /** Square edge in px; defaults to the glyph's own drawn size. */
       size?: number | undefined;
@@ -88,17 +97,17 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
       className?: string | undefined;
   }
 
-  /** ic_ds_question_outline_14 (figma extract): ring + question glyph. */
-  export const IconQuestionOutline14: ({ size, className }: IconProps) => import("react").JSX.Element;
+  /** Regular one-pixel IconQuestionOutline artwork. */
+  export const IconQuestionOutlineRegular: (props: IconProps) => import("react").JSX.Element;
 
-  /** ic_ds_search_outline_16 */
-  export const IconSearchOutline16: ({ size, className }: IconProps) => import("react").JSX.Element;
+  /** Regular one-pixel IconSearchOutline artwork. */
+  export const IconSearchOutlineRegular: (props: IconProps) => import("react").JSX.Element;
 
-  /** ic_ds_settings_outline_16 */
-  export const IconSettingsOutline16: ({ size, className }: IconProps) => import("react").JSX.Element;
+  /** Regular one-pixel IconSettingsOutline artwork. */
+  export const IconSettingsOutlineRegular: (props: IconProps) => import("react").JSX.Element;
 
-  /** ic_ds_trash_outline_16 */
-  export const IconTrashOutline16: ({ size, className }: IconProps) => import("react").JSX.Element;
+  /** Regular one-pixel IconTrashOutline artwork. */
+  export const IconTrashOutlineRegular: (props: IconProps) => import("react").JSX.Element;
 
   /**
    * Render a text input with an optional leading icon.
@@ -146,19 +155,21 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
   /**
    * Render a state dot.
    * @param props.state - which of `done`, `warning`, `ongoing`, `error`, or `idle` to show.
-   * @param props.size - outer diameter in px (default 10, the figma size).
+   * @param props.size - outer diameter in px; defaults to 14 for ongoing and 10 for solid states.
    * @param props.className - extra class for layout placement.
+   * @param props.appearance - compact dot by default; step uses a filled check or hollow pending circle.
    * @returns the dot element (aria-hidden; pair with text for accessibility).
    */
-  export function StateDot({ state, size, className }: {
+  export function StateDot({ state, size, className, appearance }: {
       state: StateDotState;
       size?: number | undefined;
       className?: string | undefined;
+      appearance?: 'dot' | 'step';
   }): import("react").JSX.Element;
 
   /**
-   * State semantic: green done / amber user-attention / blue running ring /
-   * red error / grey idle for a tracked subject with nothing in progress.
+   * State semantic: green done / amber user-attention / tertiary-grey loading /
+   * red error / neutral-grey idle for a tracked subject with nothing in progress.
    */
   export type StateDotState = 'done' | 'warning' | 'ongoing' | 'error' | 'idle';
 

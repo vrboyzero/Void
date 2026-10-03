@@ -5,16 +5,16 @@ import { createVoidWidgetsService, parseFacetVersionPayload, readOnlyWidgetLines
 import {
   Button,
   DisclosureRow,
-  IconCordisPluginOutline14,
-  IconQuestionOutline14,
-  IconSearchOutline16,
+  IconCordisPluginOutlineRegular,
+  IconQuestionOutlineRegular,
+  IconSearchOutlineRegular,
   Input,
   RiskConfirmation,
   StateDot,
   Switch,
   type StateDotState,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { PRIMITIVE_GAPS } from './primitives-probe.js'
+import { PRIMITIVE_GAPS, safeIcon } from './primitives-probe.js'
 import {
   describeNamespaces,
   mutateNamespace,
@@ -47,6 +47,17 @@ import {
 } from './controls.js'
 
 export const inject = ['slots']
+
+/**
+ * 图标在模块作用域过一次兜底。
+ *
+ * 必须在作用域里解析：写进渲染会让 React 每次拿到新组件类型、重新挂载子树并丢掉
+ * 局部状态。宿主改名后具名导入是 `undefined`，裸渲染会抛「element type is invalid」
+ * 打掉整个设置条目——原委见 `primitives-probe.ts`。
+ */
+const IconCordisPlugin = safeIcon(IconCordisPluginOutlineRegular)
+const IconQuestion = safeIcon(IconQuestionOutlineRegular)
+const IconSearch = safeIcon(IconSearchOutlineRegular)
 
 /** 设置页导航里的栏目名。 */
 const SECTION_LABEL = '虚空（Void）'
@@ -340,7 +351,14 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
   const save = async (ns: string) => {
     const draft = drafts[ns]
     const view = views[ns]
-    if (draft === undefined || view === undefined) return
+    if (draft === undefined) return
+    if (view === undefined) {
+      // 这里过去是静默 `return`，于是「点保存没反应」没有任何线索：请求没发出、控制台
+      // 干净、横幅照挂。真因通常是宿主那边根本没有这个命名空间（dsh 0.2.0 起命名空间
+      // 等于组合入口 id，插件自己声明的名字不再作数），所以宁可把话说清楚。
+      setError(`宿主没有「${ns}」这个设置命名空间，改动无法保存。请确认该插件已加载。`)
+      return
+    }
     const widgets = manifestWidgets(manifests, ns)
     const ops = draftOps(draft, widgets, view.value) as PathOp[]
     if (ops.length === 0) {
@@ -447,7 +465,7 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
     list.length > 1
       ? h('div', { style: { marginBottom: 12 } },
           h(Input, {
-            icon: h(IconSearchOutline16, { size: 16 }),
+            icon: h(IconSearch, { size: 16 }),
             placeholder: '搜索插件…',
             value: query,
             onChange: (e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value),
@@ -639,7 +657,7 @@ function PluginCard(props: {
     },
   },
     h(DisclosureRow, {
-      icon: h(IconCordisPluginOutline14, { size: 14 }),
+      icon: h(IconCordisPlugin, { size: 14 }),
       title: plugin.name,
       // 卡片标题加粗，与分组标题一致——两级标题都靠这张注入的样式表。
       titleClassName: ROW_TITLE_CLASS,
@@ -769,6 +787,9 @@ function FieldControl(props: {
         vocabulary: props.manifest.operations ?? [],
         overridden,
         dirty,
+        // 视图还没读到时**必须禁用**：`save()` 见不到 `view` 会直接静默返回，控件却照收
+        // 输入、照攒草稿、照显示「有未保存的改动」——用户只会觉得「点保存没反应」。
+        disabled,
         onChange: (next) => void set(next),
       })
     case 'tokens':
@@ -779,6 +800,7 @@ function FieldControl(props: {
         vocabulary: props.manifest.operations ?? [],
         overridden,
         dirty,
+        disabled,
         onChange: (next) => void set(next),
       })
     case 'list':
@@ -835,7 +857,7 @@ function EmptyHint(props: { text: string }): React.ReactElement {
   return h('div', {
     style: { display: 'flex', alignItems: 'center', gap: 10, padding: '20px 4px', color: TEXT_SECONDARY, fontSize: 13 },
   },
-    h(IconQuestionOutline14, { size: 14 }),
+    h(IconQuestion, { size: 14 }),
     h('span', null, props.text),
   )
 }

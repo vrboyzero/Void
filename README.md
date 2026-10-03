@@ -131,18 +131,18 @@ dsh plugin --profile <profile> remove "@void/void-dsh-control"
 
 ```powershell
 $d = "$env:APPDATA\npm\node_modules\@deepseek-ai\dsh"
-dsh --version                                                                   # 0.1.5-rc.1 ← 只是 CLI 外壳
-(Get-Content "$d\node_modules\@deepseek-ai\dsh-web-frontend\package.json" -Raw | ConvertFrom-Json).version  # 0.1.5-rc.2 ← 客户端契约
-(Get-Content "$d\node_modules\@deepseek-ai\dsh-settings\package.json"     -Raw | ConvertFrom-Json).version  # 0.1.5-rc.2 ← 宿主契约
-(Get-Content "$d\node_modules\@deepseek-ai\cordis\package.json"           -Raw | ConvertFrom-Json).version  # 4.0.2
+dsh --version                                                                   # 0.1.7-rc.1 ← 只是 CLI 外壳
+(Get-Content "$d\node_modules\@deepseek-ai\dsh-web-frontend\package.json" -Raw | ConvertFrom-Json).version  # 0.1.7-rc.1 ← 客户端契约
+(Get-Content "$d\node_modules\@deepseek-ai\dsh-settings\package.json"     -Raw | ConvertFrom-Json).version  # 0.1.7-rc.1 ← 宿主契约
+(Get-Content "$d\node_modules\@deepseek-ai\cordis\package.json"           -Raw | ConvertFrom-Json).version  # 4.0.4
 ```
 
-外壳的 dependencies 全是脱字号范围 `^0.1.5-rc.1`，pnpm 解析后装进来的运行时包**全部是 rc.2**。
+外壳的 dependencies 是脱字号范围，pnpm 解析后装进来的运行时包**与外壳同版**（0.1.7-rc.1）。
 **契约由运行时包定，不由外壳定**——所以写插件时以第二、三行的输出为准。
 
-另外两个包**磁盘上根本不存在**：`dsh-client-ui-primitives` 与 `dsh-client-ui-slots` 只活在
-前端 bundle 的冻结模块表里，取不到本地副本。这正是我们的类型生成脚本要用 `npm pack` 按版本号
-去 npm 取的原因（见第 9 节）。
+**0.1.7 起 `dsh-client-ui-primitives` / `dsh-client-ui-slots` / `dsh-client-store` 随宿主落到磁盘了**
+（0.1.5 时它们只活在前端 bundle 的冻结模块表里，取不到本地副本）。类型生成脚本因此改成**默认读本机
+已装的那份**，不再按钉死的版本号去 npm 取——见第 9 节。仍然只在模块表里的只剩 `dsh-client-ui-dockkit`。
 
 还有两个**不同版本线**的东西别混进来：仓库 `devDependencies` 钉的 `@deepseek-ai/dsh-*@0.1.0-rc.6`
 只用于构建与测试；`deepseek-harness-master/` 是官方源码快照 `0.1.0-rc.5`。
@@ -152,25 +152,154 @@ dsh --version                                                                   
 
 ### 1. 平台模块表：唯一能拿到的宿主模块，而且跨版本会变
 
-客户端 bundle 跑在浏览器的冻结模块表里，只能 `require` 表内的 specifier。这张表**变过**：
+客户端 bundle 跑在浏览器的冻结模块表里，只能 `require` 表内的 specifier。0.1.7-rc.1 的表是这 9 项
+（与 0.1.7-rc.2 源码里的 `PLATFORM_MODULES` 逐字一致）：
 
-| specifier | rc.2（我们在跑） | rc.5（本地官方源码） |
-|---|---|---|
-| `react` / `react/jsx-runtime` / `react-dom` / `react-dom/client` | ✅ | ✅ |
-| `@deepseek-ai/cordis` | ✅ | ✅ |
-| `@deepseek-ai/dsh-client-ui-slots` | ✅ | ✅ |
-| `@deepseek-ai/dsh-client-ui-primitives` | ✅ | ✅ |
-| `@deepseek-ai/dsh-client-store` | ✅ | **已移除** |
-| `@deepseek-ai/dsh-client-ui-dockkit` | ✅ | **已移除** |
-| `@deepseek-ai/dsh-client-web-react` | ❌ | **新增** |
-| `@deepseek-ai/dsh-client-ui-attachment` | ❌ | **新增** |
-| `@deepseek-ai/dsh-client-schema-form` | ❌ | **新增** |
+`react`、`react/jsx-runtime`、`react-dom`、`react-dom/client`、`@deepseek-ai/cordis`、
+`@deepseek-ai/dsh-client-store`、`@deepseek-ai/dsh-client-ui-slots`、
+`@deepseek-ai/dsh-client-ui-primitives`、`@deepseek-ai/dsh-client-ui-dockkit`
 
-官方源码快照（`deepseek-harness-master/`，**0.1.0-rc.5**）里的 `PLATFORM_MODULES` 有一份清单，
-但**不能直接当作我们的契约**——版本线不同。要核 rc.2，直接搜前端 bundle（命令见
-`AGENTS.md` §4.1）。
+**表没变不等于表里的东西没变。** 0.1.6 → 0.1.7 这张表一项没动，插件却全白屏了——变的是表内模块的
+**具名导出**（下一节）。
+
+要核表本身，直接读运行中的页面，比搜 bundle 准：
+
+```js
+window.__dshSidebarModuleSystem__.seed   // Map，键就是表里的 specifier
+```
+
+官方源码快照（`deepseek-harness-master/`，**0.1.0-rc.5**）里的 `PLATFORM_MODULES` 也有一份清单，
+但**不能直接当作我们的契约**——版本线不同。
 
 表外的模块在浏览器里 `require` 会直接抛错，所以用它之前先核。
+
+### 1.1 具名导出会在版本间改名：图标那一课（0.1.7 真机白屏）
+
+0.1.7 把产品图标从 `Icon<字形><尺寸>` 改名成 `Icon<字形>Regular` / `Icon<字形>Medium`，
+尺寸从名字里挪到 `size` prop：
+
+```ts
+// 0.1.0-rc.5 及更早
+import { IconQuestionOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
+// 0.1.7+
+import { IconQuestionOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+```
+
+旧名字在 0.1.7 的导出表里**不存在**，读出来是 `undefined`。把它交给 React 渲染抛的是
+「element type is invalid」，而**被打掉的是整个 `settings.section` 条目**——用户看到的是设置面板
+全白，不是少一个图标，很容易往编排/权限方向去查。本次改到的 6 个：`IconCordisPluginOutline`、
+`IconQuestionOutline`、`IconSearchOutline`、`IconPlusOutline`、`IconSettingsOutline`、`IconTrashOutline`。
+
+**结论：模块能解析 ≠ 里面的名字还在。** 三道防线，缺一道都会再炸：
+
+| 时机 | 机制 | 在哪 |
+|---|---|---|
+| 打包前 | `gen-primitives-types.mjs --check` 拿宿主同版导出表核对源码用到的名字 | `scripts/pack-all.ps1` 第 1 步 |
+| 提交前 | `tests/primitives.spec.ts` 断言「源码 import 的名字 ⊆ 生成的声明」 | `pnpm -r test` |
+| 运行期 | `safeIcon()` 把缺失的图标换成空组件，坏一个图标不至于打掉整个面板 | `src/client/primitives-probe.ts` |
+
+### 1.2 0.2.0 的 peer 门禁：插件会被**整包跳过**（2026-09-29 真机）
+
+dsh 0.2.0 起，启动时逐包检查 `peerDependencies` 里 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 的范围
+（源码 `packages/boot/app-boot/src/plugin-compatibility.ts`）：
+
+```ts
+if (name !== '@deepseek-ai/dsh' && !name.startsWith('@deepseek-ai/dsh-')) continue;   // 只查 dsh 自家包
+const requirement = ['workspace:^','workspace:~','workspace:*'].includes(range) ? runtimeVersion : range;
+if (!semver.satisfies(runtimeVersion, requirement, { includePrerelease: true })) peers[name] = range;
+```
+
+不满足的包**不加载**，只在 stderr 留一行：
+
+```
+dsh: skipping profile bundle "@void/void-entry": Error: Plugin @void/void-entry@0.1.0 is
+incompatible with dsh 0.2.0-rc.1: peerDependencies {"@deepseek-ai/dsh-client-ui-slots":"^0.1.0-rc.6"}.
+```
+
+用户在界面上看到的是「插件凭空消失」，那行终端输出很容易被后面的日志刷掉。
+
+**我们踩的坑**：所有 peer 都写成 `^0.1.x-rc.n`。caret 在 0.x 上等于 `>=0.1.x-rc.n <0.2.0`，
+**0.2.0-rc.1 直接被拒**，四个包全部没加载。改 `>=0.1.0-rc.6 <0.3.0-0` 后干净启动。
+
+三条容易踩的细节：
+
+- **`peerDependenciesMeta.optional` 不豁免。** `void-entry` 的 `dsh-client-ui-slots` 标了
+  `optional: true`，照样被拒——判定只看 `peerDependencies` 的键值。
+- **只查 `@deepseek-ai/dsh*`。** `@deepseek-ai/cordis`、`react`、`@void/*` 一律不看，写多松都行。
+- 逃生门 `dsh plugin allow-version <包@版本> --profile <p> --dsh-version <精确版本> --accept-risk`，
+  写进 `profiles/<p>/compatibility.json`，键是**精确的 name@version**（换版本即失效）。只用于临时
+  验证，别留在生产。
+
+**结论：dsh 大版本升级后，第一件事是查所有 peer 范围。** 现用形式 `>=0.1.0-rc.6 <0.3.0-0`
+——覆盖已验过的版本线，在 0.3 处强制重新验证。
+
+**不重启宿主也能查**：拿宿主自带的 semver 复刻上面那段判定，扫 profile 的
+`node_modules/@void/*/package.json`。
+
+**关键事实：我们的插件代码在 0.2.0 上一行都没改。** 平台模块表 9 项未变，`dsh-client-ui-primitives`
+只多了 `Button` 从函数变 `ForwardRefExoticComponent`、`DisclosureRow` 增了几个可选 prop——都不是
+破坏性变化。宿主端点、客户端面板、设置页、写路径全部实测通过。**升级挂掉时先怀疑门禁，再怀疑代码。**
+
+### 1.3 settings 服务在 0.2.0 被换掉了：`installSection` 没了（2026-10-01 真机）
+
+0.2.0 把 `ctx.settings` 换成了 **`SettingsForms`**，插件注册设置命名空间的整套做法随之作废。
+
+| | 0.1.x | 0.2.0 |
+|---|---|---|
+| 注册方式 | `ctx.settings.installSection(ctx, ns, schema, entry, hooks)` | **API 被删除**（源码快照与装好的 `dsh-settings` 里都 0 命中） |
+| 表单来源 | 插件传进去的 schema | **从入口的 `Config` 派生**（`describe()` 键就是 `entry.options.id`） |
+| 命名空间 | 插件自定义的名字 | **组合入口 id** |
+| 准入条件 | — | `volatileForm(schema)` 必须非空——**`Config` 里至少要有一个 `.volatile()` 字段** |
+| 取值 | hooks 的 `setSource` 回调 | `Config` 里 volatile 字段解析成 **`Volatile<T>` 引用**，`get()` 取当前值 |
+| 变更通知 | hooks 的 `onChange` | `ctx.on('settings/document-updated', (ns, revision) => …)` |
+| 跨字段校验 | hooks 的 `validate`，**写入时**拒绝 | **没有钩子**——只能挪到读取点，坏值先存下、用时才炸 |
+
+**症状长得极具误导性**：面板照常渲染、勾选框照常能点、草稿照常攒、横幅照常显示「有未保存的改动」，
+**但点保存零请求、零报错、横幅不消失**。因为 `void-entry` 的 `save()` 第一句是
+`if (draft === undefined || view === undefined) return`——命名空间不在 `describe()` 里，
+`view` 恒为 `undefined`，于是静默返回。（另一条 `ops.length === 0` 会走 `discard()` 把横幅**清掉**，
+横幅还在就说明不是它——这是个好用的二分。）
+
+**当时全仓库只有灵榜用 `installSection`**，所以爆炸半径就它一个。查同类问题：
+
+```powershell
+Select-String -Path packages\*\src\*.ts -Pattern 'installSection|\.settings\.'
+```
+
+三条容易踩的细节：
+
+- **`.volatile()` 只加在可热改字段上。** 启动项（`enabled` / `path` / `transport` / `ledger`）不加——
+  加了会被当成热改，而不加就自动不出现在表单里（正好是想要的效果，由面板的只读区展示）。
+- **带 volatile 的 schema 不能写 `z<Config>` 注解。** `z<T>` 展开是 `Schema<T, T, 'plain'>`，
+  要求输入面与输出面都是 `T`；而 volatile 字段的输入面是裸形状、输出面是 `Volatile<T>`，必然对不上。
+  写 `z<any, Config>`（放开输入、钉住输出）。宿主自家的 `web-search-deepseek` 等同样不写单参形式。
+- **`MessageSourceMap` 也要自己声明。** 0.2.0 删掉了通用的 `'plugin'` 成员，各插件用 declaration
+  merging 声明自己的 `kind`（`plan-mode` / `tool-goal` / `hooks-codex` 都是这个写法）。
+  不声明不是运行时错误，而是编译期「不在联合类型里」。
+
+**顺带修掉一个「能改不能存」的结构性坑**：`FieldControl` 给 `operations` / `tokens` 两个控件
+**没传 `disabled`**，所以设置视图缺失时它们照样收输入。现在补上了；`save()` 的静默 `return`
+也改成会明确报「宿主没有这个设置命名空间」。
+
+#### 校验后移带来的第二颗雷：一次误改配置能让宿主退出
+
+「跨字段校验从写入时挪到读取时」不是没有代价的，**代价就是下面这条，改的时候必须一起处理**。
+
+插件里凡是 **fire-and-forget 地读配置**的地方（灵榜是 `source.watch(() => { void refreshRoots(); })`），
+都会在坏值写入后变成 **unhandledRejection**——而 dsh 的 `dsh-app-boot` 里 `installFailLoud` 把
+`unhandledRejection` 判成 `fatal load failure` 并 **`proc.exit(1)`**。也就是说：用户在面板里把
+`allowedOperations` 写错一个操作名 / 写个坏正则 / 填个不存在的目录 / 填错回调 URL，
+**dsh 进程直接就没了**。
+
+实测（撤掉修复跑单测）：断言全过，但 vitest 仍报 `Unhandled Rejection` + `Errors 1 error`，
+**退出码 1**——拒绝逃逸本身就是失败，哪怕业务断言是对的。
+
+修法是给这类调用一律挂 `catch`，**降级成「放弃这次后台刷新 + 大声记一笔」**：
+`roots` 因此保留上一次的好值，而按需读取（请求路径）仍照旧如实报错。请求路径本身是安全的——
+`mcp.ts` 的 handler 外层有 `try`，`ControlError` 会变成 **400 + 错误详情**，不重抛、不崩。
+
+**结论：在 0.2.0 上，任何读配置的地方要么在有 try 的请求路径里，要么自己挂 catch。**
+漏一个 fire-and-forget 就是一条「改错配置 → 宿主退出」的路径。
 
 ### 2. 宿主提供的模块必须外部化
 
@@ -270,14 +399,27 @@ for (const [key, value] of Object.entries(overrides)) {
 
 ### 9. 一条会咬人的依赖陷阱
 
-`@deepseek-ai/dsh-client-ui-primitives@0.1.5-rc.2` 的 peerDependencies 是
-`@deepseek-ai/cordis@^4.0.2`，而本 workspace 固定在 **4.0.1**。把它装进 `node_modules` 会让
+`@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.1` 的 peerDependencies 是
+`@deepseek-ai/cordis@~4.0.4`，而本 workspace 固定在 **4.0.1**。把它装进 `node_modules` 会让
 pnpm 提升既有包的 peer，使 `void-tools` / `void-legion` / `void-memory` 报
 `does not provide an export named 'CallId' / 'isJsonValue'`。
+（宿主升级会抬这个 peer 范围，所以每次升级都要重新确认——但**结论一直是「不要装」**。）
 
-**所以它的类型靠 `npm pack` 取、生成 ambient 声明，绝不装包。** 生成脚本是
-`scripts/gen-primitives-types.mjs`（`pnpm run gen:primitives` / `check:primitives`），输入是
-「客户端实际 import 了什么」，所以它不会和用法脱节。
+**所以它的类型靠生成 ambient 声明，绝不装包。** 生成脚本是
+`scripts/gen-primitives-types.mjs`（`pnpm run gen:primitives` / `check:primitives`）：
+
+- **输入是用法**：扫描 `src/client/**` 里从该模块 import 的名字，只生成这些。新用一个原语而忘了
+  重新生成，`--check` 会立刻失败；不会出现「声明里有但代码不用」或反过来的情况。
+- **默认读本机已装的宿主**（`$DSH_HOST_PRIMITIVES_DIR` 可覆盖），读不到才按脚本里的
+  `HOST_VERSION` 去 npm 取。0.1.7 起该包随宿主落到磁盘，**所以这条路径离线可用，也不用再记得
+  改常量**——0.1.5 → 0.1.7 那次就是漏在「常量没改、声明没跟上」，运行期才炸成白屏。
+- `--check` 已接进 `pack-all.ps1` 第 1 步：宿主升级后忘了重跑，**打包会失败**，而不是打出一个
+  白屏的包。
+
+配套的**运行期兜底**在 `src/client/primitives-probe.ts`：`PRIMITIVE_GAPS` 列出缺失的名字供
+`apply()` 告警，`safeIcon()` 把改名后变成 `undefined` 的图标换成空组件。注意 `safeIcon` 只把
+「名字取不到」判为缺失——不要改成 `typeof x === 'function'`，宿主的 `DisclosureRow` 在 0.1.7 是
+`MemoExoticComponent`（对象，不是函数），那个判据会把它误杀成空白。
 
 ### 10. `skipLibCheck: true` 会吞掉 `.d.ts` 里的一切错误
 

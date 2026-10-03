@@ -16,13 +16,25 @@ import { checkPatterns, pathPatternError } from "./patterns.js";
 import {
   Button,
   DisclosureRow,
-  IconPlusOutline16,
-  IconSettingsOutline16,
-  IconTrashOutline16,
+  IconPlusOutlineRegular,
+  IconSettingsOutlineRegular,
+  IconTrashOutlineRegular,
   StateDot,
   Switch,
   Input,
 } from "@deepseek-ai/dsh-client-ui-primitives";
+import { safeIcon } from "./primitives-probe.js";
+
+/**
+ * 图标在模块作用域过一次兜底。
+ *
+ * 必须在作用域里解析：写进渲染会让 React 每次拿到新组件类型、重新挂载子树并丢掉
+ * 局部状态。宿主改名后具名导入是 `undefined`，裸渲染会抛「element type is invalid」
+ * 打掉整个设置条目——原委见 `primitives-probe.ts`。
+ */
+const IconPlus = safeIcon(IconPlusOutlineRegular);
+const IconSettings = safeIcon(IconSettingsOutlineRegular);
+const IconTrash = safeIcon(IconTrashOutlineRegular);
 
 
 
@@ -211,7 +223,7 @@ export function ListField(props: {
                 size: "sm",
                 "aria-label": `删除 ${item}`,
                 onClick: () => remove(index),
-              }, h(IconTrashOutline16, { size: 16 })),
+              }, h(IconTrash, { size: 16 })),
         ),
       ),
       items.length === 0
@@ -223,7 +235,7 @@ export function ListField(props: {
             h(Button, {
               variant: "ghost",
               size: "sm",
-              icon: h(IconPlusOutline16, { size: 16 }),
+              icon: h(IconPlus, { size: 16 }),
               onClick: () => add(""),
             }, "添加"),
           ),
@@ -255,8 +267,17 @@ export function OperationsField(props: {
   /** 有未保存的改动。 */
   dirty?: boolean;
   readOnly?: boolean;
+  /**
+   * 控件当前不可编辑（设置视图还没读到，或正忙）。
+   *
+   * 与 `readOnly` 分开：那个说的是「这个字段按定义就不该改」，这个说的是「现在改不了」。
+   * **少了它就会出现「能改不能存」**——勾选框照点、草稿照攒、横幅照出现，但保存发不出去
+   * （设置视图缺失时 `save()` 直接静默返回），用户只会觉得「点了没反应」。
+   */
+  disabled?: boolean;
   onChange: (next: string[]) => void;
 }): React.ReactElement {
+  const locked = props.readOnly === true || props.disabled === true;
   const selected = new Set(props.value);
   const implied = new Set<string>();
   for (const name of props.value) {
@@ -283,7 +304,7 @@ export function OperationsField(props: {
           h("input", {
             type: "checkbox",
             checked,
-            disabled: props.readOnly === true,
+            disabled: locked,
             onChange: (e: React.ChangeEvent<HTMLInputElement>) => toggle(op.value, e.target.checked),
           }),
           h("span", null, op.label),
@@ -325,8 +346,11 @@ export function TokensField(props: {
   /** 有未保存的改动。 */
   dirty?: boolean;
   readOnly?: boolean;
+  /** 控件当前不可编辑；与 `readOnly` 的区别见 {@link OperationsField}。 */
+  disabled?: boolean;
   onChange: (next: TokenRow[]) => void;
 }): React.ReactElement {
+  const locked = props.readOnly === true || props.disabled === true;
   const { shown: rows, edit, remove, add } = listEditor(props.value, props.onChange);
   const replace = (index: number, patch: Partial<TokenRow>) => {
     edit(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
@@ -342,7 +366,7 @@ export function TokensField(props: {
             h("span", { style: { fontSize: 12, color: TEXT_SECONDARY, width: 46 } }, "身份"),
             h(Input, {
               value: row.callerId,
-              readOnly: props.readOnly === true,
+              readOnly: locked,
               placeholder: "codex",
               style: { width: 120 },
               onChange: (e: React.ChangeEvent<HTMLInputElement>) => replace(index, { callerId: e.target.value }),
@@ -350,18 +374,18 @@ export function TokensField(props: {
             h("span", { style: { fontSize: 12, color: TEXT_SECONDARY, width: 46 } }, "变量"),
             h(Input, {
               value: row.tokenEnv,
-              readOnly: props.readOnly === true,
+              readOnly: locked,
               placeholder: "CODEX_TOKEN",
               onChange: (e: React.ChangeEvent<HTMLInputElement>) => replace(index, { tokenEnv: e.target.value }),
             }),
-            props.readOnly === true
+            locked
               ? null
               : h(Button, {
                   variant: "ghost",
                   size: "sm",
                   "aria-label": `删除调用方 ${row.callerId}`,
                   onClick: () => remove(index),
-                }, h(IconTrashOutline16, { size: 16 })),
+                }, h(IconTrash, { size: 16 })),
           ),
           h(OperationsField, {
             label: "该调用方的权限",
@@ -369,6 +393,7 @@ export function TokensField(props: {
             value: row.operations,
             vocabulary: props.vocabulary,
             readOnly: props.readOnly,
+            disabled: props.disabled,
             // 权限矩阵是离散点击，直接提交；此时草稿里的身份/变量改动也一并落盘。
             onChange: (next) => {
               const copy = rows.map((r, i) => (i === index ? { ...r, operations: next } : r));
@@ -381,13 +406,13 @@ export function TokensField(props: {
       rows.length === 0
         ? h("div", { style: { fontSize: 12, color: TEXT_SECONDARY } }, "（还没有调用方）")
         : null,
-      props.readOnly === true
+      locked
         ? null
         : h("div", null,
             h(Button, {
               variant: "ghost",
               size: "sm",
-              icon: h(IconPlusOutline16, { size: 16 }),
+              icon: h(IconPlus, { size: 16 }),
               onClick: () => add({ callerId: "", tokenEnv: "", operations: [] }),
             }, "添加调用方"),
           ),
@@ -404,7 +429,7 @@ export function Group(props: {
   children?: React.ReactNode;
 }): React.ReactElement {
   return h(DisclosureRow, {
-    icon: h(IconSettingsOutline16, { size: 16 }),
+    icon: h(IconSettings, { size: 16 }),
     title: props.title,
     // 分组标题加粗，与插件卡片标题一致。
     titleClassName: ROW_TITLE_CLASS,
@@ -534,7 +559,7 @@ export function RulesField(props: {
                   size: "sm",
                   "aria-label": `删除规则 ${rule.id}`,
                   onClick: () => remove(index),
-                }, h(IconTrashOutline16, { size: 16 })),
+                }, h(IconTrash, { size: 16 })),
           ),
           h(Input, {
             value: rule.pathPattern,
@@ -556,7 +581,7 @@ export function RulesField(props: {
             h(Button, {
               variant: "ghost",
               size: "sm",
-              icon: h(IconPlusOutline16, { size: 16 }),
+              icon: h(IconPlus, { size: 16 }),
               onClick: () => add({ id: "", description: "", required: true, pathPattern: "" }),
             }, "添加要求"),
           ),
@@ -608,7 +633,7 @@ export function PatternListField(props: {
                 size: "sm",
                 "aria-label": `删除正则 ${check.source}`,
                 onClick: () => remove(index),
-              }, h(IconTrashOutline16, { size: 16 })),
+              }, h(IconTrash, { size: 16 })),
         ),
       ),
       sources.length === 0 ? h("div", { style: { fontSize: 12, color: TEXT_SECONDARY } }, "（没有禁用正则）") : null,
@@ -618,7 +643,7 @@ export function PatternListField(props: {
             h(Button, {
               variant: "ghost",
               size: "sm",
-              icon: h(IconPlusOutline16, { size: 16 }),
+              icon: h(IconPlus, { size: 16 }),
               onClick: () => add(""),
             }, "添加正则"),
           ),

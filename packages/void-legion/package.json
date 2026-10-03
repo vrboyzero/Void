@@ -35,10 +35,10 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-subagent": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.6 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.3.0-0",
+    "@deepseek-ai/dsh-subagent": ">=0.1.0-rc.6 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0-0"
   },
   "dependencies": {
     "@void/void-soul": "workspace:*"

@@ -3,7 +3,12 @@
   构建并打包所有 Void 包到 dist/。
 
 .DESCRIPTION
-  顺序是「逐包构建 → 归档上一轮 tarball → 逐包 pnpm pack」。
+  顺序是「核对宿主原语声明 → 逐包构建 → 归档上一轮 tarball → 逐包 pnpm pack」。
+
+  **为什么要核对宿主原语声明**：`primitives.d.ts` 是按本机已装的宿主生成的。宿主升级
+  后忘了重跑生成器，源码就会 import 到宿主已经删掉的名字，拿到的 undefined 交给 React
+  会打掉整个设置条目（0.1.7-rc.1 的图标改名就是这么导致面板全白的）。门禁在打包前失败
+  好过打出一个白屏的包。
 
   **为什么要显式构建**：pnpm pack 只把 lib/ 现成的文件打进 tarball，不编译。
   漏掉构建这一步，打出来的就是上一次构建的旧代码——而且是静默的：命令成功、
@@ -63,8 +68,23 @@ Write-Host "产物目录：$dist"
 if ($SkipBuild) { Write-Host "模式：跳过构建（-SkipBuild）" -ForegroundColor Yellow }
 if ($DryRun) { Write-Host "模式：DryRun（不写入）" -ForegroundColor Yellow }
 
-# --- 1. 逐包构建 -------------------------------------------------------------
-Write-Host "`n[1/3] 构建..." -ForegroundColor Cyan
+# --- 1. 宿主原语契约门禁 -----------------------------------------------------
+# primitives.d.ts 是按**本机已装的宿主**生成的（见 scripts/gen-primitives-types.mjs）。
+# 宿主升级后忘了重跑，源码就会 import 到宿主已经删掉的名字：拿到的 undefined 交给
+# React 会打掉整个 settings.section 条目，用户在界面上只看到面板全白（0.1.7-rc.1 的
+# 图标改名就是这么炸的）。宁可在打包这一步失败，也不要打出一个白屏的包。
+Write-Host "`n[1/4] 核对宿主原语声明..." -ForegroundColor Cyan
+if ($DryRun) {
+  Write-Host "  node scripts/gen-primitives-types.mjs --check"
+} else {
+  node (Join-Path $PSScriptRoot "gen-primitives-types.mjs") --check
+  if ($LASTEXITCODE -ne 0) {
+    throw "宿主原语声明已过期。先跑 node scripts/gen-primitives-types.mjs 重新生成，再把新名字同步到源码。"
+  }
+}
+
+# --- 2. 逐包构建 -------------------------------------------------------------
+Write-Host "`n[2/4] 构建..." -ForegroundColor Cyan
 $built = 0
 $skipped = @()
 foreach ($p in $packages) {
@@ -97,8 +117,8 @@ foreach ($p in $packages) {
   $built++
 }
 
-# --- 2. 归档上一轮 tarball ---------------------------------------------------
-Write-Host "`n[2/3] 归档旧 tarball..." -ForegroundColor Cyan
+# --- 3. 归档上一轮 tarball ---------------------------------------------------
+Write-Host "`n[3/4] 归档旧 tarball..." -ForegroundColor Cyan
 $old = @(Get-ChildItem $dist -Filter '*.tgz' -File -ErrorAction SilentlyContinue)
 if ($old.Count -eq 0) {
   Write-Host "  没有需要归档的 tarball" -ForegroundColor DarkGray
@@ -114,8 +134,8 @@ if ($old.Count -eq 0) {
   Write-Host "  $($old.Count) 个旧 tarball 已归档：$archived" -ForegroundColor DarkGray
 }
 
-# --- 3. 逐包打包 -------------------------------------------------------------
-Write-Host "`n[3/3] 打包..." -ForegroundColor Cyan
+# --- 4. 逐包打包 -------------------------------------------------------------
+Write-Host "`n[4/4] 打包..." -ForegroundColor Cyan
 foreach ($p in $packages) {
   $manifest = Get-Content (Join-Path $root "$p\package.json") -Raw | ConvertFrom-Json
   if ($DryRun) {
