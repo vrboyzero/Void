@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildMemberPersona, personaTextOf } from "../src/persona.js";
+import { facetSectionText } from "../src/index.js";
 import { selectFacetForProfile, setFirstMeetingDone, setProfileSuspended } from "../src/soul-library.js";
 
 const roots: string[] = [];
@@ -57,9 +58,15 @@ describe("逐子代理身份（persona）", () => {
     await selectFacetForProfile(dataDir, { profileId: "xiaoma", facetId: "coder" });
 
     const persona = await buildMemberPersona({ dataDir, agentId: "xiaoma" });
-    expect(persona.text).toBe("你是小马，负责写码。\n# 角色\n只写代码，别改需求。");
+    // 底线原样在前；角色层被围栏包住——派活这条路与父会话共用同一套定界（`facetFraming`），
+    // 漏了它等于军团成员没有防线。
+    expect(persona.text.startsWith("你是小马，负责写码。\n【VOID | 角色层】")).toBe(true);
+    expect(persona.text).toContain("<<VOID-FACET-BEGIN:");
+    expect(persona.text).toContain("\n# 角色\n只写代码，别改需求。\n");
+    expect(persona.text).toMatch(/<<VOID-FACET-END:[0-9a-f]{16}>>$/);
+    expect(persona.characters).toBe(persona.text.length);
     // 一个换行：预算就是按 soul + 1 + facet 量的，多一个换行报出来的字数就对不上了。
-    expect(persona.text.split("\n")[1]).toBe("# 角色");
+    expect(persona.text.split("\n")[0]).toBe("你是小马，负责写码。");
   });
 
   it("首次见面引导不进身份：那是跟主人见面用的，不是干活的说明书", async () => {
@@ -118,8 +125,12 @@ describe("逐子代理身份（persona）", () => {
 
   it("personaTextOf 只管拼接：没有模组就只是底线，底线为空就只是模组", async () => {
     expect(personaTextOf({ soul: "底线", facet: null, facetId: null, selectionRevision: 0 })).toBe("底线");
+    // 全空白正文等同于空角色层：不套围栏、也不接在底线后面。
     expect(personaTextOf({ soul: "底线", facet: "  ", facetId: "x", selectionRevision: 1 })).toBe("底线");
-    expect(personaTextOf({ soul: "  ", facet: "模组", facetId: "x", selectionRevision: 1 })).toBe("模组");
-    expect(personaTextOf({ soul: " 底线 ", facet: " 模组 ", facetId: "x", selectionRevision: 1 })).toBe("底线\n模组");
+    // 有正文就套围栏——派活这条路与父会话用的是同一个 `facetSectionText`。
+    const onlyFacet = { soul: "  ", facet: "模组", facetId: "x", selectionRevision: 1 };
+    expect(personaTextOf(onlyFacet)).toBe(facetSectionText(onlyFacet));
+    const both = { soul: " 底线 ", facet: " 模组 ", facetId: "x", selectionRevision: 1 };
+    expect(personaTextOf(both)).toBe(`底线\n${facetSectionText(both)}`);
   });
 });

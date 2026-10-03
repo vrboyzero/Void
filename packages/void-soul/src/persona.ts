@@ -1,4 +1,4 @@
-import { PROMPT_VARIABLES, assertPromptRenderable, snapshotPrompt, suspendedReason, type PromptSnapshot } from "./facet.js";
+import { PROMPT_VARIABLES, assertPromptRenderable, facetSectionText, snapshotPrompt, suspendedReason, type PromptSnapshot } from "./facet.js";
 import { loadFacetLibrary, loadSavedFacetView } from "./facet-store.js";
 import { resolvePromptBudget } from "./plugin.js";
 import { SoulProfileError } from "./profile.js";
@@ -29,10 +29,14 @@ export interface MemberPersona {
  * 底线与当前角色之间的分隔只用一个换行：`measurePromptText` 就是按 `soul + 1 + facet`
  * 量的，用两个换行会让预算报出来的字数比真正交出去的文本多一个——拒绝信息里的数字
  * 必须与事实一致。空白先掐掉，量的时候偏保守（按没掐的量）。
+ *
+ * 模组那一段走 `facetSectionText`：子代理的 persona 与父会话的系统提示用的是**同一个**
+ * 角色层定界（`facetFraming`）。派活这条路和主路一样只由装配侧兜底，漏了它等于军团成员
+ * 没有防线。
  */
 export function personaTextOf(snapshot: PromptSnapshot): string {
   const soul = snapshot.soul.trim();
-  const facet = snapshot.facet?.trim() ?? "";
+  const facet = facetSectionText(snapshot);
   if (facet.length === 0) return soul;
   if (soul.length === 0) return facet;
   return `${soul}\n${facet}`;

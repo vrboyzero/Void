@@ -1,5 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
-import { assertPromptRenderable, beginPrompt, PROMPT_VARIABLES, recordAppliedPrompt, suspendedReason, type AppliedPrompt, type AppliedPromptRecord, type FacetCard } from "./facet.js";
+import { assertPromptRenderable, beginPrompt, facetSectionText, PROMPT_VARIABLES, recordAppliedPrompt, suspendedReason, type AppliedPrompt, type AppliedPromptRecord, type FacetCard } from "./facet.js";
 import { AppliedPromptRegistry } from "./applied-prompts.js";
 import { loadFacetLibrary, loadProfileFacetRegistrations, loadSavedFacetView, saveProfileFacetSelection, type StoredFacetView } from "./facet-store.js";
 import { loadSessionBindings, loadSoulRegistry, resolveBinding, type SoulRecord } from "./registry.js";
@@ -135,10 +135,15 @@ export function planFrozenSections(input: {
   });
   // 段名与顺序固定：`void:soul`(1) / `void:facet`(2) / `void:first-meeting`(3) 落在宿主的
   // `deployment:persona-prefix`(0) 之后、`PLAN_POLICY`(500) 之前——说明书紧跟人设。
+  //
+  // `void:soul` 的文本**必须与 `SOUL.md` 正文逐字相等**（A3 验收的一项），所以角色层定界
+  // 加在模组那一段：底线这一侧一个字节都不动，边界由模组段自带的围栏划出来（见 `facetFraming`）。
   const sections: FrozenSection[] = [
     { name: "void:soul", order: 1, text: frozen.applied?.soul ?? input.record.body },
   ];
-  if (frozen.applied?.facet) sections.push({ name: "void:facet", order: 2, text: frozen.applied.facet });
+  // 空模组不注册段（与改动前同一口径）：`""`、全空白正文都算「没有角色层」。
+  const facetText = frozen.applied === null ? "" : facetSectionText(frozen.applied);
+  if (facetText.length > 0) sections.push({ name: "void:facet", order: 2, text: facetText });
   if (firstMeeting !== null) sections.push({ name: "void:first-meeting", order: 3, text: firstMeeting });
   return { sections, frozen };
 }
@@ -192,6 +197,15 @@ export interface FrozenRefreshOptions {
   onSuspended?: ((reason: string) => void) | undefined;
   /** 这一轮算不出来时沿用的那一份（就是上一次装进去的段）。 */
   fallback: () => readonly FrozenSection[];
+  /**
+   * 这一轮**算出来了**的段；抛错那条路不回调。调用方拿它写回 `fallback` 的来源。
+   *
+   * 没有这个回调时，`fallback` 只能取到「`attempt()` 那一刻的段」：段数组只在 `attempt()`
+   * 里写，成功的热更新不写回。于是「先开会话、之后再选模组」这条时序下，一次读盘失败会把
+   * **已经生效的角色层整段丢掉**——13.3 第 2 条要的「沿用上一份」退化成「沿用 attach 那一刻
+   * 那一份」。**2026-10-03 真机核对到的就是这个**：伪造模组被拒之后，模型那一轮手里只剩底线。
+   */
+  commit?: ((sections: readonly FrozenSection[]) => void) | undefined;
 }
 
 /**
@@ -209,10 +223,16 @@ export interface FrozenRefreshOptions {
 export function createFrozenRefresh(options: FrozenRefreshOptions): () => Promise<readonly FrozenSection[]> {
   // 同一条停用理由只报一次；中途启用过再停用，会重新报（变量在这里被清回 undefined）。
   let reportedSuspension: string | undefined;
+  // 算出来的就是「这一轮真正装进去的那一份」，写回给 `fallback` 用；**抛错那条路不写**，
+  // 这样下一次失败才退得到「上一份」，而不是退回 attach 那一刻。
+  const settle = (next: readonly FrozenSection[]): readonly FrozenSection[] => {
+    options.commit?.(next);
+    return next;
+  };
   return async () => {
     try {
       const bindings = await loadSessionBindings(options.dataDir);
-      if (!bindings.has(options.sessionId)) return [];
+      if (!bindings.has(options.sessionId)) return settle([]);
       const agentId = resolveBinding(bindings, options.sessionId);
       const records = await loadSoulRegistry(options.dataDir);
       const record = records.get(agentId);
@@ -225,12 +245,12 @@ export function createFrozenRefresh(options: FrozenRefreshOptions): () => Promis
           reportedSuspension = reason;
           options.onSuspended?.(reason);
         }
-        return [];
+        return settle([]);
       }
       reportedSuspension = undefined;
       const planned = planFrozenSections({ record, view, cards, agent: options.agent, budget: options.budget() });
       options.onApplied?.(agentId, recordAppliedPrompt({ snapshot: planned.frozen.applied ?? planned.frozen.saved, cards }));
-      return planned.sections;
+      return settle(planned.sections);
     } catch (error) {
       options.onRefused?.(error);
       return options.fallback();
@@ -434,6 +454,12 @@ export function apply(ctx: Context, config: VoidSoulConfig = {}): void {
                 // 停用之后热更新会摘掉段；理由照样进日志与通知栏，人不用猜「怎么突然不生效了」。
                 onSuspended: (reason) => reportRefusal(new Error(reason), agent.id),
                 fallback: () => sections,
+                // 算成功就写回：`fallback` 要的是「上一次装进去的那一份」，不是 attach 那一刻
+                // 那一份——不写回的话，一次读盘失败会把已经生效的角色层整段丢掉。
+                commit: (next) => {
+                  sections.length = 0;
+                  sections.push(...next);
+                },
               });
             },
           });
