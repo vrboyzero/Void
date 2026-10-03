@@ -135,6 +135,24 @@ fiber 一起走。**组件拿不到 `ctx`**，数据与回调全走 props。
 所以 `pack-all.ps1` 管不到它、`pnpm -r test` 也不含它的测试。改完它另跑
 `scripts/pack-lingbang.ps1`。`pack-all.ps1` 末尾会比对时间戳——**看到 `[!]` 就说明你要打旧包**。
 
+**`tsc` 不删孤儿产物。** 删了源文件，`lib/` 里那份照旧躺着（`tsc` 只写、不清理），而
+`pnpm pack` 把整个 `lib/` 打进包——**等于把已删的实现一起发出去**，而且下次搜那个符号还会搜到
+一份「活着的」旧代码。删源文件后按相对路径自查（别只比文件名、别漏子目录）：
+
+```powershell
+$p='void-soul'; $s="packages/$p/src"; $l="packages/$p/lib"
+$src=Get-ChildItem $s -File -Filter *.ts -Recurse | ? Name -notlike '*.d.ts' |
+  % { $_.FullName.Substring((Resolve-Path $s).Path.Length+1) -replace '\.ts$','' }
+Get-ChildItem $l -File -Filter *.js -Recurse |
+  % { $_.FullName.Substring((Resolve-Path $l).Path.Length+1) -replace '\.js$','' } |
+  ? { $_ -notin $src }
+```
+
+> 2026-10-03 全仓扫过：`void-soul` / `void-memory` / `void-tools` **干净**；**`void-legion` 1 个**
+> （`lib/authority-gate.js`，源文件已删、全仓 0 引用，2026-09-22 的旧产物）、**`void-entry` 19 个**
+> （`lib/client.js` 与 `lib/types/client/*.js`，客户端改由 tsdown 出 `dist/` 之前的遗留）。
+> 两个包都在正式 profile 里，**待处理**。
+
 **重装要 `remove` → 删目录 → `add`，三步缺一不可。** 正式 profile 的 `pnpm-workspace.yaml` 是
 `nodeLinker: hoisted`——包是**拷贝**进 `node_modules`，不是软链，也没有 `.pnpm` 虚拟存储。目录已存在
 时 pnpm **不重写它，只报成功**；`@void/void-soul` 还被 `pnpm.overrides` 钉住、同时是 `void-memory` /
