@@ -10,8 +10,8 @@
 
 ## 1. 版本前提
 
-**`dsh --version` 报的不是插件契约版本。** 它报的是 CLI 外壳（`0.2.0-rc.1`），而外壳的
-dependencies 用的是脱字号范围，pnpm 实际装进来的运行时包**与外壳同版**（`0.2.0-rc.1`）。
+**`dsh --version` 报的不是插件契约版本。** 它报的是 CLI 外壳（`0.2.0-rc.2`），而外壳的
+dependencies 用的是脱字号范围，pnpm 实际装进来的运行时包**与外壳同版**（`0.2.0-rc.2`）。
 契约由运行时包定，不由外壳定。查真正的版本：
 
 ```powershell
@@ -41,14 +41,22 @@ dsh --version                                                                   
 - **只查 `@deepseek-ai/dsh*`**：`cordis`、`react`、`@void/*` 不看。
 - 范围一律写 `>=0.1.x-rc.n <0.3.0-0`，**不要用 caret**——0.x 上的 `^` 等于 `<0.2.0`，正是这次四个包
   被跳过、插件「无法调用」的原因。`<0.3.0-0` 让 0.3 处强制重新验证。
+- **要改就改全仓，别只改「正在用的那几个」。** 2026-09-29 那次只改了 5 个包，漏掉 `void-tools` /
+  `void`（组合 bundle）/ `void-seam-demo`；两周后在 0.2.0-rc.2 上它们照样被整包跳过
+  （`dsh: skipping profile bundle "@void/void-tools"`）。一条命令查全：
+  `Select-String -Path packages/*/package.json -Pattern '"@deepseek-ai/dsh[^"]*": "\^'`
 - 逃生门 `dsh plugin allow-version <包@版本> --profile <p> --dsh-version <精确版本> --accept-risk`，
   写进 `profiles/<p>/compatibility.json`，键是精确 `name@version`。**只用于临时验证，不留生产。**
 - 不重启宿主也能查：用宿主自带的 semver 复刻 `plugin-compatibility.ts` 的判定，扫 profile 的
   `node_modules/@void/*/package.json`。详见 README §1.2。
 
-**这次 0.2.0 升级，插件代码一行未改。** 平台模块表 9 项未变；`dsh-client-ui-primitives` 只把
-`Button` 从函数改成 `ForwardRefExoticComponent`、给 `DisclosureRow` 加了几个可选 prop。
-**升级后插件不动，先怀疑门禁，再怀疑代码。**
+**升级后插件不动，先怀疑门禁，再怀疑代码。** 0.2.0-rc.1 那次代码一行未改：平台模块表 9 项未变，
+`dsh-client-ui-primitives` 只把 `Button` 从函数改成 `ForwardRefExoticComponent`、给 `DisclosureRow`
+加了几个可选 prop。**rc.1 → rc.2 同样零改动**：声明重生成后差异只有 `DisclosureRow` 的注释，和
+**`Input` 也从函数变成了 `ForwardRefExoticComponent`**——同一类变形。
+
+> **它之所以不炸，是因为 `PRIMITIVE_GAPS` 的判据是 `hostExports[name] === undefined`，不是
+> `typeof === 'function'`**（见 §2）。把它改成后者，这两次升级都会把整个设置面板打白。
 
 宿主处于开发者预览，官方明说会有破坏兼容性的变更。**契约数字一律现查现核**：本地快照没有的
 东西，不等于宿主不支持。反过来说——**快照里有的，也可能已经没了**：`installSection` 在 0.1.7
@@ -174,6 +182,17 @@ workspace 固定在 **4.0.1**。装进 `node_modules` 会让 pnpm 提升既有�
 改插件后的真机验证装进**隔离 `DSH_HOME`**（`.tmp/void-entry-p1`，profile `entry`，端口 3699），
 别拿日常 profile 做实验。装完看**终端有没有插件的报错横幅**，前端用真机操作验证（合成事件会被
 React 的 value tracker 吃掉，需要时用真实键盘输入）。
+
+**写探针脚本的三条**（`.tmp/live-signal/` 下那些 `*-live.mjs`）：
+
+- **import `dsh/lib/profile-boot.js`（稳定转发），不要 import `profile-boot-<hash>.js`。** 宿主一升级
+  那个哈希就变，老探针直接 `ERR_MODULE_NOT_FOUND`——2026-10-03 从 rc.1 升到 rc.2 时踩到过一次。
+- **先看隔离 profile 里 `node_modules/@void/*` 是哪一种链接**（`Get-Item … | Select-Object LinkType`）。
+  是 **junction 指向源码**就不需要重装，`pnpm --filter @void/<包> build` 之后直接生效；是 hoisted
+  拷贝才要走 §3 的 `remove → 删目录 → add`。
+- **探针必须幂等，而且不能破坏现场。** 角色选择是**档案级持久状态**（`agents/<id>/state.json`），
+  上一轮跑剩的修订号会让下一次「切模组」当场撞 409，后面全部错位；每次显式写回一份干净状态。
+  改写档案/模组文件前先备份，收尾比对哈希证明「一个字节都没动」。
 
 **正式 profile 安装**：先留回滚点（`package.json` 与 `cordis.patch.yml` 各备一份），再
 **`remove` → 删目录 → `add`**（见 §3，只做前两步会静默装不上）。**用户自己写在

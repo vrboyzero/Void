@@ -54,7 +54,7 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
    */
   export const DisclosureRow: import("react").MemoExoticComponent<({ icon, title, open, expandable, onToggle, running, expandOnRowClick, previewChevron, keepContentWhenOpen, collapsedContent, children, className, rowClassName, contentClassName, contentLayoutClassName, leadingClassName, chevronClassName, titleClassName, }: DisclosureRowProps) => import("react").JSX.Element>;
 
-  /** Shared 24px disclosure chrome for compact flow rows. */
+  /** Shared 24px process row: tertiary text and icons, secondary on hover. */
   export interface DisclosureRowProps {
       icon: ReactNode;
       title: string;
@@ -112,12 +112,13 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
   /**
    * Render a text input with an optional leading icon.
    * @param props.icon - optional 16px leading icon node.
+   * @param ref - the native input, cleared when it unmounts.
    * @returns wrapper span containing the native input; input attributes pass through.
    */
-  export function Input({ icon, className, ...rest }: {
+  export const Input: import("react").ForwardRefExoticComponent<{
       icon?: ReactNode;
       className?: string;
-  } & InputHTMLAttributes<HTMLInputElement>): import("react").JSX.Element;
+  } & InputHTMLAttributes<HTMLInputElement> & import("react").RefAttributes<HTMLInputElement>>;
 
   /**
    * Render a pill chip. Interactive when onClick is supplied (renders a button);
