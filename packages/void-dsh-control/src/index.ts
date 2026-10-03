@@ -17,7 +17,7 @@
  *
  * @module @void/void-dsh-control
  */
-import { type Context } from "@deepseek-ai/cordis";
+import { type Context, type Volatile } from "@deepseek-ai/cordis";
 // Type-only side-effect imports: they load the `declare module` augmentations
 // that put `webServer` / `settings` on `Context`.
 import type {} from "@deepseek-ai/dsh-host-webserver";
@@ -27,7 +27,7 @@ import { Authenticator, describeTokenSetup, readTokenGrants, userEnvFilePath, ty
 import { WebhookCallbackDispatcher, resolveCallbackUrl } from "./callback.js";
 import { LEGION_RUN_TERMINAL_EVENT, LegionRunDelivery } from "./legion-delivery.js";
 import type { LegionServiceLike } from "./legion-delivery.js";
-import { CONTROL_OPERATIONS, ControlError, type ControlOperation } from "./protocol.js";
+import { CONTROL_OPERATIONS, ControlError, SETTINGS_NAMESPACE, type ControlOperation } from "./protocol.js";
 import { compilePolicy, EMPTY_CALLER_POLICY, type CallerPolicy, type CompiledCallerPolicy } from "./policy.js";
 import { MemoryControlLedger, StorageControlLedger, type ControlLedger } from "./ledger.js";
 import { controlDomainSpec } from "./ledger.js";
@@ -63,27 +63,36 @@ export interface TokenConfig {
   operations: string[];
 }
 
-/** One required-document rule. */
+/**
+ * One required-document rule, **as parsed**.
+ *
+ * 四个字段在 schema 里都带 `.default()`，所以解析结果里它们一律存在——写成可选会让
+ * `Config` 与 `z.object(...)` 的实际输出对不上（`skipLibCheck` 之外的类型检查会拦下）。
+ */
 export interface DocumentRuleConfig {
   id: string;
-  description?: string;
-  required?: boolean;
+  description: string;
+  required: boolean;
   /** Empty string means "any path satisfies this rule". */
-  pathPattern?: string;
+  pathPattern: string;
 }
 
-/** Optional HMAC-signed callback webhook (plan §9.2). Disabled by default. */
+/**
+ * Optional HMAC-signed callback webhook (plan §9.2). Disabled by default.
+ *
+ * 同上：全字段是**解析后**的形状，schema 的 `.default()` 保证了它们存在。
+ */
 export interface CallbackConfig {
   enabled: boolean;
-  url?: string;
-  secretEnv?: string;
-  events?: string[];
-  timeoutMs?: number;
-  maxAttempts?: number;
+  url: string;
+  secretEnv: string;
+  events: string[];
+  timeoutMs: number;
+  maxAttempts: number;
   /** Host allowlist; empty means "accept the configured URL as written". */
-  allowedHosts?: string[];
+  allowedHosts: string[];
   /** Whether the payload may carry model-produced assistant text. */
-  includeAssistantSummary?: boolean;
+  includeAssistantSummary: boolean;
   /**
    * Whether legion run-terminal events ride the same webhook (plan §16.2 L9).
    *
@@ -91,10 +100,20 @@ export interface CallbackConfig {
    * retry budget and event filter. Legion is not required — without it the
    * adapter simply never mounts.
    */
-  includeLegionRuns?: boolean;
+  includeLegionRuns: boolean;
 }
 
-/** Plugin configuration, as written in a profile's `cordis.patch.yml`. */
+/**
+ * Plugin configuration, as written in a profile's `cordis.patch.yml`.
+ *
+ * **两类字段的区别是有意的，不是疏漏。** `enabled` / `transport` / `path` / `ledger` 是
+ * 启动项——它们决定插件是否加载、挂在哪个路径、账本落在哪里，改一次要重启，所以是普通值。
+ * 其余字段在 schema 里标了 `.volatile()`，宿主把它们包成**稳定引用**（`get()` 取当前快照，
+ * 引用本身不变、值就地更新），所以面板改完下一次读取就生效、不用重启。
+ *
+ * 这个划分同时决定设置面板里能看见什么：dsh 0.2.0 的表单由入口的 `Config` 派生，
+ * **且只暴露 volatile 字段**——启动项因此自动不出现在表单里，由面板的只读区展示。
+ */
 export interface Config {
   /** Master switch. `false` keeps the plugin inert so rollback is one line. */
   enabled: boolean;
@@ -103,34 +122,42 @@ export interface Config {
   /** Absolute endpoint path registered on the existing WebServer. */
   path: string;
   /** Machine tokens. An empty list plus `allowAnonymous: false` refuses every caller. */
-  tokens: TokenConfig[];
+  tokens: Volatile<TokenConfig[]>;
   /** Grant every configured operation without a token. Loopback smoke tests only. */
-  allowAnonymous: boolean;
+  allowAnonymous: Volatile<boolean>;
   /** Roots a caller may address by path. Empty disables path addressing entirely. */
-  allowedRoots: string[];
+  allowedRoots: Volatile<string[]>;
   /** Operations granted when a token omits its own list. */
-  allowedOperations: string[];
+  allowedOperations: Volatile<string[]>;
   /** Ledger backend. `memory` loses task history on restart and is not for production. */
   ledger: "storage" | "memory";
   /** Free-form instructions returned by `dsh_control_info`. */
-  callerInstructions: string;
+  callerInstructions: Volatile<string>;
   /** Metadata fields every dispatch must supply non-empty. */
-  requiredFields: string[];
+  requiredFields: Volatile<string[]>;
   /** Document requirements every dispatch must satisfy. */
-  requiredDocumentRules: DocumentRuleConfig[];
+  requiredDocumentRules: Volatile<DocumentRuleConfig[]>;
   /** Regular expressions whose match anywhere in caller text is rejected. */
-  forbiddenPatterns: string[];
+  forbiddenPatterns: Volatile<string[]>;
   /** Monotonic version the user bumps when the rules change. */
-  instructionsVersion: number;
+  instructionsVersion: Volatile<number>;
   /** Optional callback webhook; disabled by default. */
-  callback: CallbackConfig;
+  callback: Volatile<CallbackConfig>;
 }
 
-/** Settings namespace the panel reads and writes. */
-const SETTINGS_NAMESPACE = "dsh-agent-control";
-
-/** Schemastery schema for {@link Config}. */
-export const Config: z<Config> = z.object({
+/**
+ * Schemastery schema for {@link Config}.
+ *
+ * **注解写成 `z<any, Config>` 是刻意的**：schemastery 的默认导出同时是类型
+ * `Schema<S, T, Mode>` 和值，`z<Config>` 展开即 `Schema<Config, Config, 'plain'>`。
+ * 但带 `.volatile()` 的 schema，其输入面（用户写进 `cordis.patch.yml` 的裸形状）与输出面
+ * （解析后带 `Volatile` 引用）**并不相同**，`z<Config>` 要求两者都是 `Config`，必然对不上
+ * ——宿主自家的 `web-search-deepseek` 等带 volatile 字段的插件同样不写单参形式。
+ * 这里放开输入面、钉住输出面 `Config`，顺带让生成出的 `.d.ts` 有个可命名的类型
+ * （否则 TS2742：推断类型会引用我们并未直接依赖的 `cosmokit`）。
+ * `Config` 接口仍是 `apply` 的入参类型。
+ */
+export const Config: z<any, Config> = z.object({
   enabled: z.boolean().default(true).description("主开关。设为 false 时插件完全不注册端点，回滚只需改这一行。"),
   // 只有 Streamable HTTP 实现了，而**没有任何代码读这个值**（路由那边直接构造
 // StreamableHTTPServerTransport）。自由字符串意味着 `transport: sse` 会被静默接受、
@@ -146,16 +173,18 @@ transport: z.const("streamable-http").default("streamable-http").description("�
       }),
     )
     .default([])
+    .volatile()
     .description("机器调用凭据。token 只从环境变量读取。"),
-  allowAnonymous: z.boolean().default(false).description("允许无 token 调用。仅用于本机 smoke 测试，默认关闭。"),
-  allowedRoots: z.array(z.string()).default([]).description("允许按路径寻址的根目录。留空则完全禁用路径寻址。"),
+  allowAnonymous: z.boolean().default(false).volatile().description("允许无 token 调用。仅用于本机 smoke 测试，默认关闭。"),
+  allowedRoots: z.array(z.string()).default([]).volatile().description("允许按路径寻址的根目录。留空则完全禁用路径寻址。"),
   allowedOperations: z
     .array(z.string())
     .default(["workspace.read", "workspace.open", "session.list", "session.create", "session.prompt", "session.plan", "session.observe"])
+    .volatile()
     .description("token 未显式声明 operations 时使用的默认授权集合。"),
   ledger: z.union([z.const("storage"), z.const("memory")]).default("storage").description("账本后端。memory 重启即丢，不用于生产。"),
-  callerInstructions: z.string().default("").description("dsh_control_info 返回给外部 Agent 的调用约束正文。"),
-  requiredFields: z.array(z.string()).default([]).description("每次下单必须非空提供的 metadata 字段。"),
+  callerInstructions: z.string().default("").volatile().description("dsh_control_info 返回给外部 Agent 的调用约束正文。"),
+  requiredFields: z.array(z.string()).default([]).volatile().description("每次下单必须非空提供的 metadata 字段。"),
   requiredDocumentRules: z
     .array(
       z.object({
@@ -166,9 +195,10 @@ transport: z.const("streamable-http").default("streamable-http").description("�
       }),
     )
     .default([])
+    .volatile()
     .description("任务文档要求。"),
-  forbiddenPatterns: z.array(z.string()).default([]).description("命中即拒绝的正则；用于禁止密钥等内容进入会话。"),
-  instructionsVersion: z.natural().default(0).description("规则版本号，用户改动规则时递增。"),
+  forbiddenPatterns: z.array(z.string()).default([]).volatile().description("命中即拒绝的正则；用于禁止密钥等内容进入会话。"),
+  instructionsVersion: z.natural().default(0).volatile().description("规则版本号，用户改动规则时递增。"),
   callback: z
     .object({
       enabled: z.boolean().default(false),
@@ -192,6 +222,7 @@ transport: z.const("streamable-http").default("streamable-http").description("�
       includeAssistantSummary: false,
       includeLegionRuns: false,
     })
+    .volatile()
     .description("可选回调 webhook，默认关闭。"),
 });
 
@@ -254,110 +285,16 @@ interface ControlSection {
 }
 
 /**
- * Project the composition-entry config onto the live-settable section.
- *
- * This is both the schema `base` layer and the fallback when `ctx.settings` is
- * absent, so an unconfigured deployment behaves exactly as before.
- *
- * @param config - Plugin configuration from the composition entry.
- * @returns The equivalent section value.
- */
-function sectionFromEntry(config: Config): ControlSection {
-  return {
-    allowedOperations: [...config.allowedOperations],
-    allowAnonymous: config.allowAnonymous,
-    tokens: config.tokens.map((token) => ({
-      callerId: token.callerId,
-      tokenEnv: token.tokenEnv,
-      operations: [...token.operations],
-    })),
-    allowedRoots: [...config.allowedRoots],
-    callerInstructions: config.callerInstructions,
-    requiredFields: [...config.requiredFields],
-    requiredDocumentRules: config.requiredDocumentRules.map((rule) => ({
-      id: rule.id,
-      description: rule.description ?? "",
-      required: rule.required ?? true,
-      pathPattern: rule.pathPattern ?? "",
-    })),
-    forbiddenPatterns: [...config.forbiddenPatterns],
-    instructionsVersion: config.instructionsVersion,
-    callback: {
-      enabled: config.callback.enabled,
-      url: config.callback.url ?? "",
-      secretEnv: config.callback.secretEnv ?? "VOID_DSH_CONTROL_CALLBACK_SECRET",
-      events: [...(config.callback.events ?? [])],
-      timeoutMs: config.callback.timeoutMs ?? 10_000,
-      maxAttempts: config.callback.maxAttempts ?? 5,
-      allowedHosts: [...(config.callback.allowedHosts ?? [])],
-      includeAssistantSummary: config.callback.includeAssistantSummary ?? false,
-      includeLegionRuns: config.callback.includeLegionRuns ?? false,
-    },
-  };
-}
-
-/**
- * Build the schemastery schema for the settings namespace.
- *
- * Defaults come from the entry section so the *rendered* form shows the values
- * actually in force, not a hard-coded second opinion — otherwise clearing a
- * field in the panel would silently change behaviour to an unrelated default.
- *
- * @param entry - Section derived from the composition entry.
- * @returns The schema the settings service validates and the panel renders.
- */
-function controlSchema(entry: ControlSection): z<ControlSection> {
-  return z.object({
-    allowedOperations: z.array(z.string()).default([...entry.allowedOperations]),
-    allowAnonymous: z.boolean().default(entry.allowAnonymous),
-    tokens: z
-      .array(
-        z.object({
-          callerId: z.string().required(),
-          tokenEnv: z.string().required(),
-          operations: z.array(z.string()).default([]),
-        }),
-      )
-      .default(entry.tokens.map((token) => ({ ...token }))),
-    allowedRoots: z.array(z.string()).default([...entry.allowedRoots]),
-    callerInstructions: z.string().default(entry.callerInstructions),
-    requiredFields: z.array(z.string()).default([...entry.requiredFields]),
-    requiredDocumentRules: z
-      .array(
-        z.object({
-          id: z.string().required(),
-          description: z.string().default(""),
-          required: z.boolean().default(true),
-          pathPattern: z.string().default(""),
-        }),
-      )
-      .default(entry.requiredDocumentRules.map((rule) => ({ ...rule }))),
-    forbiddenPatterns: z.array(z.string()).default([...entry.forbiddenPatterns]),
-    instructionsVersion: z.natural().default(entry.instructionsVersion),
-    callback: z
-      .object({
-        enabled: z.boolean().default(entry.callback.enabled),
-        url: z.string().default(entry.callback.url),
-        secretEnv: z.string().default(entry.callback.secretEnv),
-        events: z.array(z.string()).default([...entry.callback.events]),
-        timeoutMs: z.natural().default(entry.callback.timeoutMs),
-        maxAttempts: z.natural().default(entry.callback.maxAttempts),
-        allowedHosts: z.array(z.string()).default([...entry.callback.allowedHosts]),
-        includeAssistantSummary: z.boolean().default(entry.callback.includeAssistantSummary),
-        includeLegionRuns: z.boolean().default(entry.callback.includeLegionRuns),
-      })
-      .default({ ...entry.callback }),
-  });
-}
-
-/**
  * Reject a section the plugin could not act on.
  *
- * Runs on every write, so a bad value is refused at `update` and the caller
- * learns immediately instead of storing something that would silently disable
- * the endpoint. Cross-field rules live here because schemastery cannot express
- * them; the regex and operation-name checks reuse the same parsers the runtime
- * uses, so the panel can never accept a value the runtime would choke on.
+ * 0.1.x 时这段跑在 `installSection` 的 `validate` 钩子上，所以面板**存不进**运行时无法
+ * 接受的值。0.2.0 的写入路径只按 schema 逐字段验，没有跨字段钩子，于是校验挪到**读取点**
+ * （见 `createConfigSource` 的 `read`）：坏值仍会大声失败，只是失败点从「写入时」后移到
+ * 「最接近使用的地方」。
+ *
+ * Cross-field rules live here because schemastery cannot express them; the regex and
+ * operation-name checks reuse the same parsers the runtime uses, so a stored value
+ * cannot make the endpoint behave differently from what the panel showed.
  *
  * @param value - The resolved section, schema-valid by construction.
  * @throws ControlError when the section is unusable.
@@ -420,51 +357,78 @@ interface ConfigSource {
 /**
  * Create the live configuration accessors.
  *
- * Uses the official `ctx.settings.installSection()` instead of hand-rolling the
- * layering. It makes the composition entry the base layer while a settings
- * provider is attached, and falls back to that same entry when the provider
- * detaches — exactly the behaviour we used to spell out with
- * `register({ base: entry })` plus a one-shot `ctx.get('settings')` probe.
+ * **dsh 0.2.0 起热改值由 `Config` 里的 `.volatile()` 承载**：宿主把解析结果包成稳定引用
+ * 就地更新，`get()` 永远拿到当前值（含 profile patch 里的用户覆盖）。所以 0.1.x 那套
+ * `installSection` + `setSource` 的分层不再需要——**引用本身就是要读的东西**。
  *
- * `ctx.inject` supplies the reactivity that probe could not: a provider which
- * attaches *after* this plugin is composed still becomes the source, and one
- * that detaches hands authority back to the entry.
+ * 访问器照旧是惰性的：per request / per delivery 才读，所以面板改完下一次调用就生效，
+ * 既不重注册也不重启。`watch()` 的变更通知走宿主的 `settings/document-updated`——它在
+ * **引用已更新之后**才发，所以监听者读到的一定是新值；先按 `ns` 过滤，别人的编辑不吵醒我们。
  *
- * The returned accessors are deliberately lazy: they are called per request or
- * per delivery, so a panel edit applies to the next call with no re-registration
- * and no restart.
+ * `validateSection` 是跨字段校验（未知操作名、正则能否编译、回调 URL 能否解析）。0.2.0 的
+ * 写入路径只按 schema 逐字段验，没有跨字段钩子，所以把它挪到**读取点**：坏值在最接近使用
+ * 的地方大声失败，而不是静默存下、等到某次请求才炸。
  *
  * @param ctx - Plugin context.
- * @param config - Plugin configuration from the composition entry.
+ * @param config - Parsed plugin configuration; `.volatile()` fields are live references.
  * @returns The accessors.
  */
 function createConfigSource(ctx: Context, config: Config): ConfigSource {
-  const entry = sectionFromEntry(config);
-
-  // The composition entry is authoritative until a settings provider attaches;
-  // `installSection` calls `setSource` at every attach and every detach.
-  let read: () => ControlSection = () => entry;
   const listeners = new Set<() => void>();
 
-  ctx.inject(["settings"], (settingsCtx) => {
-    settingsCtx.settings.installSection(ctx, SETTINGS_NAMESPACE, controlSchema(entry), entry, {
-      validate: validateSection,
-      setSource: (current) => {
-        read = current;
+  /**
+   * 把引用投影成一份**可变副本**。
+   *
+   * 宿主给的是递归只读的冻结快照，而下游（策略编译、鉴权、工具输出）按普通值用，所以这里
+   * 解一层；顺带让每次调用都拿到独立数据，没有人能改到宿主的快照。
+   */
+  const read = (): ControlSection => {
+    const callback = config.callback.get();
+    const section: ControlSection = {
+      allowedOperations: [...config.allowedOperations.get()],
+      allowAnonymous: config.allowAnonymous.get(),
+      tokens: config.tokens.get().map((token) => ({
+        callerId: token.callerId,
+        tokenEnv: token.tokenEnv,
+        operations: [...token.operations],
+      })),
+      allowedRoots: [...config.allowedRoots.get()],
+      callerInstructions: config.callerInstructions.get(),
+      requiredFields: [...config.requiredFields.get()],
+      requiredDocumentRules: config.requiredDocumentRules.get().map((rule) => ({
+        id: rule.id,
+        description: rule.description,
+        required: rule.required,
+        pathPattern: rule.pathPattern,
+      })),
+      forbiddenPatterns: [...config.forbiddenPatterns.get()],
+      instructionsVersion: config.instructionsVersion.get(),
+      callback: {
+        enabled: callback.enabled,
+        url: callback.url,
+        secretEnv: callback.secretEnv,
+        events: [...callback.events],
+        timeoutMs: callback.timeoutMs,
+        maxAttempts: callback.maxAttempts,
+        allowedHosts: [...callback.allowedHosts],
+        includeAssistantSummary: callback.includeAssistantSummary,
+        includeLegionRuns: callback.includeLegionRuns,
       },
-      // Fires after an attach, a detach, and every committed change. The detach
-      // case matters here: the roots snapshot has to be re-resolved against the
-      // entry again rather than keeping the last user-layer value.
-      onChange: () => {
-        for (const listener of listeners) listener();
-      },
-    });
+    };
+    validateSection(section);
+    return section;
+  };
+
+  // 宿主每次提交编辑后发一次。先按 ns 过滤：别的插件的编辑不该唤醒我们的监听者。
+  ctx.on("settings/document-updated", (ns) => {
+    if (ns !== SETTINGS_NAMESPACE) return;
+    for (const listener of listeners) listener();
   });
 
   // Memoized on the raw value so an unchanged document never recompiles its
   // regular expressions on a hot path (the same reasoning as before P2).
   let lastPolicyRaw = "";
-  let lastPolicy = compilePolicy(policyFromSection(entry));
+  let lastPolicy = compilePolicy(policyFromSection(read()));
   const policy = (): CompiledCallerPolicy => {
     const current = policyFromSection(read());
     const raw = JSON.stringify(current);
@@ -479,8 +443,9 @@ function createConfigSource(ctx: Context, config: Config): ConfigSource {
   // so they are re-read here rather than stored. Memoized per request batch on
   // the raw token spec, which is what makes `readTokenGrants` cheap enough to
   // run on the authentication path.
+  // 初值只是占位：下面的 `raw` 从空串起步，第一次调用必然重算，所以不必在这里先读一次配置。
   let lastAuthRaw = "";
-  let lastAuth: AuthPolicy = { tokens: [], allowAnonymous: entry.allowAnonymous };
+  let lastAuth: AuthPolicy = { tokens: [], allowAnonymous: false };
   const auth = (): AuthPolicy => {
     const section = read();
     const raw = JSON.stringify([section.tokens, section.allowedOperations, section.allowAnonymous]);
@@ -501,11 +466,7 @@ function createConfigSource(ctx: Context, config: Config): ConfigSource {
   };
 
   return {
-    // Indirection, not the function itself: `setSource` rebinds `read` when a
-    // settings provider attaches, and copying the value here would freeze every
-    // `live()` caller on the composition entry — the panel would look editable
-    // and change nothing.
-    live: () => read(),
+    live: read,
     policy,
     auth,
     watch: (listener) => {
@@ -570,13 +531,15 @@ export function apply(ctx: Context, config: Config): void {
     return;
   }
 
+  // 先建访问器：启动检查与请求路径走的是**同一个投影**，所以两者永远不会给出不同答案。
+  const source = createConfigSource(ctx, config);
+
   // Validate everything the schema cannot express BEFORE the async effect, so a
   // configuration the plugin cannot honour fails plugin startup loudly instead
   // of leaving a half-built endpoint behind (plan §11, stage 0 verification).
-  // From P2 on, the same checks also run on every settings write via the
-  // namespace's `validate`, so the panel cannot store what startup would reject.
-  const entrySection = sectionFromEntry(config);
-  validateSection(entrySection);
+  // 跨字段校验落在 `source.live()` 里（见 `createConfigSource`）：0.2.0 的写入路径只有
+  // 逐字段的 schema 校验，所以坏值是在这里——最接近使用的地方——被拦下的。
+  const entrySection = source.live();
   const callbackUrl = resolveCallbackUrl(
     entrySection.callback,
     entrySection.callback.enabled ? (process.env[entrySection.callback.secretEnv] ?? "") : "",
@@ -595,11 +558,7 @@ export function apply(ctx: Context, config: Config): void {
   void ctx.effect(async () => {
     const log = ctx.logger("void-dsh-control");
 
-    const source = createConfigSource(ctx, config);
     const { policy } = source;
-    if (ctx.get("settings") === undefined) {
-      log.info("ctx.settings is absent; the composition entry is the only policy source");
-    }
 
     const section = source.live();
     const initialAuth = source.auth();
@@ -651,8 +610,21 @@ export function apply(ctx: Context, config: Config): void {
     // Any later section edit re-resolves the snapshot. `watch` fires only for
     // the settings document; the composition entry cannot change while the
     // process runs, so there is no second source to observe.
+    //
+    // 这个 `catch` 不是装饰。0.2.0 的写入路径**不做跨字段校验**，所以面板可以存下一个
+    // schema 合法、跨字段非法的值（写错一个操作名、坏正则、不存在的目录、错误的回调 URL）。
+    // 那时 `source.live()` 会在读取点抛错，而这里是 fire-and-forget——拒绝一旦逃逸就是
+    // unhandledRejection，dsh 的 `installFailLoud` 把它判成致命加载失败并 `proc.exit(1)`：
+    // **一次误改配置足以把宿主整个干掉**。降级成「放弃这次刷新 + 大声记一笔」，
+    // `roots` 因此保留上一次的好值；其余读取点仍会在各自的请求里如实报错。
     source.watch(() => {
-      void refreshRoots();
+      void refreshRoots().catch((error: unknown) => {
+        log.warn(
+          `settings refresh rejected; keeping the previous root snapshot: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
     });
 
     const ledger = await openLedger(ctx, config);

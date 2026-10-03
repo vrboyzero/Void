@@ -16,7 +16,7 @@ import type {} from "@deepseek-ai/dsh-api-workspace-controller";
 import type {} from "@deepseek-ai/dsh-commands";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { WorkspaceId } from "@deepseek-ai/dsh-workspace";
-import { boundContextSummary, createUserMessage } from "@deepseek-ai/dsh-llm";
+import { boundContextSummary, createUserMessage, type ContextFormed } from "@deepseek-ai/dsh-llm";
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type { SessionRequestId } from "@deepseek-ai/dsh-api-session-controller/types";
 import { ControlError } from "./protocol.js";
@@ -24,6 +24,22 @@ import type { HostPorts, HostSession, HostWorkspace } from "./orchestrator.js";
 
 /** Plugin name recorded as the producer of injected context. */
 export const PLUGIN_NAME = "void-dsh-control";
+
+/**
+ * Register this plugin as a producer of injected context.
+ *
+ * **dsh 0.2.0 起 `MessageSourceMap` 由各插件自己用 declaration merging 声明成员**
+ * （宿主的 `plan-mode` / `tool-goal` / `hooks-codex` 都是这个写法）。0.1.x 里那个通用的
+ * `'plugin'` 成员被删掉了——继续用它不是运行时错误，而是编译期「不在联合类型里」，
+ * 于是变成一个只有升级那天才会发现的失败。
+ *
+ * `kind` 用插件名：界面上直接看得出是谁注入的，也省掉一个冗余字段。
+ */
+declare module "@deepseek-ai/dsh-llm" {
+  interface MessageSourceMap {
+    "void-dsh-control": { kind: "void-dsh-control"; plugin: string } & ContextFormed;
+  }
+}
 
 /** A signal that never aborts; used for bounded, single-shot host reads. */
 function neverAbort(): AbortSignal {
@@ -236,7 +252,7 @@ export function createHostPorts(ctx: Context): HostPorts {
           createUserMessage({
             content: [{ type: "text", text: request.text }],
             source: {
-              kind: "plugin",
+              kind: "void-dsh-control",
               plugin: PLUGIN_NAME,
               form: "notice",
               summary: boundContextSummary("外部控制面注入的上下文（未唤醒 Agent）"),

@@ -14,7 +14,7 @@
  * @module @void/void-dsh-control/panel
  */
 import type { Context } from "@deepseek-ai/cordis";
-import { CONTROL_OPERATIONS, expandOperations, type ControlOperation } from "./protocol.js";
+import { CONTROL_OPERATIONS, expandOperations, SETTINGS_NAMESPACE, type ControlOperation } from "./protocol.js";
 
 /** 与入口 `VoidSuite.registerPanel` 的结构契约（结构性重述，避免跨包类型依赖）。 */
 interface PanelHost {
@@ -60,10 +60,9 @@ export function impliedOperations(selected: readonly ControlOperation[]): Contro
 /**
  * 「基本」组展示的运行时值。
  *
- * 这四项由组合入口决定，**不在设置 schema 里**（`controlSchema` 刻意不含它们，
+ * 这四项由组合入口决定，**不在设置表单里**（`Config` 里刻意没给它们标 `.volatile()`，
  * 见 index.ts 的说明），所以它们既不在 `describe()` 的 `value` 里，也不在 `base` 里
- * ——`base` 是 `sectionFromEntry()` 的产物，本身就只含 schema 的键。面板没法从设置
- * 视图读到它们。
+ * ——`base` 只含 volatile 字段。面板没法从设置视图读到它们。
  *
  * 它们属于「插件自己的运行时知识」，所以由宿主半边写进清单。`connect.path` 早就是这么
  * 做的（路径必须取实际配置，写死的话用户改了 path，面板生成的配置会指向不存在的端点），
@@ -88,7 +87,7 @@ export interface RuntimeConfig {
  */
 export function buildPanelManifest(runtime: RuntimeConfig): unknown {
   return {
-    namespace: "dsh-agent-control",
+    namespace: SETTINGS_NAMESPACE,
     runtime,
     // 路径取组合入口里的实际配置，不写死；写死的话用户改了 path，面板生成的配置
     // 就会指向一个不存在的端点。

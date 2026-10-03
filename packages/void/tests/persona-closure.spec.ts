@@ -97,7 +97,7 @@ async function boot(options: { maxCharacters?: number } = {}): Promise<Context> 
     name: "@void/void-soul/authority-service",
     config: { dataDir, ...(options.maxCharacters === undefined ? {} : { maxCharacters: options.maxCharacters }) },
   });
-  await ctx.loader.create({ name: "@void/void-legion/service" });
+  await ctx.loader.create({ name: "@void/void-legion/service", config: { dataDir } });
   await ctx.loader.create({ name: "@void/void-legion/tool" });
   await ctx.loader.create({ name: "@void/void-legion/run-tool" });
   await ctx.loader.await();

@@ -412,11 +412,13 @@ export function apply(ctx: Context, config: VoidSoulConfig = {}): void {
       const budget = (): PromptBudget =>
         resolvePromptBudget({ maxCharacters: config.prompt?.maxCharacters, contextWindow: readContextWindow(agent) });
       // 失败可能只装了一半（超预算那类），退回去：半装的段不许进模型。
-      const attempt = async (): Promise<void> => {
+      // **返回值是「这一轮到底装上了没有」**——`freezeCreatedAgent` 在没绑定、认不出数据根时
+      // 是 `return false` 而不是抛错，那是「没事可做」，不是「成功」。
+      const attempt = async (): Promise<boolean> => {
         const before = sections.slice();
         sections.length = 0;
         try {
-          await freezeCreatedAgent(agent, process.env, {
+          return await freezeCreatedAgent(agent, process.env, {
             ...rootOptions,
             sections,
             onApplied: (agentId, entry) => applied.remember(agentId, entry),
@@ -441,16 +443,32 @@ export function apply(ctx: Context, config: VoidSoulConfig = {}): void {
           throw error;
         }
       };
+      /** 这一轮没装成，留一条「下一轮再试」。 */
+      const leaveRetry = (firstReason: string): void => {
+        record.refresh = createAttachRetry({
+          attempt,
+          sections,
+          onRefused: (retryError) => reportRefusal(retryError, agent.id),
+          firstReason,
+        });
+      };
       const task = attempt()
-        .then(() => undefined, (error: unknown) => {
+        .then((attached) => {
+          // **「还没绑定」不是失败，但也绝不能就这么算了。**
+          //
+          // 会话先开、人之后才去面板点卡片绑定，是最常见的一条路（用户 2026-09-26 走的就是它：
+          // 23:56:58 开会话，23:57:15 绑定，23:57:31 那一轮照样没有底线）。这次挂载读不到绑定，
+          // `freezeCreatedAgent` 回 false 而**不抛错**，于是走了「成功」分支、`refresh` 不设；
+          // 装配瀑布那边见 `refresh === undefined` 就把这条会话的记录**用掉即删**
+          // （prompt-recovery.ts:179-181），从此 `registry.get(sessionId)` 永远 undefined——
+          // 绑多少次、问多少轮都不生效，只能换会话或重启宿主。
+          //
+          // 所以「没装上」一律留重试：绑定落盘之后，下一轮装配自己就补上了。
+          if (!attached) leaveRetry("");
+        }, (error: unknown) => {
           // 没装成：补段补不出东西，但留一条「下一轮再试」——文件修好之后同一个会话照样自愈，
           // 不必逼人换会话或重启宿主（见 prompt-recovery.ts 的 createAttachRetry）。
-          record.refresh = createAttachRetry({
-            attempt,
-            sections,
-            onRefused: (retryError) => reportRefusal(retryError, agent.id),
-            firstReason: error instanceof Error ? error.message : String(error),
-          });
+          leaveRetry(error instanceof Error ? error.message : String(error));
           throw error;
         })
         .finally(() => { record.pending = undefined; });

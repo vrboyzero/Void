@@ -1,12 +1,14 @@
 import { Context } from "@deepseek-ai/cordis";
-import Loader from "@deepseek-ai/cordis-plugin-loader";
+import Loader, { type EntryOptions } from "@deepseek-ai/cordis-plugin-loader";
 import WebServer from "@deepseek-ai/dsh-host-webserver";
 import * as Control from "../../src/index.js";
-import { FakeSettings, provideSettings } from "./fake-settings.js";
+import { SETTINGS_NAMESPACE } from "../../src/protocol.js";
 import { FakeHosts } from "./fake-hosts.js";
 
 export const TOKEN_ENV = "VOID_DSH_CONTROL_SPEC_TOKEN";
 export const ENDPOINT = "/mcp/dsh-agent-control";
+/** 组合入口 id；dsh 0.2.0 用它当设置命名空间（见 `src/protocol.ts` 的 SETTINGS_NAMESPACE）。 */
+export const ENTRY_ID = SETTINGS_NAMESPACE;
 
 const contexts: Context[] = [];
 
@@ -32,12 +34,6 @@ export async function disposeContexts(): Promise<void> {
 
 export interface BootOptions {
   withControllers?: boolean;
-  /**
-   * Install a {@link FakeSettings} before the plugin loads. Omit to exercise the
-   * deployment where no settings provider ever attaches and the composition
-   * entry is the only configuration source.
-   */
-  settings?: FakeSettings;
   /** Entry configuration merged over the fixture defaults. */
   config?: Record<string, unknown>;
 }
@@ -114,16 +110,20 @@ export async function bootControl(options: BootOptions = {}): Promise<Context> {
     ctx.provide("workspaceController", controllers.workspaceController);
   }
 
-  // Published before the plugin loads. Not required — the plugin reaches settings
-  // through `ctx.inject`, so a provider attaching later is adopted too (see the
-  // late-attach case in `settings.spec.ts`).
-  if (options.settings !== undefined) provideSettings(ctx, options.settings);
-
+  // 组合入口的 `id` 必须与 dsh 用的设置命名空间一致：宿主发
+  // `settings/document-updated` 时带的就是 `entry.options.id`（dsh-settings 的
+  // `describe()`），插件按 `SETTINGS_NAMESPACE` 过滤。这里照 profile 的
+  // `cordis.patch.yml` 写同一条 id，否则「面板改完不生效」在测试里根本复现不出来。
+  //
+  // `EntryTree.create()` 的类型是 `Omit<EntryOptions, 'id'>`，但 `ensureId()` 只在 id
+  // 缺失时才随机生成——profile 从 YAML 读进来的那批 entry 正是带 id 调进来的。
   process.env[TOKEN_ENV] = "spec-token";
-  await ctx.loader.create({
+  const controlEntry: EntryOptions = {
+    id: ENTRY_ID,
     name: "@void/void-dsh-control",
     config: { path: ENDPOINT, ledger: "memory", tokens: [{ callerId: "spec", tokenEnv: TOKEN_ENV }], ...options.config },
-  });
+  };
+  await ctx.loader.create(controlEntry);
   await ctx.loader.await();
   void hosts;
   return ctx;
@@ -143,4 +143,22 @@ export function findFiber(ctx: Context, pluginName: string) {
     }
   }
   return undefined;
+}
+
+/**
+ * The parsed configuration the running plugin actually holds.
+ *
+ * dsh 0.2.0 resolves the entry's `Config` through the real schema and hands the
+ * result to `apply`; its `Volatile` fields are the very references the settings
+ * panel writes to. A test that wants to simulate a panel write needs this
+ * object — {@link writeSection} updates these references in place.
+ *
+ * @param ctx - Context booted by {@link bootControl}.
+ * @returns The parsed plugin configuration.
+ * @throws Error when the control plane is not loaded on this context.
+ */
+export function parsedConfig(ctx: Context): Control.Config {
+  const fiber = findFiber(ctx, "void-dsh-control");
+  if (fiber === undefined) throw new Error("the control plane is not loaded on this context");
+  return fiber.config as Control.Config;
 }

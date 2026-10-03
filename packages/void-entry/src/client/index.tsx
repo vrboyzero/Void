@@ -1,5 +1,6 @@
 import { createElement as h, useCallback, useEffect, useRef, useState } from 'react'
 import type { Context } from './context-types.ts'
+import { registerVoidAgents } from './agents-panel.js'
 import { openSession } from './session-jump.js'
 import { createVoidWidgetsService, parseFacetVersionPayload, readOnlyWidgetLines, type VoidWidgetsService } from './widgets.js'
 import {
@@ -166,6 +167,10 @@ export function apply(ctx: Context): void {
     order: SECTION_ORDER,
     label: () => SECTION_LABEL,
   }, () => h(VoidSection, { widgets: ctx.voidWidgets, openSession: (sessionId) => openSession(ctx, sessionId) })))
+
+  // 侧栏「虚空(Void) Agents」行 + 它的主面板（P1 只读）。设置面板不受影响：
+  // 那条 settings.section 注册保持原样，两者是并列的两个入口。
+  registerVoidAgents(ctx)
 }
 
 // ── schema 读取 ────────────────────────────────────────────────────────────

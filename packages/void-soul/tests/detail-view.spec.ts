@@ -291,7 +291,18 @@ describe("void-soul 业务视图", () => {
   it("档案列表：摘要带 id、角色与绑定会话数，meta 是内容哈希", async () => {
     const { profiles } = views();
     expect(await profiles.list(PROFILE)).toEqual([
-      { id: "xiaobei", title: "小贝", summary: "xiaobei · 开发专家 · 1 个会话", meta: "修订 hash-1" },
+      {
+        id: "xiaobei",
+        title: "小贝",
+        summary: "xiaobei · 开发专家 · 1 个会话",
+        meta: "修订 hash-1",
+        // 外部消费者（入口的 Agent 卡片）要的四个字段：显示当前角色、按乐观锁切角色、
+        // 认出哪个档案绑着当前会话。契约见 ViewListItem。
+        selectionRevision: 1,
+        facetId: "facet_dev",
+        facetName: "开发专家",
+        boundSessions: ["s-1"],
+      },
     ]);
   });
 
@@ -600,7 +611,16 @@ describe("void-soul 业务视图", () => {
     fake.profileState[0]!.suspended = true;
     const [profiles] = createSoulViews(() => fake.host);
     expect(await profiles.list(PROFILE)).toEqual([
-      { id: "xiaobei", title: "小贝（已停用）", summary: "xiaobei · 开发专家 · 1 个会话", meta: "修订 hash-1 · 已停用" },
+      {
+        id: "xiaobei",
+        title: "小贝（已停用）",
+        summary: "xiaobei · 开发专家 · 1 个会话",
+        meta: "修订 hash-1 · 已停用",
+        selectionRevision: 1,
+        facetId: "facet_dev",
+        facetName: "开发专家",
+        boundSessions: ["s-1"],
+      },
     ]);
     const body = await profiles.detail({ ...PROFILE, itemId: "xiaobei" });
     const suspension = sectionLines(body, "suspension");

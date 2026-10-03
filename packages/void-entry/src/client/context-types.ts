@@ -9,7 +9,15 @@ import type { VoidWidgetsService } from './widgets.ts'
 
 export interface VoidSlotRegisterOptions {
   name: string
+  /** `list` 槽位的单元 id（同一 id 的条目按 priority 遮蔽）。 */
   id?: string
+  /**
+   * `keyed` 槽位的单元 key。
+   *
+   * `'main'` 就是 keyed 槽位：`key` 决定它是哪一个主面板，而
+   * `sidebar.panellist` 的 `id` 要与它相等才能配对（侧栏按 id 选中主面板）。
+   */
+  key?: string
   order?: number
   label?: string | (() => string)
   inject?: (...args: unknown[]) => Record<string, unknown>

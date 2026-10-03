@@ -57,10 +57,35 @@ interface ViewProfile {
   name: string;
 }
 
+/**
+ * 列表条目。
+ *
+ * 前四个字段是宿主渲染器读的。后四个是给**外部消费者**用的——入口的
+ * 「虚空(Void) Agents」面板要在一张卡片上同时显示：当前角色是谁、切角色时的乐观锁
+ * 修订号、以及这份档案绑着哪些会话（好认出「哪个档案绑着当前会话」）。
+ *
+ * **全部可选**：不带这些字段的视图照旧可用；宿主把 `items` 原样序列化给客户端，
+ * 多出来的字段会跟着过去。见 `docs/灵魂记忆与军团.md` 21.3 缺口 A 与 21.11。
+ */
+interface ViewListItem {
+  id: string;
+  title: string;
+  summary?: string;
+  meta?: string;
+  /** 角色选择的乐观锁修订号（`state.json` 的 `selectionRevision`）；切模组必须带回。 */
+  selectionRevision?: number;
+  /** 当前装载的模组 id；没装是 null。 */
+  facetId?: string | null;
+  /** 当前装载的模组显示名；没装是 null。 */
+  facetName?: string | null;
+  /** 绑在这份档案上的会话 id。 */
+  boundSessions?: readonly string[];
+}
+
 interface ViewSource {
   id: string;
   title: string;
-  list(profile: ViewProfile): Promise<readonly { id: string; title: string; summary?: string; meta?: string }[]>;
+  list(profile: ViewProfile): Promise<readonly ViewListItem[]>;
   detail(profile: ViewProfile & { itemId: string }): Promise<ViewBody>;
   save?(input: ViewProfile & { itemId: string; expectedRevision: number | string; changes: Readonly<Record<string, unknown>> }): Promise<ViewBody>;
   act?(input: ViewProfile & { itemId: string; actionId: string; args: Readonly<Record<string, unknown>>; expectedRevision?: number | string }): Promise<ViewBody>;
@@ -516,6 +541,12 @@ export function createSoulViews(host: () => SoulViewHost | undefined): [ViewSour
         title: item.suspended ? `${item.name}（已停用）` : item.name,
         summary: `${item.id} · ${item.facetName ?? "没有模组"} · ${item.boundSessions.length} 个会话`,
         meta: item.suspended ? `修订 ${item.revision} · 已停用` : `修订 ${item.revision}`,
+        // 外部消费者（入口的 Agent 卡片）要用这几个：显示当前角色、按乐观锁切角色、
+        // 认出哪个档案绑着当前会话。见 ViewListItem 的注释。
+        selectionRevision: item.selectionRevision,
+        facetId: item.facetId,
+        facetName: item.facetName,
+        boundSessions: item.boundSessions,
       }));
     },
     async detail(input) {

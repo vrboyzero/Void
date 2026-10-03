@@ -415,6 +415,63 @@ describe("void-soul registration", () => {
       if (previous.profile === undefined) delete process.env.DSH_PROFILE; else process.env.DSH_PROFILE = previous.profile;
     }
   });
+
+  it("先开会话、之后再绑：这条会话下一轮要能自愈，不能永久装不上", async () => {
+    // 真机核对（2026-09-26/27）：用户在 E:\tmp 开会话是 23:56:58，去面板点卡片绑定是 23:57:15，
+    // 之后那一轮（23:57:31）照样没有底线。
+    //
+    // 根因是**静默的成功**：`freezeCreatedAgent` 在没有绑定时 `return false`（不是抛错），
+    // 于是 `attempt()` 走的是「成功」分支，`record.refresh` 永远不设；装配瀑布那边
+    // `refresh === undefined` 就把这条会话的记录**用掉即删**（prompt-recovery.ts:179-181），
+    // 从此 `registry.get(sessionId)` 永远是 undefined——绑多少次、问多少轮都没用，
+    // 只能换会话或重启宿主。这条测试就是钉住这个自愈路径。
+    const home = await mkdtemp(path.join(tmpdir(), "void-soul-late-bind-"));
+    const dataDir = path.join(home, "void-data", "web");
+    const agentDir = path.join(dataDir, "agents", "小贝");
+    await mkdir(path.join(dataDir, "agents", "facets"), { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(path.join(dataDir, "agents", "facets", "dev.md"), "---\nid: dev\nname: 开发专家\nsummary: 写代码\n---\n# 开发\n", "utf8");
+    await writeFile(path.join(agentDir, "SOUL.md"), "---\nid: xiaobei\nname: 小贝\nsummary: 统筹\n---\n# 底线\n", "utf8");
+    await writeFile(path.join(agentDir, "state.json"), JSON.stringify({ schemaVersion: 1, activeFacetId: "dev", selectionRevision: 2 }), "utf8");
+    // 关键：这一刻**还没有绑定**——会话先开、人后绑。
+    const previous = { home: process.env.DSH_HOME, profile: process.env.DSH_PROFILE };
+    process.env.DSH_HOME = home;
+    process.env.DSH_PROFILE = "web";
+    try {
+      const { ctx, hooks, listeners } = suiteContext();
+      VoidSoul.apply(ctx as never, {});
+      const registered: { name: string; text: string }[] = [];
+      listeners.forEach((listener) => listener({
+        agent: { id: "s-late", ctx: { systemPrompt: { section: (input: { name: string; text: string }) => { registered.push({ name: input.name, text: input.text }); return () => undefined; } } } },
+      }));
+      // 等这次注定装不上的挂载落定（没绑定，`freezeCreatedAgent` 会直接回 false）。
+      for (let index = 0; index < 200; index += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+      expect(registered).toEqual([]);
+
+      // 宿主每轮装配都把 Agent 身上登记的段拼进快照；这一份是「宿主自己算好的」样子。
+      const assemble = async () => {
+        const hook = [...hooks][0]!;
+        const assembly = { sections: [{ name: "deployment:persona-prefix", text: "人设" }] };
+        const next = async () => ({ sections: [...assembly.sections, ...registered.map((section) => ({ name: section.name, text: section.text }))] });
+        return await hook(assembly, { agent: { id: "s-late" } }, next) as { sections: { name: string; text: string }[] };
+      };
+
+      // 第一次装配：还没绑定，什么也不装。这一轮会把没有 refresh 的记录用掉即删。
+      const before = await assemble();
+      expect(before.sections.map((section) => section.name)).toEqual(["deployment:persona-prefix"]);
+
+      // 人在面板上点了卡片：绑定落到磁盘上。
+      await saveSessionBindings(dataDir, new Map([["s-late", "xiaobei"]]));
+
+      // 下一轮装配就该自愈——这一条断言就是本测试的全部意义。
+      const after = await assemble();
+      expect(after.sections.map((section) => section.name)).toEqual(["deployment:persona-prefix", "void:soul", "void:facet"]);
+      expect(after.sections.find((section) => section.name === "void:facet")?.text).toContain("# 开发");
+    } finally {
+      if (previous.home === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous.home;
+      if (previous.profile === undefined) delete process.env.DSH_PROFILE; else process.env.DSH_PROFILE = previous.profile;
+    }
+  });
 });
 
 describe("void-soul entry policy wiring", () => {

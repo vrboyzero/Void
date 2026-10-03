@@ -132,8 +132,13 @@ export function syncFrozenSections(
  * 动了那个文件，新的那条得让他看见。
  */
 export function createAttachRetry(input: {
-  /** 再试一次挂载。失败时它必须自己把半装的段退回去（见 plugin.ts 里的 attempt）。 */
-  attempt: () => Promise<void>;
+  /**
+   * 再试一次挂载。失败时它必须自己把半装的段退回去（见 plugin.ts 里的 attempt）。
+   *
+   * 返回 `unknown` 而不是 `void`：挂载的返回值是「这一轮到底装上了没有」，
+   * 调用方靠它决定要不要留重试（没绑定、认不出数据根时是 `false` 且不抛错）。
+   */
+  attempt: () => Promise<unknown>;
   /** 这一次要装的段；重试成功后就是它。 */
   sections: readonly FrozenSection[];
   onRefused: (error: unknown) => void;

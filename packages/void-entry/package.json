@@ -2,6 +2,7 @@
   "name": "@void/void-entry",
   "version": "0.1.0",
   "description": "Void 套装入口：目录页 + 一键开关整套 + 各插件独立开关（client 半边挂 dsh 设置）",
+  "icon": "logo05-64.png",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -18,7 +19,8 @@
   },
   "files": [
     "lib/",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "logo05-64.png"
   ],
   "dsh": {
     "bundle": {
@@ -38,7 +40,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.6 <0.3.0-0",
     "react": "^18.2.0"
   },
   "peerDependenciesMeta": {

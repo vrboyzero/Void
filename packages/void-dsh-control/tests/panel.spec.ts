@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { CONTROL_OPERATIONS, expandOperations, type ControlOperation } from "../src/protocol.js";
+import * as Control from "../src/index.js";
+import { CONTROL_OPERATIONS, SETTINGS_NAMESPACE, expandOperations, type ControlOperation } from "../src/protocol.js";
 import { buildPanelManifest, impliedOperations, registerVoidPanel } from "../src/panel.js";
 import { bootControl, disposeContexts } from "./support/boot.js";
-import { FakeSettings } from "./support/fake-settings.js";
+import { plainConfig } from "./support/fake-settings.js";
 
 afterEach(disposeContexts);
 
@@ -161,40 +162,72 @@ describe("panel: operation vocabulary", () => {
   });
 });
 
-describe("panel: manifest against the registered schema", () => {
-  it("gives every writable manifest field a path that exists in the namespace", async () => {
-    const settings = new FakeSettings();
-    await bootControl({ settings });
-    const resolved = settings.schemaOf(manifest().namespace)!({}) as Record<string, unknown>;
+describe("panel: manifest against the entry's Config schema", () => {
+  // 0.2.0 起没有「插件注册的命名空间 schema」可查：宿主直接把入口的 `Config` 投影成表单
+  // （命名空间 = 组合入口 id，见 `src/protocol.ts`）。所以这里比对的对象就是 `Control.Config`
+  // 本身——面板清单与宿主派生表单读的是同一棵树，任何一边加字段、改归属都会在这里露出来。
 
+  /** schemastery 节点里本例用到的部分：`meta.volatile` 与子字段表 `dict`。 */
+  interface SchemaNode {
+    meta?: { volatile?: boolean };
+    dict?: Record<string, SchemaNode | undefined>;
+  }
+  const SCHEMA = Control.Config as unknown as SchemaNode;
+
+  /**
+   * 宿主判定「该字段可热改」的规则，逐字复刻 dsh-settings 的 `isVolatilePath`：
+   * 路径上出现 volatile 节点（含路径末端）即可热改。
+   */
+  function isVolatilePath(path: readonly string[]): boolean {
+    let node: SchemaNode | undefined = SCHEMA;
+    for (const key of path) {
+      if (node?.meta?.volatile === true) return true;
+      node = node.dict?.[key];
+      if (node === undefined) return false;
+    }
+    return node.meta?.volatile === true;
+  }
+
+  /** 对空对象解析一遍得到的字段视图，等价于面板读到的默认值。 */
+  const resolved = (): Record<string, unknown> => plainConfig(Control.Config({})) as Record<string, unknown>;
+
+  it("清单声明的命名空间就是宿主用的那个入口 id", () => {
+    // 面板按这个键去设置视图里读值；写成别的（旧值是 "dsh-agent-control"）会让整块面板
+    // 渲染出一片空值，而写入还会打到不存在的命名空间上。
+    expect(manifest().namespace).toBe(SETTINGS_NAMESPACE);
+  });
+
+  it("gives every writable manifest field a path that exists in the Config schema", () => {
+    const value = resolved();
     const missing: string[] = [];
+    const notEditable: string[] = [];
     for (const group of manifest().groups) {
       for (const field of group.fields) {
         if (field.readOnly === true) continue;
-        if (!at(resolved, field.path).found) missing.push(`${group.id}: ${field.path.join(".")}`);
+        if (!at(value, field.path).found) missing.push(`${group.id}: ${field.path.join(".")}`);
+        // 可写还不够：路径必须落在宿主允许热改的位置上，否则面板存下去的不是运行时读的那份。
+        else if (!isVolatilePath(field.path)) notEditable.push(`${group.id}: ${field.path.join(".")}`);
       }
     }
     // A writable field the schema does not have would render as a control that
     // writes nothing — the worst kind of panel bug, because it looks like it
     // worked.
     expect(missing).toEqual([]);
+    expect(notEditable).toEqual([]);
   });
 
-  it("marks every composition-only field read-only rather than offering an edit", async () => {
-    const settings = new FakeSettings();
-    await bootControl({ settings });
-    const resolved = settings.schemaOf(manifest().namespace)!({}) as Record<string, unknown>;
-
+  it("marks every composition-only field read-only rather than offering an edit", () => {
     const wronglyWritable: string[] = [];
     for (const group of manifest().groups) {
       for (const field of group.fields) {
-        // Exactly the complement of the previous test: nothing may be both
-        // absent from the schema and presented as editable.
-        if (field.readOnly !== true && !at(resolved, field.path).found) {
-          wronglyWritable.push(`${group.id}: ${field.path.join(".")}`);
+        // Exactly the complement of the previous test, against the same rule the
+        // host applies: editable ⟺ the path is live-settable.
+        const live = isVolatilePath(field.path);
+        if (field.readOnly === true && live) {
+          wronglyWritable.push(`${group.id}: ${field.path.join(".")} marked read-only but the host would accept a write`);
         }
-        if (field.readOnly === true && at(resolved, field.path).found) {
-          wronglyWritable.push(`${group.id}: ${field.path.join(".")} marked read-only but is writable`);
+        if (field.readOnly !== true && !live) {
+          wronglyWritable.push(`${group.id}: ${field.path.join(".")} offered for edit but is composition-only`);
         }
       }
     }
@@ -215,27 +248,39 @@ describe("panel: manifest against the registered schema", () => {
     expect(connect?.fields).toEqual([]);
   });
 
-  it("groups every live-settable field exactly once", async () => {
-    const settings = new FakeSettings();
-    await bootControl({ settings });
-    const resolved = settings.schemaOf(manifest().namespace)!({}) as Record<string, unknown>;
+  it("groups every live-settable field exactly once", () => {
+    // 可热改的字段由 schema 决定（不是靠清单里手写的名单）：路径上最近的 volatile 祖先。
+    const live = Object.keys(SCHEMA.dict ?? {}).filter((key) => isVolatilePath([key]));
+    const compositionOnly = Object.keys(SCHEMA.dict ?? {}).filter((key) => !isVolatilePath([key]));
+    // `enabled` / `path` / `ledger` / `transport` 是组合入口的事，只读展示。
+    expect(compositionOnly).toEqual(["enabled", "transport", "path", "ledger"]);
 
-    const declared = manifest().groups.flatMap((g) => g.fields.map((f) => f.path.join(".")));
-    const top = (path: string) => path.split(".")[0]!;
-    const covered = new Set(declared.map(top));
-    // `enabled` / `path` / `ledger` / `transport` are composition-entry concerns
-    // shown read-only, so they are deliberately in the manifest but not the schema.
-    const compositionOnly = new Set(["enabled", "path", "ledger", "transport"]);
-    const ungrouped = Object.keys(resolved).filter((key) => !covered.has(key) && !compositionOnly.has(key));
+    const groupsOf = new Map<string, Set<string>>();
+    for (const group of manifest().groups) {
+      for (const field of group.fields) {
+        const top = field.path[0]!;
+        const seen = groupsOf.get(top) ?? new Set<string>();
+        seen.add(group.id);
+        groupsOf.set(top, seen);
+      }
+    }
+
+    const ungrouped = live.filter((key) => !groupsOf.has(key));
+    // 反过来也拦一道：清单里不能出现 schema 没有的顶层字段（那会渲染成一个写不进去的控件）。
+    const unknown = [...groupsOf.keys()].filter((key) => !(key in (SCHEMA.dict ?? {})));
+    // 「恰好一次」：同一个可热改字段不能被拆到两个分组里，否则两个控件会互相覆盖。
+    const split = [...groupsOf].filter(([key, groups]) => live.includes(key) && groups.size > 1).map(([key]) => key);
+
     expect(ungrouped).toEqual([]);
+    expect(unknown).toEqual([]);
+    expect(split).toEqual([]);
   });
 });
 
 describe("panel: registration", () => {
   it("registers the manifest with the Void entry when its service is present", async () => {
-    const settings = new FakeSettings();
     const registered = new Map<string, unknown>();
-    const ctx = await bootControl({ settings, withControllers: true });
+    const ctx = await bootControl({ withControllers: true });
 
     // Stand in for void-entry's service: the plugin must register through it
     // without importing it, which is what keeps the two packages decoupled.

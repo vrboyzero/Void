@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Context } from "@deepseek-ai/cordis";
 import Loader from "@deepseek-ai/cordis-plugin-loader";
@@ -8,10 +11,15 @@ import type { DelegationTeamMetadata } from "../src/team.js";
 const ACTIVE = 2;
 
 let context: Context | undefined;
+let dataDir: string | undefined;
 
 afterEach(async () => {
   await context?.fiber.dispose();
   context = undefined;
+  if (dataDir !== undefined) {
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    dataDir = undefined;
+  }
 });
 
 function findFiber(ctx: Context, pluginName: string) {
@@ -38,6 +46,10 @@ const fiveLaneTeam: DelegationTeamMetadata = {
 };
 
 async function boot(): Promise<Context> {
+  // 军团服务缺 `dataDir` 时会按 `DSH_PROFILE` / `DSH_HOME` 回落到**开发者真实的数据根**，
+  // 把运行记录与通知写进去（2026-09-26 实测：跑一次本文件就往 `~/.dsh/void-data/web` 落 3 条）。
+  // 所以每个用例自带一个临时数据根，绝不依赖回落。
+  dataDir = await mkdtemp(join(tmpdir(), "void-team-composition-"));
   const ctx = new Context();
   await ctx.plugin(Loader);
   const modules = new Map<string, unknown>([["@void/void-legion/service", VoidLegion]]);
@@ -48,7 +60,7 @@ async function boot(): Promise<Context> {
       return modules.get(specifier);
     },
   } as unknown as NonNullable<typeof ctx.loader.internal>;
-  await ctx.loader.create({ name: "@void/void-legion/service" });
+  await ctx.loader.create({ name: "@void/void-legion/service", config: { dataDir } });
   await ctx.loader.await();
   return ctx;
 }

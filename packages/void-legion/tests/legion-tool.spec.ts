@@ -16,9 +16,16 @@ import type { DelegationTeamMetadata } from "../src/team.js";
 
 let context: Context | undefined;
 
+/** `boot()` 自建的隔离数据根；用例显式传了 `dataDir` 时保持 undefined（那份由用例自己清）。 */
+let scratchDataDir: string | undefined;
+
 afterEach(async () => {
   await context?.fiber.dispose();
   context = undefined;
+  if (scratchDataDir !== undefined) {
+    await rm(scratchDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    scratchDataDir = undefined;
+  }
 });
 
 const threeLaneTeam: DelegationTeamMetadata = {
@@ -100,7 +107,14 @@ const managerAndSubordinate: Array<[string, { id: string; superiors: readonly st
   ["xiaoma", { id: "xiaoma", superiors: ["xiaobei"], subordinates: [] }],
 ];
 
-async function boot(config?: Record<string, unknown>): Promise<Context> {
+async function boot(config: Record<string, unknown> = {}): Promise<Context> {
+  // 没显式给 `dataDir` 的用例也必须有自己的数据根：军团服务缺它时会按 `DSH_PROFILE` /
+  // `DSH_HOME` 回落到**开发者真实的数据根**，把运行记录与通知写进去（2026-09-26 实测：
+  // 跑一次本文件就往 `~/.dsh/void-data/web` 落 9 条）。显式传了的那几个用例自己清目录。
+  if (config.dataDir === undefined) {
+    scratchDataDir = await mkdtemp(join(tmpdir(), "void-legion-tool-scratch-"));
+    config = { ...config, dataDir: scratchDataDir };
+  }
   const ctx = new Context();
   await ctx.plugin(Loader);
   const modules = new Map<string, unknown>([
@@ -119,7 +133,7 @@ async function boot(config?: Record<string, unknown>): Promise<Context> {
   } as unknown as NonNullable<typeof ctx.loader.internal>;
   await ctx.loader.create({ name: "@deepseek-ai/dsh-system-prompt" });
   await ctx.loader.create({ name: "@deepseek-ai/dsh-tools" });
-  await ctx.loader.create({ name: "@void/void-legion/service", ...(config === undefined ? {} : { config }) });
+  await ctx.loader.create({ name: "@void/void-legion/service", config });
   await ctx.loader.create({ name: "@void/void-legion/tool" });
   await ctx.loader.create({ name: "@void/void-legion/run-tool" });
   await ctx.loader.await();

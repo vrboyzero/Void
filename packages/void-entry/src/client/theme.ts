@@ -13,6 +13,22 @@
 /** 次要文字。浅色下 5.8:1，可用于需要阅读的内容（英文操作名走这一级）。 */
 export const TEXT_SECONDARY = 'var(--dsw-alias-label-secondary)';
 
+/** 正文文字。深色下 `#f9fafb`。用于需要**显式指定**而非继承文字的场合。 */
+export const TEXT_PRIMARY = 'var(--dsw-alias-label-primary)';
+
+/**
+ * 不透明表面。深色下 `#232324`（`bg-layer-1`）。
+ *
+ * 存在的理由只有一个：**原生 `<select>` 的弹出列表不吃外层的 `color: inherit`。**
+ * `<option>` 用系统默认底色（白），文字却继承了外层的浅色，于是深色主题下白字白底、
+ * 除当前项外全看不见——2026-09-26 用户截图报的就是这个。
+ * 所以下拉的底色与文字色必须在 `<option>` 上**显式**给，走令牌才随主题走。
+ *
+ * 注意 `SURFACE_HOVER`（`interactive-bg-hover` = `#ffffff14`）是**半透明**的，
+ * 拿来当弹出层底色会透出后面的内容，不能用在这里。
+ */
+export const SURFACE_PANEL = 'var(--dsw-alias-bg-layer-1)';
+
 /**
  * 没有第三档弱化色。
  *
@@ -24,6 +40,23 @@ export const TEXT_SECONDARY = 'var(--dsw-alias-label-secondary)';
 
 /** 卡片与分区的边框。 */
 export const BORDER = 'var(--dsw-alias-border-l2)';
+
+/**
+ * 品牌强调色。深色下 **`#f9fafb`（近白）**。
+ *
+ * **只适合做描边、下划线、图标这类细线强调，不要当填充。** 2026-09-26 拿它当「加载模组」
+ * 按钮的底色，渲出来就是一块白板、与面板色调完全不合（用户截图报的）。按钮填充走
+ * {@link BUTTON_FILL}。
+ */
+export const BRAND = 'var(--dsw-alias-brand-primary)';
+
+/**
+ * 浮起按钮的填充色。深色下 `#43454a`。
+ *
+ * 配 {@link TEXT_PRIMARY} 用，对比度约 8.9:1。这是宿主给「普通按钮」准备的那一档，
+ * 与面板底色同族，不会像 `brand-primary` 那样跳出来。
+ */
+export const BUTTON_FILL = 'var(--dsw-alias-button-elevated-fill)';
 
 /** 更淡的内部边框（输入框、代码块）。 */
 export const BORDER_SOFT = 'var(--dsw-alias-border-l1)';

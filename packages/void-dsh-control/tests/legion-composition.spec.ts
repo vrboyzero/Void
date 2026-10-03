@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { bootControl, disposeContexts } from "./support/boot.js";
-import { FakeSettings } from "./support/fake-settings.js";
+import { bootControl, disposeContexts, parsedConfig } from "./support/boot.js";
+import { writeSection } from "./support/fake-settings.js";
 
 /**
  * P6g 的组合面验收：军团终态投递必须**响应式**挂载、**实时**读开关。
@@ -17,7 +17,6 @@ import { FakeSettings } from "./support/fake-settings.js";
  */
 
 const SECRET_ENV = "VOID_DSH_CONTROL_SPEC_LEGION_SECRET";
-const NAMESPACE = "dsh-agent-control";
 const WEBHOOK = "https://hooks.example.test/void";
 
 interface Sent {
@@ -136,9 +135,7 @@ describe("composition: legion run-terminal delivery", () => {
   it("follows the panel switch without a restart", async () => {
     process.env[SECRET_ENV] = "s3cret";
     const sent = stubFetch();
-    const settings = new FakeSettings();
     const ctx = await bootControl({
-      settings,
       config: { callback: { ...CALLBACK, includeLegionRuns: false } },
     });
 
@@ -154,7 +151,9 @@ describe("composition: legion run-terminal delivery", () => {
     expect(legion.patches).toHaveLength(0);
 
     // 面板把整份 callback 写进设置（顶层整体替换，正是面板提示里警告的那件事）。
-    settings.update(NAMESPACE, { callback: { ...CALLBACK, includeLegionRuns: true } });
+    // 0.2.0 里这次写入就是就地更新插件持有的 `Volatile` 引用：适配器每次终态都重读
+    // `source.live().callback`，所以**下一次**终态就该发出去，不用重挂也不用重启。
+    writeSection(ctx, parsedConfig(ctx), { callback: { ...CALLBACK, includeLegionRuns: true } });
     ctx.emit("legion/run-terminal", terminalEvent("run-2#1"));
     await waitFor(() => sent.length > 0);
 

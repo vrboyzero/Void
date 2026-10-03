@@ -13,6 +13,22 @@ import { z } from "zod";
 /** MCP-facing protocol version. Bumped when tool shapes change incompatibly. */
 export const CONTROL_PROTOCOL_VERSION = "1.0";
 
+/**
+ * Settings namespace the control panel reads and writes.
+ *
+ * **dsh 0.2.0 起它必须等于组合入口的 id，不再是插件自定义的名字。** 0.1.x 用
+ * `ctx.settings.installSection()` 让插件自己声明命名空间；0.2.0 删掉了那个 API，
+ * 改由宿主从入口的 `Config` 派生表单，而 `describe()` 的键就是 `entry.options.id`。
+ *
+ * 放在这里而不是 `index.ts`，是因为**两个模块都要用它**：`index.ts` 监听
+ * `settings/document-updated` 要按它过滤，`panel.ts` 把它写进清单给面板。放在任一侧
+ * 都会让另一侧要么循环依赖、要么各写一份字符串——而两份漂移的表现正是「面板能渲染、
+ * 却永远写不进去（点保存没反应）」，排查成本极高。
+ *
+ * 必须与 `cordis.patch.yml` 里那条 `id:` 一致。
+ */
+export const SETTINGS_NAMESPACE = "void-dsh-control";
+
 /** Hard bounds applied before any host call. Callers cannot raise these. */
 export const LIMITS = {
   /** Maximum characters in one message `text`. */
