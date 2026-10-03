@@ -154,6 +154,20 @@ dsh plugin --profile web add "<dist>\<tarball>"
 是 profile 的 `patchReload === "live"`（`web` 是 `live`，`acp`/`headless`/`sdk` 是 `startup`）。
 实测运行中写 `disabled: true`，2 秒内端点 404。
 
+**别把「门面插件」塞进另一个门面 profile 的 bundles。** 包一旦被 dsh 当作 bundle，它就可能自带
+一整套 profile 组合（`package.json` 的 `dsh.bundle.patch`）。实测：把 `@deepseek-harness-tui/dsh-tui`
+（自称「dsh-base 之上的**交互式终端门面**」，patch 里写着 rows 会**按 id 覆盖 base 行**）加进 `web`
+的 `dsh.profile.bundles`，`dsh web` 起来的就是 **TUI 而不是 web 服务**——**token 那一行永远不会打印**
+（web app 压根没启动），终端也被 TUI 占住，人只会以为插件坏了。它的正确用法是**装进它自己的 profile**
+（`dsh plugin --profile dsh-tui add …`；`dsh-tui` 与 `dsh --profile dsh-tui` 等价），两者互不干扰。
+
+> 判断办法：看 `package.json` 有没有 `dsh.bundle`。**有 = 可能改门面，别随手塞进别人的 profile。**
+> `void-soul` 这类是普通插件（只献服务、面板、提示词段），塞进 `web` 是对的。
+>
+> 顺带：这类 TUI 的逃生键是 **`Ctrl+C` 连按两下**（第一次取消当前任务，再按一次才强制退出，见它的
+> `dsh-adapter/channel/input-actions.js` 注释）；README 不写这条。出不来就关掉终端窗口，或另开终端
+> `Get-Process node | Where-Object { $_.CommandLine -like '*dsh-tui*' } | Stop-Process -Force`。
+
 **`pnpm -r test` 之外还要真机验证。** 测试替身是自己写的，会跟着一起错。
 
 ## 4. 依赖陷阱
