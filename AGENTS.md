@@ -30,8 +30,11 @@ dsh --version                                                                   
 > 模块的**具名导出**（图标从 `Icon<字形>14/16` 改名成 `Icon<字形>Regular/Medium`）。详见 §2.1。
 
 仓库 devDependencies 里的 `@deepseek-ai/dsh-*@0.1.0-rc.6` 只用于构建测试，**不是部署对象**。
-`参考项目/deepseek-harness-dsh-v0.2.0-rc.1/` 是官方源码快照 **0.2.0-rc.1**（与当前宿主同版）；
-`deepseek-harness-master/` 是旧快照 **0.1.0-rc.5**——**版本线不同**。
+`参考项目/` 下有两份官方源码快照：**`deepseek-harness-dsh-v0.2.0-rc.2/`（与当前宿主同版）**
+和 **`deepseek-harness-dsh-v0.1.7-rc.2/`**（上一版）。**两份都值得留**——查「宿主什么时候改的」
+就差这一份，2026-10-03 核 `ShellExecutor` 的 `run` 就是靠两版对照定位的（见 §3）。
+> 2026-10-03 核过：`参考项目/deepseek-harness-dsh-v0.2.0-rc.1/` 与 `参考项目/deepseek-harness-master/`
+> **两个路径都不存在**（旧笔记里的写法已作废，别再照它找）。
 
 **dsh 大版本升级后，第一件事查所有 peer 范围。** 0.2.0 起宿主逐包检查 `peerDependencies` 里的
 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`，不满足的包**整包不加载**，只在 stderr 留一行
@@ -168,6 +171,20 @@ dsh plugin --profile web add "<dist>\<tarball>"
 > `dsh-adapter/channel/input-actions.js` 注释）；README 不写这条。出不来就关掉终端窗口，或另开终端
 > `Get-Process node | Where-Object { $_.CommandLine -like '*dsh-tui*' } | Stop-Process -Force`。
 
+**包装宿主服务时，别用 `if (!service?.method) return;` 静默跳过。** 宿主改掉一个服务的方法名
+**不会报错**——包装装不上，那道门禁就没了，而且一声不响。2026-10-03 实测：`void-soul` 的底层
+shell 门禁包的是 `shell.run` / `shell.start`，而 `ShellExecutor`（快照 `v0.1.7-rc.2` 与 `v0.2.0-rc.2`
+都一样）**只有 `resolve` + `execute`**——`run` 在 alpha.2 还有（当时的探针断言过 `typeof shell?.run
+=== 'function'` 并通过），之后被宿主去掉，`plugin.ts` 里那句 `if (!shell?.run) return;` 于是把一道
+**安全门禁变成了空操作**，直到查执行面才发现。
+
+> **判据**：包装对象上方法不存在时，**要么抛、要么至少留一条日志**——静默 return 等于对外宣称
+> 「门禁已装」而实际没有。
+>
+> **测试替身要照真实服务面的形状写。** 宿主自己的测试里 `run` / `start` 也只是文件内的局部辅助
+> 函数（`async function run(x: { execute(spec)… }, spec)`），**不是服务方法**——照抄它就会写出一个
+> 自带 `run` 的假服务，测试全绿而门禁从来没装上。这是「测试替身跟着一起错」最贵的一次。
+
 **`pnpm -r test` 之外还要真机验证。** 测试替身是自己写的，会跟着一起错。
 
 ## 4. 依赖陷阱
@@ -241,7 +258,8 @@ React 的 value tracker 吃掉，需要时用真实键盘输入）。
 
 ## 9. 官方文档在哪
 
-`deepseek-harness-master/`，**注意版本线不同**（§1）：
+`参考项目/deepseek-harness-dsh-v0.2.0-rc.2/`（**与当前宿主同版**；查旧行为用同级的
+`deepseek-harness-dsh-v0.1.7-rc.2/`）：
 
 | 想知道 | 读 |
 |---|---|
