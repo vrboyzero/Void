@@ -2,7 +2,7 @@ import { createElement as h, useCallback, useEffect, useRef, useState } from 're
 import type { Context } from './context-types.ts'
 import { registerVoidAgents } from './agents-panel.js'
 import { openSession } from './session-jump.js'
-import { createVoidWidgetsService, parseFacetVersionPayload, readOnlyWidgetLines, type VoidWidgetsService } from './widgets.js'
+import { createVoidWidgetsService, parseFacetVersionPayload, readOnlyWidgetLines, type ReadOnlyWidgetNode, type VoidWidgetsService } from './widgets.js'
 import {
   Button,
   DisclosureRow,
@@ -28,7 +28,8 @@ import { ConnectBlock } from './connect.js'
 import { TEXT_SECONDARY, BORDER, WARN, WARN_SURFACE, ROW_TITLE_CLASS, ensureStyles } from './theme.js'
 import { draftOps, editDraft, isDirty, saveBlockers, shownValue, type Draft } from './draft.js'
 import { readonlyText } from './display.js'
-import { VOID_REQUEST_HEADER, VoidDetails, type DetailViewManifest } from './details.js'
+import { VOID_REQUEST_HEADER, VoidDetails, fetchJson, type DetailViewManifest } from './details.js'
+import { postFacetSelection } from './api.js'
 import { VoidNotifications, type NotificationSourceManifest } from './notifications.js'
 import {
   ChoicesField,
@@ -234,8 +235,71 @@ function summarize(manifest: PanelManifest, view: NamespaceView | undefined, gro
 
 // ── 面板 ───────────────────────────────────────────────────────────────────
 
+/**
+ * 读「当前角色」那一栏（各档案装着的模组）。
+ *
+ * 清空角色之后必须重读，否则界面上还挂着刚被清掉的那个名字。读不动时给空表：
+ * 那一栏宁可不显示，也不显示已经过期的值。**不抛**——网络失败与 HTTP 非 200 都由 `fetchJson` 收敛，
+ * 响应体读不出来也与成败无关（见 `parseFacetVersionPayload` 的容错）。
+ */
+async function loadFacetVersions(): Promise<readonly ReadOnlyWidgetNode[]> {
+  const outcome = await fetchJson('/void/api/facet-versions', { headers: { accept: 'application/json' } })
+  return outcome.ok ? parseFacetVersionPayload(outcome.value) : []
+}
+
+/** 面板开场要用的两块数据。 */
+interface Overview {
+  plugins: PluginState[]
+  panels: Record<string, PanelManifest>
+  details: DetailViewManifest[]
+  notifications: NotificationSourceManifest[]
+}
+
+/**
+ * 读面板开场要用的两块数据：插件清单，以及各插件的面板清单与业务视图目录。
+ *
+ * 单独抽出来是为了**把失败如实带回去**。原先这里是一条
+ * `Promise.all(...).catch(() => setPlugins([]))`：服务端连不上时面板会写「0 个插件已安装」
+ * ——看起来像什么都没装，而不是「读不到」。**报一个自己都不确定的结果，比报错难查得多。**
+ *
+ * 两道防线都在 `fetchJson` 里：网络异常收敛成 `{ok:false}`（**不抛**），且 **HTTP 非 200 也算失败**
+ * ——少了后一道，一个错误页喂给 `json()` 只会得到空对象，于是照样被当成「一个插件都没有」，
+ * 正是要修的那个症状。
+ */
+async function loadOverview(): Promise<{ ok: true; value: Overview } | { ok: false; message: string }> {
+  const [status, panels] = await Promise.all([
+    fetchJson<{ plugins?: PluginState[] }>('/void/api/status', { headers: { accept: 'application/json' } }),
+    fetchJson<{
+      panels?: Record<string, PanelManifest>
+      details?: DetailViewManifest[]
+      notifications?: NotificationSourceManifest[]
+    }>('/void/api/panels', { headers: { accept: 'application/json' } }),
+  ])
+  if (!status.ok) return status
+  if (!panels.ok) return panels
+
+  // 字段缺了就按「没有」处理：少画一块总比整栏崩掉强。这一步的容错与过去一致。
+  return {
+    ok: true,
+    value: {
+      plugins: status.value?.plugins ?? [],
+      panels: panels.value?.panels ?? {},
+      // 业务视图的目录由 host 侧给出：客户端不认识任何具体业务 id。
+      details: panels.value?.details ?? [],
+      notifications: panels.value?.notifications ?? [],
+    },
+  }
+}
+
 function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessionId: string) => boolean | Promise<boolean> }): React.ReactElement {
   const [plugins, setPlugins] = useState<PluginState[] | null>(null)
+  /**
+   * 插件清单没读出来的原因。
+   *
+   * 与 `plugins === null`（**还在读**）分开：一个是「等着」，一个是「读不到」。过去两者
+   * 都落到「0 个插件已安装」——那是在替宿主断言一件我们并不知道的事。
+   */
+  const [pluginsError, setPluginsError] = useState<string | null>(null)
   const [manifests, setManifests] = useState<Record<string, PanelManifest>>({})
   const [detailViews, setDetailViews] = useState<DetailViewManifest[]>([])
   // 通知来源的目录同样由 host 侧给出（§16.2 L9 第五条）：面板不硬编码任何来源 id。
@@ -273,28 +337,24 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([
-      fetch('/void/api/status').then((r) => r.json() as Promise<{ plugins?: PluginState[] }>),
-      fetch('/void/api/panels').then((r) => r.json() as Promise<{ panels?: Record<string, PanelManifest>; details?: DetailViewManifest[]; notifications?: NotificationSourceManifest[] }>),
-    ])
-      .then(([status, panels]) => {
-        if (cancelled) return
-        const list = status.plugins ?? []
-        setPlugins(list)
-        setManifests(panels.panels ?? {})
-        // 业务视图的目录由 host 侧给出：客户端不认识任何具体业务 id。
-        setDetailViews(panels.details ?? [])
-        setNotificationSources(panels.notifications ?? [])
-        setOpenPlugin(list.find((p) => p.toggleable)?.id ?? null)
-      })
-      .catch(() => {
-        if (!cancelled) setPlugins([])
-      })
+    void loadOverview().then((outcome) => {
+      if (cancelled) return
+      if (!outcome.ok) {
+        // 读不到就说读不到。`plugins` 留在 null（不是空数组），状态条才不会写「0 个插件已安装」。
+        setPluginsError(outcome.message)
+        return
+      }
+      setPluginsError(null)
+      setPlugins(outcome.value.plugins)
+      setManifests(outcome.value.panels)
+      setDetailViews(outcome.value.details)
+      setNotificationSources(outcome.value.notifications)
+      setOpenPlugin(outcome.value.plugins.find((p) => p.toggleable)?.id ?? null)
+    })
     void refreshViews()
-    void fetch('/void/api/facet-versions')
-      .then((response) => response.ok ? response.json() : { versions: [] })
-      .then((payload) => { if (!cancelled) setReadOnlyRows(parseFacetVersionPayload(payload)) })
-      .catch(() => { if (!cancelled) setReadOnlyRows([]) })
+    void loadFacetVersions().then((rows) => {
+      if (!cancelled) setReadOnlyRows(rows)
+    })
     return () => {
       cancelled = true
     }
@@ -395,6 +455,32 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
 
   const list = plugins ?? []
   const toggleable = list.filter((p) => p.toggleable)
+  /**
+   * 清空一份档案已保存的角色。
+   *
+   * 失败**必须说出来**：这里过去是一串没有 `catch` 的 `fetch`，网络一抖就什么也不发生
+   * ——没有错误、没有提示，人只会以为「清空成功了」，而下一轮装配照样装上旧模组。
+   * 仓库里那句「一个点了没反应的链接比不画更糟」说的就是这个。
+   *
+   * 请求本身走 `postFacetSelection`（`api.ts` 里已经写好的契约：网络异常收敛成
+   * `{ok:false}`，**不抛**），不再在这里手搓一遍。
+   */
+  const clearFacet = useCallback(async (agentId: string, expectedRevision: number) => {
+    setError(null)
+    setBusy(`facet:${agentId}`)
+    try {
+      const outcome = await postFacetSelection({ agentId, facetId: null, expectedRevision })
+      if (!outcome.ok) {
+        setError(`清空已保存角色没成功：${outcome.error ?? '宿主没有给出原因'}`)
+        return
+      }
+      // 清空之后那一栏显示的就是各档案当前的模组：不重读的话界面上还挂着旧名字。
+      setReadOnlyRows(await loadFacetVersions())
+    } finally {
+      setBusy(null)
+    }
+  }, [])
+
   const allEnabled = toggleable.length > 0 && toggleable.every((p) => p.enabled)
   const anyEnabled = toggleable.some((p) => p.enabled)
   const filtered =
@@ -411,21 +497,24 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
   return h('div', { 'data-void-entry': '', style: { display: 'flex', flexDirection: 'column' } },
     readOnlyRows.length > 0
       ? h('div', { 'data-void-readonly-widgets': '', style: { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 } },
-          ...readOnlyRows.map((row) => h('section', { key: row.id, 'data-widget-id': row.id },
-            h('div', { style: { fontSize: 13, marginBottom: 4 } }, row.title),
-            ...row.lines.map((line) => h('p', { key: line, style: { color: TEXT_SECONDARY, fontSize: 12, margin: 0 } }, line)),
-            row.agentId && row.selectionRevision !== undefined
-              ? h('button', {
-                  type: 'button',
-                  'data-clear-facet': row.agentId,
-                  onClick: () => fetch('/void/api/facet-selection', {
-                    method: 'POST',
-                    headers: MUTATION_HEADERS,
-                    body: JSON.stringify({ agentId: row.agentId, facetId: null, expectedRevision: row.selectionRevision }),
-                  }).then(() => fetch('/void/api/facet-versions').then((response) => response.json()).then((payload) => setReadOnlyRows(parseFacetVersionPayload(payload)))),
-                }, '清空已保存角色')
-              : null,
-          )),
+          ...readOnlyRows.map((row) => {
+            // 收进局部常量：下面那个 `onClick` 闭包里，TS 不会保留对 `row.agentId` 的收窄。
+            const agentId = row.agentId
+            const expectedRevision = row.selectionRevision
+            const clearing = agentId !== undefined && busy === `facet:${agentId}`
+            return h('section', { key: row.id, 'data-widget-id': row.id },
+              h('div', { style: { fontSize: 13, marginBottom: 4 } }, row.title),
+              ...row.lines.map((line) => h('p', { key: line, style: { color: TEXT_SECONDARY, fontSize: 12, margin: 0 } }, line)),
+              agentId !== undefined && expectedRevision !== undefined
+                ? h('button', {
+                    type: 'button',
+                    'data-clear-facet': agentId,
+                    disabled: clearing,
+                    onClick: () => { void clearFacet(agentId, expectedRevision) },
+                  }, clearing ? '清空中…' : '清空已保存角色')
+                : null,
+            )
+          }),
         )
       : null,
     // ── 状态条：计数 + 整套开关，压成一行，把纵向空间让给配置 ─────────────
@@ -441,10 +530,15 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
     },
       h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 } },
         h(StateDot, {
-          state: plugins === null ? 'ongoing' : list.length > 0 ? 'done' : 'idle',
+          state: plugins !== null ? (list.length > 0 ? 'done' : 'idle') : pluginsError !== null ? 'error' : 'ongoing',
           size: 8,
         }),
-        h('span', null, plugins === null ? '正在读取…' : `${list.length} 个插件已安装`),
+        h('span', null,
+          plugins !== null
+            ? `${list.length} 个插件已安装`
+            : pluginsError !== null
+              ? '读不到插件列表'
+              : '正在读取…'),
       ),
       h('span', { style: { flex: 1 } }),
       list.length > 0
@@ -479,7 +573,9 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
       : null,
 
     plugins === null
-      ? h(EmptyHint, { text: '正在读取当前 profile 的 Void 插件…' })
+      ? pluginsError !== null
+        ? h(EmptyHint, { text: `读不到插件列表：${pluginsError}` })
+        : h(EmptyHint, { text: '正在读取当前 profile 的 Void 插件…' })
       : list.length === 0
         ? h(EmptyHint, {
             text: '当前 profile 还没有安装任何 Void 插件。用 dsh plugin add 安装后会出现在这里。',

@@ -72,3 +72,34 @@ describe("void-entry notification client", () => {
     });
   });
 });
+
+/**
+ * 与 `details.spec.ts` 同一份契约：**网络层失败收敛成结果，不往外抛。**
+ *
+ * 通知栏的调用方同样会置 busy、await、再清 busy，异常一穿出去，那一栏就永久停在加载态。
+ */
+describe("void-entry notification client: 网络层失败收敛成结果", () => {
+  function stubFetchRejects(message = "Failed to fetch"): void {
+    vi.stubGlobal("fetch", async () => {
+      throw new TypeError(message);
+    });
+  }
+
+  it("读通知：连不上时回 { ok: false }，不往外抛", async () => {
+    stubFetchRejects();
+    await expect(loadNotifications()).resolves.toMatchObject({ ok: false });
+  });
+
+  it("标记已读：连不上时回 { ok: false }，不往外抛", async () => {
+    stubFetchRejects();
+    await expect(markNotificationsRead("void-legion:runs", ["run#1"])).resolves.toMatchObject({ ok: false });
+  });
+
+  it("失败原因里带上底层那句话", async () => {
+    stubFetchRejects("connection reset by peer");
+    const outcome = await loadNotifications();
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.message).toMatch(/connection reset by peer/);
+  });
+});

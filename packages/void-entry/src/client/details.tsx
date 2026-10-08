@@ -119,6 +119,53 @@ export interface DetailBody {
 
 type Result<T> = { ok: true; value: T } | { ok: false; message: string }
 
+/**
+ * 发起一次请求，把**网络层**的失败也收成「值或原因」。
+ *
+ * `fetch` 只在**拿到响应**时才返回；连不上、连接被重置、服务端进程已经死了，它都是**抛出**。
+ * 而调用方一律是「置 busy → await → 清 busy」，异常一旦穿出去，清 busy 那句就轮不到执行——
+ * 面板**永远**停在「正在读取…」，而且屏幕上不给任何解释。一个说清原因的失败要好查得多。
+ *
+ * 契约与 `api.ts` 的 `postJson` 一致（网络异常收敛成 `{ok:false}`，不往外抛），
+ * 只是这一侧先前漏了这一步。
+ *
+ * @param input - 请求地址。
+ * @param init - 请求参数；改动类请求要带 `VOID_REQUEST_HEADER`。
+ * @returns 响应，或**没拿到响应**的原因。
+ */
+export async function fetchResult(input: string, init?: RequestInit): Promise<Result<Response>> {
+  try {
+    return { ok: true, value: await fetch(input, init) }
+  } catch (error) {
+    // 原文要留着：「连不上」和「服务端说不行」在界面上必须看得出区别。
+    const detail = error instanceof Error ? error.message : String(error)
+    return { ok: false, message: `请求没有发出去或没有收到响应：${detail}` }
+  }
+}
+
+/**
+ * 取一份 JSON。三道判据都要过，任何一道不过都收成「原因」而**不抛**：
+ * 网络层失败、**HTTP 非 200**、响应体读不出来。
+ *
+ * 与 {@link fetchResult} 分工：那个只管**有没有拿到响应**，这个再管**响应本身成不成立**。
+ * 少一道就会出事——例如拿一个 500 的错误页去 `json()`，只会得到空对象，然后被当成
+ * 「一个都没有」，面板上写「0 个插件已安装」，看起来像什么都没装。
+ *
+ * 200 但响应体不是 JSON 时给 `undefined`：状态码说成功就是成功，读不出体由调用方
+ * 按「缺字段」容错。
+ *
+ * @param input - 请求地址。
+ * @param init - 请求参数。
+ * @returns 解析后的载荷，或没拿到 / 不成立的原因。
+ */
+export async function fetchJson<T = unknown>(input: string, init?: RequestInit): Promise<Result<T>> {
+  const response = await fetchResult(input, init)
+  if (!response.ok) return response
+  if (!response.value.ok) return { ok: false, message: `HTTP ${response.value.status}` }
+  const payload = await response.value.json().catch(() => undefined)
+  return { ok: true, value: payload as T }
+}
+
 /** 把一次响应收成「值或原因」：失败时把服务端写的原因原样带出来，不吞成 HTTP 码。 */
 async function readResult<T>(response: Response): Promise<Result<T>> {
   let payload: unknown
@@ -139,8 +186,9 @@ export async function loadDetailList(
   query?: string,
 ): Promise<Result<{ title: string; items: DetailItem[]; actions: DetailAction[]; search?: DetailSearch; note?: string }>> {
   const suffix = query === undefined || query === '' ? '' : `&q=${encodeURIComponent(query)}`
-  const response = await fetch(`/void/api/detail?view=${encodeURIComponent(view)}${suffix}`)
-  const outcome = await readResult<{ title?: unknown; items?: unknown; actions?: unknown; search?: unknown; note?: unknown }>(response)
+  const response = await fetchResult(`/void/api/detail?view=${encodeURIComponent(view)}${suffix}`)
+  if (!response.ok) return response
+  const outcome = await readResult<{ title?: unknown; items?: unknown; actions?: unknown; search?: unknown; note?: unknown }>(response.value)
   if (!outcome.ok) return outcome
   // 缺字段按空列表处理：面板崩掉比少一行难查得多，而「空」在界面上是看得出来的。
   const search = outcome.value.search as DetailSearch | undefined
@@ -157,8 +205,9 @@ export async function loadDetailList(
 }
 
 export async function loadDetailItem(view: string, itemId: string): Promise<Result<{ detail: DetailBody }>> {
-  const response = await fetch(`/void/api/detail?view=${encodeURIComponent(view)}&itemId=${encodeURIComponent(itemId)}`)
-  const outcome = await readResult<{ detail?: unknown }>(response)
+  const response = await fetchResult(`/void/api/detail?view=${encodeURIComponent(view)}&itemId=${encodeURIComponent(itemId)}`)
+  if (!response.ok) return response
+  const outcome = await readResult<{ detail?: unknown }>(response.value)
   if (!outcome.ok) return outcome
   if (outcome.value.detail === undefined || outcome.value.detail === null) {
     return { ok: false, message: '服务端没有返回详情内容' }
@@ -172,12 +221,12 @@ export async function saveDetailItem(
   expectedRevision: number | string,
   changes: Record<string, unknown>,
 ): Promise<Result<{ detail: DetailBody }>> {
-  const response = await fetch('/void/api/detail', {
+  const response = await fetchResult('/void/api/detail', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', [VOID_REQUEST_HEADER]: '1' },
     body: JSON.stringify({ view, itemId, op: 'save', expectedRevision, changes }),
   })
-  return readResult<{ detail: DetailBody }>(response)
+  return response.ok ? readResult<{ detail: DetailBody }>(response.value) : response
 }
 
 /**
@@ -193,7 +242,7 @@ export async function actDetailItem(
   args: Record<string, unknown>,
   expectedRevision?: number | string,
 ): Promise<Result<{ detail: DetailBody }>> {
-  const response = await fetch('/void/api/detail', {
+  const response = await fetchResult('/void/api/detail', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', [VOID_REQUEST_HEADER]: '1' },
     body: JSON.stringify({
@@ -205,7 +254,7 @@ export async function actDetailItem(
       ...(expectedRevision === undefined ? {} : { expectedRevision }),
     }),
   })
-  return readResult<{ detail: DetailBody }>(response)
+  return response.ok ? readResult<{ detail: DetailBody }>(response.value) : response
 }
 
 /**
@@ -214,12 +263,13 @@ export async function actDetailItem(
  * 没有条目，所以没有详情可回：执行完由调用方重读列表。
  */
 export async function actView(view: string, actionId: string, args: Record<string, unknown>): Promise<Result<null>> {
-  const response = await fetch('/void/api/detail', {
+  const response = await fetchResult('/void/api/detail', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', [VOID_REQUEST_HEADER]: '1' },
     body: JSON.stringify({ view, op: 'act', actionId, args }),
   })
-  const outcome = await readResult<unknown>(response)
+  if (!response.ok) return response
+  const outcome = await readResult<unknown>(response.value)
   return outcome.ok ? { ok: true, value: null } : outcome
 }
 
@@ -602,16 +652,21 @@ export function VoidDetails(props: { views: DetailViewManifest[]; onOpenSession?
     setError(null)
     setNotice(null)
     setBusy(`list:${viewId}`)
-    const outcome = await loadDetailList(viewId, query)
-    setBusy(null)
-    if (!outcome.ok) {
-      setError(outcome.message)
-      return
+    try {
+      const outcome = await loadDetailList(viewId, query)
+      if (!outcome.ok) {
+        setError(outcome.message)
+        return
+      }
+      setLists((current) => ({ ...current, [viewId]: outcome.value.items }))
+      setViewActions((current) => ({ ...current, [viewId]: outcome.value.actions }))
+      setSearches((current) => ({ ...current, [viewId]: outcome.value.search }))
+      setListNotes((current) => ({ ...current, [viewId]: outcome.value.note }))
+    } finally {
+      // busy 必须**无条件**落回：漏掉一次，面板就永远停在「正在读取…」，而且不给任何解释。
+      // 读取辅助函数现在自己收敛网络失败（见 `fetchResult`），这一层是给意外抛出兜底的。
+      setBusy(null)
     }
-    setLists((current) => ({ ...current, [viewId]: outcome.value.items }))
-    setViewActions((current) => ({ ...current, [viewId]: outcome.value.actions }))
-    setSearches((current) => ({ ...current, [viewId]: outcome.value.search }))
-    setListNotes((current) => ({ ...current, [viewId]: outcome.value.note }))
   }, [])
 
   /**
@@ -630,17 +685,20 @@ export function VoidDetails(props: { views: DetailViewManifest[]; onOpenSession?
     setError(null)
     setNotice(null)
     setBusy(`item:${itemId}`)
-    const outcome = await loadDetailItem(viewId, itemId)
-    setBusy(null)
-    if (!outcome.ok) {
-      setError(outcome.message)
-      return
+    try {
+      const outcome = await loadDetailItem(viewId, itemId)
+      if (!outcome.ok) {
+        setError(outcome.message)
+        return
+      }
+      setItem({ view: viewId, itemId, body: outcome.value.detail })
+      // 换条目就丢掉上一份草稿：草稿属于某一条，跟着跑到另一条上是错的数据。
+      setDrafts({})
+      setAdditions({})
+      setActionArgs({})
+    } finally {
+      setBusy(null)
     }
-    setItem({ view: viewId, itemId, body: outcome.value.detail })
-    // 换条目就丢掉上一份草稿：草稿属于某一条，跟着跑到另一条上是错的数据。
-    setDrafts({})
-    setAdditions({})
-    setActionArgs({})
   }, [])
 
   const reload = useCallback(async () => {
@@ -705,18 +763,21 @@ export function VoidDetails(props: { views: DetailViewManifest[]; onOpenSession?
     setBusy('save')
     setError(null)
     setNotice(null)
-    // 栅是**读回来那一份**的 revision：期间别人改过就会被拒，而不是盖掉他的改动。
-    const outcome = await saveDetailItem(item.view, item.itemId, item.body.revision ?? 0, changes)
-    setBusy(null)
-    if (!outcome.ok) {
-      // 失败保留草稿：用户改的东西不能因为一次失败就没了。
-      setError(outcome.message)
-      return
+    try {
+      // 栅是**读回来那一份**的 revision：期间别人改过就会被拒，而不是盖掉他的改动。
+      const outcome = await saveDetailItem(item.view, item.itemId, item.body.revision ?? 0, changes)
+      if (!outcome.ok) {
+        // 失败保留草稿：用户改的东西不能因为一次失败就没了。
+        setError(outcome.message)
+        return
+      }
+      setItem({ view: item.view, itemId: item.itemId, body: outcome.value.detail })
+      setDrafts({})
+      setAdditions({})
+      setNotice('已保存')
+    } finally {
+      setBusy(null)
     }
-    setItem({ view: item.view, itemId: item.itemId, body: outcome.value.detail })
-    setDrafts({})
-    setAdditions({})
-    setNotice('已保存')
   }, [item, drafts, additions])
 
   const runAction = useCallback(async (action: DetailAction) => {
@@ -725,17 +786,20 @@ export function VoidDetails(props: { views: DetailViewManifest[]; onOpenSession?
     setBusy(`act:${action.id}`)
     setError(null)
     setNotice(null)
-    const outcome = await actDetailItem(item.view, item.itemId, action.id, args, item.body.revision)
-    setBusy(null)
-    if (!outcome.ok) {
-      setError(outcome.message)
-      return
+    try {
+      const outcome = await actDetailItem(item.view, item.itemId, action.id, args, item.body.revision)
+      if (!outcome.ok) {
+        setError(outcome.message)
+        return
+      }
+      setItem({ view: item.view, itemId: item.itemId, body: outcome.value.detail })
+      setNotice(`已执行：${action.label}`)
+      // 动作可能改掉列表里的状态（取消之后状态就变了，撤回之后这一条就不该再列出来），
+      // 顺手重读一遍列表（沿用已提交的检索词）；但当前这一条留着，用户可能还要看细节。
+      void openList(item.view, activeQueries[item.view])
+    } finally {
+      setBusy(null)
     }
-    setItem({ view: item.view, itemId: item.itemId, body: outcome.value.detail })
-    setNotice(`已执行：${action.label}`)
-    // 动作可能改掉列表里的状态（取消之后状态就变了，撤回之后这一条就不该再列出来），
-    // 顺手重读一遍列表（沿用已提交的检索词）；但当前这一条留着，用户可能还要看细节。
-    void openList(item.view, activeQueries[item.view])
   }, [item, actionArgs, activeQueries, openList])
 
   const runViewAction = useCallback(async (viewId: string, action: DetailAction) => {
@@ -743,17 +807,19 @@ export function VoidDetails(props: { views: DetailViewManifest[]; onOpenSession?
     setBusy(`view:${viewId}:${action.id}`)
     setError(null)
     setNotice(null)
-    const outcome = await actView(viewId, action.id, args)
-    if (!outcome.ok) {
+    try {
+      const outcome = await actView(viewId, action.id, args)
+      if (!outcome.ok) {
+        setError(outcome.message)
+        return
+      }
+      // 视图级动作没有详情可回：重读列表，新建出来的条目自然会出现在里面。
+      // 带上已提交的检索词，否则「新建完列表突然变回全量」会让人以为刚建的东西没进去。
+      await openList(viewId, activeQueries[viewId])
+      setNotice(`已执行：${action.label}`)
+    } finally {
       setBusy(null)
-      setError(outcome.message)
-      return
     }
-    // 视图级动作没有详情可回：重读列表，新建出来的条目自然会出现在里面。
-    // 带上已提交的检索词，否则「新建完列表突然变回全量」会让人以为刚建的东西没进去。
-    await openList(viewId, activeQueries[viewId])
-    setBusy(null)
-    setNotice(`已执行：${action.label}`)
   }, [actionArgs, activeQueries, openList])
 
   if (views.length === 0) return null

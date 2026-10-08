@@ -7,6 +7,7 @@ import {
   cellDraftKey,
   cellText,
   dirtyChanges,
+  fetchJson,
   loadDetailItem,
   loadDetailList,
   saveDetailItem,
@@ -319,5 +320,103 @@ describe("void-entry editable row tables", () => {
     });
     // 点了「加一行」又一格没填：不该凭空多出一条成员。
     expect(dirtyChanges(BODY_WITH_ROWS, {}, { members: 1 })).toEqual({});
+  });
+});
+
+/**
+ * 网络层失败（连不上、连接被重置、服务端进程已死）不是 HTTP 错误码：
+ * `fetch` 在**拿到响应**时才返回，拿不到就**抛出**。
+ *
+ * 不收敛的后果不是「多一条报错」，而是面板**永远卡在「正在读取…」**：调用方是
+ * 「置 busy → await → 清 busy」，异常一穿出来，清 busy 那句就轮不到执行，
+ * 而且屏幕上**不给任何解释**——比一个说清原因的失败难查得多。
+ *
+ * 契约与 `api.ts` 的 `postJson` 一致（那边注释里已写明理由），只是这一侧先前漏了。
+ */
+describe("void-entry detail client: 网络层失败收敛成结果", () => {
+  /** 让 `fetch` 像「连不上 / 连接被重置」那样拒绝，而不是回一个错误码。 */
+  function stubFetchRejects(message = "Failed to fetch"): void {
+    vi.stubGlobal("fetch", async () => {
+      throw new TypeError(message);
+    });
+  }
+
+  const VIEW = "void-legion:teams";
+
+  it("列表读取：连不上时回 { ok: false }，不往外抛", async () => {
+    stubFetchRejects();
+    await expect(loadDetailList(VIEW)).resolves.toMatchObject({ ok: false });
+  });
+
+  it("单条读取：连不上时回 { ok: false }，不往外抛", async () => {
+    stubFetchRejects();
+    await expect(loadDetailItem(VIEW, "demo-team")).resolves.toMatchObject({ ok: false });
+  });
+
+  it("保存：连不上时回 { ok: false }，不往外抛", async () => {
+    stubFetchRejects();
+    await expect(saveDetailItem(VIEW, "demo-team", 3, { memberLimit: 5 })).resolves.toMatchObject({ ok: false });
+  });
+
+  it("条目动作：连不上时回 { ok: false }，不往外抛", async () => {
+    stubFetchRejects();
+    await expect(actDetailItem(VIEW, "demo-team", "delete-member", {})).resolves.toMatchObject({ ok: false });
+  });
+
+  it("视图动作：连不上时回 { ok: false }，不往外抛", async () => {
+    stubFetchRejects();
+    await expect(actView(VIEW, "new-team", { teamId: "demo" })).resolves.toMatchObject({ ok: false });
+  });
+
+  it("失败原因里带上底层那句话，好让人看出是网络问题而不是服务端拒绝", async () => {
+    // 界面上只显示这一句：吞掉原文的话，「连不上」和「服务端说不行」就长得一样了。
+    stubFetchRejects("connection reset by peer");
+    const outcome = await loadDetailList(VIEW);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.message).toMatch(/connection reset by peer/);
+  });
+});
+
+/**
+ * `fetchResult` 只管**有没有拿到响应**，`fetchJson` 再管**响应本身成不成立**。
+ *
+ * 这两步分开是有原因的：少了后一步，一个 500 的错误页喂给 `json()` 只会得到空对象，
+ * 于是被当成「一个都没有」——面板上会写「0 个插件已安装」，看起来像什么都没装。
+ * **报一个自己都不确定的结果，比报错难查得多。**
+ */
+describe("void-entry detail client: fetchJson 的三道判据", () => {
+  it("成功时把 JSON 原样给出来", async () => {
+    stubFetch({ plugins: [{ id: "a" }] });
+    await expect(fetchJson("/void/api/status")).resolves.toEqual({ ok: true, value: { plugins: [{ id: "a" }] } });
+  });
+
+  it("连不上时回 { ok: false }，不往外抛", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await expect(fetchJson("/void/api/status")).resolves.toMatchObject({ ok: false });
+  });
+
+  it("**HTTP 非 200 也算失败**，不把错误页当成空数据", async () => {
+    // 这一条是最要紧的：宿主回 500 时响应体往往是 `{}` 或一段 HTML，
+    // 不核对状态码就会解析成空对象，然后被当成「一个插件都没有」。
+    stubFetch({}, false, 500);
+    const outcome = await fetchJson("/void/api/status");
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.message).toMatch(/500/);
+  });
+
+  it("200 但响应体不是 JSON 时给出 undefined，而不是抛", async () => {
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error("not json");
+      },
+    }));
+    // 状态码说成功就是成功；读不出体是另一回事，交给调用方按缺字段容错。
+    await expect(fetchJson("/void/api/status")).resolves.toEqual({ ok: true, value: undefined });
   });
 });

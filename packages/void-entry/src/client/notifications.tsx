@@ -16,7 +16,7 @@
  * @module @void/void-entry/src/client/notifications
  */
 import { createElement as h, useCallback, useEffect, useRef, useState } from 'react'
-import { VOID_REQUEST_HEADER } from './details.js'
+import { VOID_REQUEST_HEADER, fetchResult } from './details.js'
 import { BORDER, BORDER_SOFT, DANGER, TEXT_SECONDARY, WARN } from './theme.js'
 
 type Result<T> = { ok: true; value: T } | { ok: false; message: string }
@@ -67,8 +67,9 @@ async function readResult<T>(response: Response): Promise<Result<T>> {
 
 /** 读全部来源的通知（补读）。 */
 export async function loadNotifications(): Promise<Result<NotificationFeed>> {
-  const response = await fetch('/void/api/notifications', { headers: { accept: 'application/json' } })
-  const outcome = await readResult<NotificationFeed>(response)
+  const response = await fetchResult('/void/api/notifications', { headers: { accept: 'application/json' } })
+  if (!response.ok) return response
+  const outcome = await readResult<NotificationFeed>(response.value)
   if (!outcome.ok) return outcome
   return {
     ok: true,
@@ -86,12 +87,12 @@ export async function markNotificationsRead(
   source: string,
   ids: string[],
 ): Promise<Result<{ requested: number; marked?: number }>> {
-  const response = await fetch('/void/api/notifications', {
+  const response = await fetchResult('/void/api/notifications', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', [VOID_REQUEST_HEADER]: '1' },
     body: JSON.stringify({ op: 'read', source, ids }),
   })
-  return readResult<{ requested: number; marked?: number }>(response)
+  return response.ok ? readResult<{ requested: number; marked?: number }>(response.value) : response
 }
 
 /** 时间给人看：解析不出来就原样显示，不显示 `Invalid Date`。 */
@@ -165,13 +166,17 @@ export function VoidNotifications(props: { sources: NotificationSourceManifest[]
     async (item: NotificationItem) => {
       setNotice(null)
       setBusy(`${item.source}:${item.id}`)
-      const outcome = await markNotificationsRead(item.source, [item.id])
-      setBusy(null)
-      if (!outcome.ok) {
-        setNotice(`标记已读没成功：${outcome.message}`)
-        return
+      try {
+        const outcome = await markNotificationsRead(item.source, [item.id])
+        if (!outcome.ok) {
+          setNotice(`标记已读没成功：${outcome.message}`)
+          return
+        }
+        await refresh()
+      } finally {
+        // 同 details：busy 必须无条件落回，否则这一栏永远停在加载态。
+        setBusy(null)
       }
-      await refresh()
     },
     [refresh],
   )
@@ -181,18 +186,21 @@ export function VoidNotifications(props: { sources: NotificationSourceManifest[]
     if (unread.length === 0) return
     setNotice(null)
     setBusy('all')
-    const bySource = new Map<string, string[]>()
-    for (const item of unread) {
-      bySource.set(item.source, [...(bySource.get(item.source) ?? []), item.id])
+    try {
+      const bySource = new Map<string, string[]>()
+      for (const item of unread) {
+        bySource.set(item.source, [...(bySource.get(item.source) ?? []), item.id])
+      }
+      const failures: string[] = []
+      for (const [source, ids] of bySource) {
+        const outcome = await markNotificationsRead(source, ids)
+        if (!outcome.ok) failures.push(`${source}: ${outcome.message}`)
+      }
+      if (failures.length > 0) setNotice(`有一部分没标上：${failures.join('；')}`)
+      await refresh()
+    } finally {
+      setBusy(null)
     }
-    const failures: string[] = []
-    for (const [source, ids] of bySource) {
-      const outcome = await markNotificationsRead(source, ids)
-      if (!outcome.ok) failures.push(`${source}: ${outcome.message}`)
-    }
-    setBusy(null)
-    if (failures.length > 0) setNotice(`有一部分没标上：${failures.join('；')}`)
-    await refresh()
   }, [feed, refresh])
 
   if (sources.length === 0) return null
