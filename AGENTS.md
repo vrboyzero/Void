@@ -137,21 +137,44 @@ fiber 一起走。**组件拿不到 `ctx`**，数据与回调全走 props。
 
 **`tsc` 不删孤儿产物。** 删了源文件，`lib/` 里那份照旧躺着（`tsc` 只写、不清理），而
 `pnpm pack` 把整个 `lib/` 打进包——**等于把已删的实现一起发出去**，而且下次搜那个符号还会搜到
-一份「活着的」旧代码。删源文件后按相对路径自查（别只比文件名、别漏子目录）：
+一份「活着的」旧代码。
+
+> **2026-10-08 更正：下面那版「按相对路径比」的脚本会误报，别直接用。** 它默认 `src/` 与 `lib/`
+> 路径镜像，而 **`void-entry` 的客户端管线不镜像**：源在 `src/client/*.tsx`，产物在
+> `lib/types/client/*.js`（`tsconfig.client.json` 的 `outDir`），再由 `tsdown` 以
+> `lib/types/client/index.js` 为入口打出 `lib/client.js`（`package.json` 的
+> `exports["./client"]` 指着它）。照那版脚本，**19 个活产物会被报成孤儿**——真删了，整个设置
+> 面板就废了。**先读该包的 `build` 脚本与 `tsconfig*.json` 的 `outDir`，把产物路径映射对**，
+> 再比。
+
+**判据要用两个独立信号，缺一不可**（本次定案用的就是它）：
+
+1. **没有对应源文件**（路径映射要按上面那条先核正）；
+2. **mtime 早于该包 `lib/` 里最新产物的时间**——即「上一次完整构建根本没生成它」。
+
+只有两条同时成立才是孤儿。判完**还要做一次实证**：删掉后**重新 build**，看它会不会被造回来；
+再 `pnpm pack` 解包，确认它真的不在 tarball 里。
 
 ```powershell
-$p='void-soul'; $s="packages/$p/src"; $l="packages/$p/lib"
-$src=Get-ChildItem $s -File -Filter *.ts -Recurse | ? Name -notlike '*.d.ts' |
-  % { $_.FullName.Substring((Resolve-Path $s).Path.Length+1) -replace '\.ts$','' }
-Get-ChildItem $l -File -Filter *.js -Recurse |
-  % { $_.FullName.Substring((Resolve-Path $l).Path.Length+1) -replace '\.js$','' } |
-  ? { $_ -notin $src }
+# 单个包：源集合（排除 .d.ts，含 .tsx）
+$p='void-legion'; $s="packages/$p/src"; $l="packages/$p/lib"
+$srcPath=(Resolve-Path $s).Path; $srcSet=@{}
+Get-ChildItem $s -File -Recurse -Include *.ts,*.tsx | ? Name -notlike '*.d.ts' |
+  % { $srcSet[($_.FullName.Substring($srcPath.Length+1)) -replace '\.tsx?$','']=$true }
+# 产物集合：.js 和 .d.ts 都要查（只查 .js 会漏掉孤儿的 .d.ts，它一样会被打进包）
+Get-ChildItem $l -File -Recurse -Include *.js,*.d.ts |
+  % { ($_.FullName.Substring((Resolve-Path $l).Path.Length+1)) -replace '\.(js|d\.ts)$','' } |
+  ? { -not $srcSet.ContainsKey($_) }
 ```
 
-> 2026-10-03 全仓扫过：`void-soul` / `void-memory` / `void-tools` **干净**；**`void-legion` 1 个**
-> （`lib/authority-gate.js`，源文件已删、全仓 0 引用，2026-09-22 的旧产物）、**`void-entry` 19 个**
-> （`lib/client.js` 与 `lib/types/client/*.js`，客户端改由 tsdown 出 `dist/` 之前的遗留）。
-> 两个包都在正式 profile 里，**待处理**。
+> **2026-10-08 全仓扫过并处理完**：`void-soul` / `void-memory` / `void-tools` **干净**；
+> **`void-entry` 干净（0 个）**——10-03 记的「19 个」是上面那个路径映射缺陷造成的**误报**，
+> 那 19 个（`lib/client.js` + `lib/types/client/*.js`）**全是活的构建产物**，打出来的 tarball
+> 里 36 个 `lib/types/client/` 条目都在；
+> **`void-legion` 2 个，已删**（`lib/authority-gate.js` **与它的 `.d.ts`**——10-03 那份笔记漏了
+> `.d.ts`。源文件已删、不在 `exports`、全仓 0 引用、mtime 停在 2026-09-22 而其余全是 10-03 那次
+> 构建的）。删前走回收站并记在 `.tmp/deleted-files.log`；删后重建 exit=0、两个文件**都没被造回来**、
+> tarball 里 `authority-gate` 条目 **0**。
 
 **重装要 `remove` → 删目录 → `add`，三步缺一不可。** 正式 profile 的 `pnpm-workspace.yaml` 是
 `nodeLinker: hoisted`——包是**拷贝**进 `node_modules`，不是软链，也没有 `.pnpm` 虚拟存储。目录已存在
@@ -204,6 +227,25 @@ shell 门禁包的是 `shell.run` / `shell.start`，而 `ShellExecutor`（快照
 > 自带 `run` 的假服务，测试全绿而门禁从来没装上。这是「测试替身跟着一起错」最贵的一次。
 
 **`pnpm -r test` 之外还要真机验证。** 测试替身是自己写的，会跟着一起错。
+
+**见到 `Assertion failed: (env) != nullptr` 就是 Node 24 的原生缺陷，不是我们的代码——判 `record_only`。**
+紧跟的原生栈第 1–3 帧是 `node::SetAbortHandler+54` / `MultiIsolatePlatform::DisposeIsolate` /
+`RemoveEnvironmentCleanupHook`，第 4 帧落在**另一个模块**、符号是某个 `Statement` 的删除析构函数。
+机制：销毁 isolate 时，`node-addon-api` / `ObjectWrap` 系的原生对象（better-sqlite3 的 `Statement`
+正是这个形状）被 GC 析构，析构里摘环境清理钩子时 `Environment` 已经没了。
+
+- **偶发、负载相关**。2026-10-08 实测：单跑 `void-memory` 8 轮全绿，加 4 个 CPU 负载进程后**第 6 轮命中**，
+  那次 `pnpm -r test` 因此 **exit 1**。所以「全仓测试偶尔挂在这行断言上」**不是你的改动坏了**。
+- **唯一受害面是 `void-memory`**（进程里唯一用 better-sqlite3 的）。**不是数据损坏，也别去改插件逻辑。**
+- 上游：[nodejs/node#63923](https://github.com/nodejs/node/issues/63923)（暴露它的偶发测试）、
+  [nodejs/node#63985](https://github.com/nodejs/node/pull/63985)（修复：把 addon 提供的清理钩子收进全局表）、
+  [WiseLibs/better-sqlite3#1515](https://github.com/WiseLibs/better-sqlite3/issues/1515)、
+  [earendil-works/pi#8492](https://github.com/earendil-works/pi/issues/8492)。
+- **本机 Node v24.21.0**；用户定案等 dsh 到稳定版再一起升。**修复进了哪个版本号未核实**——这台机器的
+  DNS 拒绝 github.com，读不到页面，**别照抄别处的版本号**。
+- 那 15 帧里 **1–3 与 5–13 是固定的**（node.exe 基址 `0x00007FF7054E0000` 不随机化），**只有第 4 帧和
+  第 14 帧每次不同**。第 5–13 帧的符号名（`X509_STORE_CTX_get_cert_crl`、`uv_timer_set_repeat` 之类）是
+  「最近导出符号」的产物、**全是假的**，别顺着它去查 OpenSSL / libuv。
 
 ## 4. 依赖陷阱
 
