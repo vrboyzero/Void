@@ -30,11 +30,25 @@ dsh --version                                                                   
 > 模块的**具名导出**（图标从 `Icon<字形>14/16` 改名成 `Icon<字形>Regular/Medium`）。详见 §2.1。
 
 仓库 devDependencies 里的 `@deepseek-ai/dsh-*@0.1.0-rc.6` 只用于构建测试，**不是部署对象**。
-`参考项目/` 下有两份官方源码快照：**`deepseek-harness-dsh-v0.2.0-rc.2/`（与当前宿主同版）**
-和 **`deepseek-harness-dsh-v0.1.7-rc.2/`**（上一版）。**两份都值得留**——查「宿主什么时候改的」
+`参考项目/` 下有两份官方源码快照：**`deepseek-harness-dsh-v0.2.0-rc.2/`**（旧版快照）
+和 **`deepseek-harness-dsh-v0.1.7-rc.2/`**（更早一版）。**两份都值得留**——查「宿主什么时候改的」
 就差这一份，2026-10-03 核 `ShellExecutor` 的 `run` 就是靠两版对照定位的（见 §3）。
 > 2026-10-03 核过：`参考项目/deepseek-harness-dsh-v0.2.0-rc.1/` 与 `参考项目/deepseek-harness-master/`
 > **两个路径都不存在**（旧笔记里的写法已作废，别再照它找）。
+
+> **2026-10-12 更正：本机宿主已经不是 0.2.0-rc.2，而是 `0.2.1-rc.2`。**
+> `%APPDATA%\npm\node_modules\@deepseek-ai\dsh\package.json` 报 `0.2.1-rc.2`；它 `node_modules` 下的运行时包
+> 与 `~/.dsh/profiles/node_modules/@deepseek-ai/*` 全部 `0.2.1-rc.2`，cordis `4.0.5`。
+> **`参考项目/deepseek-harness-dsh-v0.2.0-rc.2/` 因此不再是「与当前宿主同版」的快照**：涉及子代理、
+> 技能、工具契约的核对，先看已装产物；快照只用来查「改动发生在哪个版本」。
+>
+> 已知破坏性变更（0.2.0 → 0.2.1，子代理面）：`ctx.subagents.start()` **删除**，改为 `startActivation(spec)`；
+> `SubagentStartRequest` 的 `persona` 与 `toolFilter` **删除**（位置换成 `agentPreset`）；
+> `SubagentRun.result` 换成 `SubagentActivation.result`。照 0.2.0 快照写出来的代码**构建期与测试期都不报错**，
+> 只在真实调用时炸 `start is not a function`——`packages/pstack` 就这么写的，代价与探针见它的 README「真机验证」。
+> 证据：`...\dsh-subagent\lib\types\index.d.ts:135`（只有 `startActivation`）、`types.d.ts:25-45`。
+> 同一次核对还确认：`defineTool`、`ToolRunContext`、`SkillRegistration`、`PromptSection`、
+> `agent/created` 的语义在 0.2.0 → 0.2.1 之间**逐字未变**，这两版可互证。
 
 **dsh 大版本升级后，第一件事查所有 peer 范围。** 0.2.0 起宿主逐包检查 `peerDependencies` 里的
 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`，不满足的包**整包不加载**，只在 stderr 留一行
@@ -318,8 +332,8 @@ React 的 value tracker 吃掉，需要时用真实键盘输入）。
 
 ## 9. 官方文档在哪
 
-`参考项目/deepseek-harness-dsh-v0.2.0-rc.2/`（**与当前宿主同版**；查旧行为用同级的
-`deepseek-harness-dsh-v0.1.7-rc.2/`）：
+`参考项目/deepseek-harness-dsh-v0.2.0-rc.2/`（**注意：宿主已升到 0.2.1-rc.2，这份快照落后一版**，
+见 §1 的 2026-10-12 更正；查旧行为用同级的 `deepseek-harness-dsh-v0.1.7-rc.2/`）：
 
 | 想知道 | 读 |
 |---|---|

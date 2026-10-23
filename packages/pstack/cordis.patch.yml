@@ -1,0 +1,13 @@
+# Bundle layer for @void/pstack. Applied when a profile lists this bundle.
+#
+# 只有一条 entry，配置里那两条改名是本机特有的、必须显式写出来的东西：
+# `<agentsHome>/skills` 下已经有 `tdd` 与 `teach` 两个同名技能，而运行期技能的 rank 是 250，
+# 高于用户级根目录（400/500）。不改名就是**静默顶掉**用户自己那一份——用户只会发现技能内容
+# 换了一个，没有任何提示。本机不想要这两个技能的话，把 renameSkills 换成 skipSkills。
+- insert:
+    - id: void-pstack
+      name: "@void/pstack"
+      config:
+        renameSkills:
+          tdd: pstack-tdd
+          teach: pstack-teach

@@ -52,7 +52,10 @@ $packages = @(
   "packages/void-legion",
   "packages/void-channel-feishu",
   "packages/void-entry",
-  "packages/void"
+  "packages/void",
+  # pstack 移植：55 个技能 + poteto-mode 常驻段 + 两个子代理。不依赖 workspace 里任何包，
+  # 排最后只是为了不打乱既有的依赖顺序。
+  "packages/pstack"
 )
 
 # 不在上面这个列表里的包，构建链也在这条链之外。静默漏掉它们的后果是打出发旧的
@@ -80,6 +83,18 @@ if ($DryRun) {
   node (Join-Path $PSScriptRoot "gen-primitives-types.mjs") --check
   if ($LASTEXITCODE -ne 0) {
     throw "宿主原语声明已过期。先跑 node scripts/gen-primitives-types.mjs 重新生成，再把新名字同步到源码。"
+  }
+}
+
+# pstack 技能目录是 vendor 进来的第三方内容，可能被换版本或被手改。生成物与 skills/ 不一致时，
+# 注册出去的技能集与磁盘上的文件对不上——表现是「少一个技能」或「描述是上一版的」，没有任何报错。
+Write-Host "  核对 pstack 技能索引..." -ForegroundColor Cyan
+if ($DryRun) {
+  Write-Host "  node scripts/gen-pstack-skills.mjs --check"
+} else {
+  node (Join-Path $PSScriptRoot "gen-pstack-skills.mjs") --check
+  if ($LASTEXITCODE -ne 0) {
+    throw "pstack 技能索引已过期。先跑 node scripts/gen-pstack-skills.mjs 重新生成。"
   }
 }
 

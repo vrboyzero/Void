@@ -64,6 +64,7 @@ export const CONTROL_ERROR_CODES = [
   "dsh-control/invalid-request",
   "dsh-control/unauthorized",
   "dsh-control/forbidden-operation",
+  "dsh-control/forbidden-origin",
   "dsh-control/policy-required-field",
   "dsh-control/policy-document-missing",
   "dsh-control/policy-document-invalid",

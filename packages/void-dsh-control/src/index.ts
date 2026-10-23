@@ -37,6 +37,7 @@ import { ControlOrchestrator } from "./orchestrator.js";
 import { createMcpHttpHandler } from "./mcp.js";
 import { DshControl } from "./service.js";
 import { resolveAllowedRoots } from "./workspace.js";
+import { validateOrigins } from "./origin.js";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import {
@@ -61,6 +62,7 @@ export interface TokenConfig {
   tokenEnv: string;
   /** Operations this token may perform. */
   operations: string[];
+  workspaceIds: string[];
 }
 
 /**
@@ -125,6 +127,8 @@ export interface Config {
   tokens: Volatile<TokenConfig[]>;
   /** Grant every configured operation without a token. Loopback smoke tests only. */
   allowAnonymous: Volatile<boolean>;
+  /** Browser origins allowed at the MCP entry. Native clients omit Origin. */
+  allowedOrigins: Volatile<string[]>;
   /** Roots a caller may address by path. Empty disables path addressing entirely. */
   allowedRoots: Volatile<string[]>;
   /** Operations granted when a token omits its own list. */
@@ -170,12 +174,14 @@ transport: z.const("streamable-http").default("streamable-http").description("�
         callerId: z.string().required().description("调用方身份，用于幂等作用域与审计。"),
         tokenEnv: z.string().required().description("保存 token 的环境变量名；不要把 token 本身写进配置。"),
         operations: z.array(z.string()).default([]).description("该 token 允许的操作；留空则用 allowedOperations。"),
+        workspaceIds: z.array(z.string()).default([]).description('允许访问的 Workspace ID；空列表拒绝所有工作区，["*"] 显式允许全部。'),
       }),
     )
     .default([])
     .volatile()
     .description("机器调用凭据。token 只从环境变量读取。"),
   allowAnonymous: z.boolean().default(false).volatile().description("允许无 token 调用。仅用于本机 smoke 测试，默认关闭。"),
+  allowedOrigins: z.array(z.string()).default([]).volatile().description("允许的浏览器 Origin，精确填写协议、主机和端口；留空拒绝所有带 Origin 的请求。原生 MCP Client 无需填写。"),
   allowedRoots: z.array(z.string()).default([]).volatile().description("允许按路径寻址的根目录。留空则完全禁用路径寻址。"),
   allowedOperations: z
     .array(z.string())
@@ -264,7 +270,8 @@ function parseOperations(values: readonly string[], what: string): ControlOperat
 interface ControlSection {
   allowedOperations: string[];
   allowAnonymous: boolean;
-  tokens: { callerId: string; tokenEnv: string; operations: string[] }[];
+  tokens: TokenConfig[];
+  allowedOrigins: string[];
   allowedRoots: string[];
   callerInstructions: string;
   requiredFields: string[];
@@ -300,8 +307,12 @@ interface ControlSection {
  * @throws ControlError when the section is unusable.
  */
 function validateSection(value: ControlSection): void {
+  validateOrigins(value.allowedOrigins);
   parseOperations(value.allowedOperations, "allowedOperations");
+  const callers = new Set<string>();
   for (const token of value.tokens) {
+    if (callers.has(token.callerId)) throw new ControlError("dsh-control/invalid-request", "token callerId must be unique");
+    callers.add(token.callerId);
     if (token.operations.length > 0) {
       parseOperations(token.operations, `tokens[${token.callerId}].operations`);
     }
@@ -387,10 +398,12 @@ function createConfigSource(ctx: Context, config: Config): ConfigSource {
     const section: ControlSection = {
       allowedOperations: [...config.allowedOperations.get()],
       allowAnonymous: config.allowAnonymous.get(),
+      allowedOrigins: [...config.allowedOrigins.get()],
       tokens: config.tokens.get().map((token) => ({
         callerId: token.callerId,
         tokenEnv: token.tokenEnv,
         operations: [...token.operations],
+        workspaceIds: [...token.workspaceIds],
       })),
       allowedRoots: [...config.allowedRoots.get()],
       callerInstructions: config.callerInstructions.get(),
@@ -454,6 +467,7 @@ function createConfigSource(ctx: Context, config: Config): ConfigSource {
       const specs = section.tokens.map((token) => ({
         callerId: token.callerId,
         tokenEnv: token.tokenEnv,
+        workspaceIds: token.workspaceIds,
         operations:
           token.operations.length > 0
             ? parseOperations(token.operations, `tokens[${token.callerId}].operations`)
@@ -721,6 +735,7 @@ export function apply(ctx: Context, config: Config): void {
 
     const handler = createMcpHttpHandler({
       authenticator,
+      allowedOrigins: () => source.live().allowedOrigins,
       deps: {
         orchestrator,
         authenticator,

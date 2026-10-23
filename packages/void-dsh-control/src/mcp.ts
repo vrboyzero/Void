@@ -1,10 +1,9 @@
 /**
  * MCP surface for the Lingbang control plane (plan §6, §12).
  *
- * The endpoint is Streamable HTTP in **stateless** mode: one `McpServer` and one
- * transport are created per HTTP request and bound to the caller identity that
- * request authenticated as. That keeps caller identity out of global state and
- * makes a dropped connection cost nothing.
+ * Each MCP transport session owns a server; caller grants are read from the
+ * current HTTP request, so permission edits also affect existing sessions.
+ * Tasks persist independently of transports and survive client reconnects.
  *
  * Every tool follows the same order, which is also the security order:
  * authenticate → authorize operation → validate shape → enforce user policy →
@@ -16,6 +15,7 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import {
@@ -47,6 +47,8 @@ import type { Authenticator, CallerIdentity } from "./auth.js";
 import { checkPolicy, describePolicy, throwOnViolations, type CompiledCallerPolicy } from "./policy.js";
 import { renderDocumentRefs, resolveDocumentRefs, type DocumentRefInput } from "./document-refs.js";
 import { assertAllowedDirectory, type PathGuard } from "./workspace.js";
+import { documentGuard, requireSession, requireWorkspace, requireWorkspacePath } from "./access.js";
+import { requireOrigin } from "./origin.js";
 import { TOOL_CONDITIONAL_OPERATIONS, TOOL_OPERATIONS, type ControlOrchestrator, type HostPorts, type PreparedMessage } from "./orchestrator.js";
 
 /** Plugin identity reported to MCP clients. */
@@ -136,6 +138,7 @@ function infoPayload(deps: ControlToolDeps, identity: CallerIdentity): Record<st
     protocolVersion: CONTROL_PROTOCOL_VERSION,
     plugin: deps.identity,
     operations: [...identity.operations].sort(),
+    workspaceScope: { workspaceIds: identity.workspaceIds ?? ["*"], pathRegistration: identity.workspaceIds?.includes("*") ?? true },
     targets: {
       workspace: ["workspaceId", "path (absolute, inside allowedRoots; requires the workspace.open grant)"],
       session: ["new", "existing sessionId", "forkFrom + optional atSeq"],
@@ -172,6 +175,7 @@ function infoPayload(deps: ControlToolDeps, identity: CallerIdentity): Record<st
 async function resolveWorkspaceRoot(
   deps: ControlToolDeps,
   target: { workspaceId?: string; path?: string },
+  identity: CallerIdentity,
 ): Promise<string> {
   // The cross-field rule lives here rather than in a schema refinement so the
   // caller always receives a published `dsh-control/invalid-request` code.
@@ -179,9 +183,11 @@ async function resolveWorkspaceRoot(
     throw new ControlError("dsh-control/invalid-request", "workspace target must set exactly one of workspaceId or path");
   }
   if (target.path !== undefined) {
+    await requireWorkspacePath(identity, deps.hosts, target.path);
     return await assertAllowedDirectory(target.path, deps.guard());
   }
   if (target.workspaceId !== undefined) {
+    requireWorkspace(identity, target.workspaceId);
     const workspace = await deps.hosts.getWorkspace(target.workspaceId);
     if (workspace === undefined) {
       throw new ControlError("dsh-control/workspace-not-found", "workspace is not registered", {
@@ -204,9 +210,14 @@ async function resolveWorkspaceRoot(
 async function prepareDispatch(
   deps: ControlToolDeps,
   input: z.infer<typeof dispatchInputSchema>,
+  identity: CallerIdentity,
 ): Promise<{ messages: PreparedMessage[]; documentPaths: string[] }> {
-  const workspaceRoot = await resolveWorkspaceRoot(deps, input.target.workspace);
-  const guard = deps.guard();
+  const workspaceRoot = await resolveWorkspaceRoot(deps, input.target.workspace, identity);
+  if (input.target.session !== "new") {
+    const target = input.target.session;
+    await requireSession(identity, deps.hosts, "sessionId" in target ? target.sessionId : target.forkFrom);
+  }
+  const guard = documentGuard(identity, deps.guard());
   const messages: PreparedMessage[] = [];
   const documentPaths: string[] = [];
 
@@ -234,7 +245,7 @@ async function prepareDispatch(
  * @param identity - Caller the HTTP request authenticated as.
  * @returns A configured, not-yet-connected MCP server.
  */
-export function createControlMcpServer(deps: ControlToolDeps, identity: CallerIdentity): McpServer {
+export function createControlMcpServer(deps: ControlToolDeps, caller: CallerIdentity | (() => CallerIdentity)): McpServer {
   const server = new McpServer(
     { name: deps.identity.name, version: deps.identity.version },
     {
@@ -244,12 +255,13 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
   );
 
-  const authorize = (tool: keyof typeof TOOL_OPERATIONS): void => {
+  const authorize = (tool: keyof typeof TOOL_OPERATIONS): CallerIdentity => {
+    const identity = typeof caller === "function" ? caller() : caller;
     const operation = TOOL_OPERATIONS[tool];
     // Tools absent from the table (only `dsh_control_info`) need authentication
     // but no grant: the caller policy must be readable by every caller.
-    if (operation === undefined) return;
-    deps.authenticator.require(identity, operation);
+    if (operation !== undefined) deps.authenticator.require(identity, operation);
+    return identity;
   };
 
   server.registerTool(
@@ -261,7 +273,7 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
     async () =>
       guarded(async () => {
-        authorize("dsh_control_info");
+        const identity = authorize("dsh_control_info");
         return ok(infoPayload(deps, identity));
       })(),
   );
@@ -276,11 +288,11 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
     async (args) =>
       guarded(async () => {
-        authorize("dsh_dispatch_session_task");
+        const identity = authorize("dsh_dispatch_session_task");
         const input = dispatchInputSchema.parse(args);
         assertConditionalOperations(identity, "dsh_dispatch_session_task", input.target.workspace.path !== undefined);
         assertMessageModes(identity, input.messages.map((message) => message.mode));
-        const prepared = await prepareDispatch(deps, input);
+        const prepared = await prepareDispatch(deps, input, identity);
         const result = await deps.orchestrator.dispatch(identity, {
           requestId: input.requestId,
           workspace: input.target.workspace,
@@ -303,7 +315,7 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
     async (args) =>
       guarded(async () => {
-        authorize("dsh_dispatch_plan");
+        const identity = authorize("dsh_dispatch_plan");
         const input = dispatchPlanInputSchema.parse(args);
         assertConditionalOperations(identity, "dsh_dispatch_plan", input.target.workspace.path !== undefined);
         const prepared = await prepareDispatch(deps, {
@@ -311,7 +323,7 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
           target: input.target,
           messages: [{ text: input.task, mode: "steer", documentRefs: input.documentRefs }],
           ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
-        });
+        }, identity);
         const result = await deps.orchestrator.dispatchPlan(identity, {
           requestId: input.requestId,
           workspace: input.target.workspace,
@@ -333,9 +345,9 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
     async (args) =>
       guarded(async () => {
-        authorize("dsh_list_workspaces");
+        const identity = authorize("dsh_list_workspaces");
         const input = listWorkspacesInputSchema.parse(args);
-        const items = await deps.orchestrator.listWorkspaces(input.pathPrefix);
+        const items = await deps.orchestrator.listWorkspaces(input.pathPrefix, identity);
         return ok({ items });
       })(),
   );
@@ -349,12 +361,12 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
     async (args) =>
       guarded(async () => {
-        authorize("dsh_list_sessions");
+        const identity = authorize("dsh_list_sessions");
         const input = listSessionsInputSchema.parse(args);
         const items = await deps.orchestrator.listSessions({
           ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
           ...(input.path === undefined ? {} : { path: input.path }),
-        });
+        }, identity);
         return ok({ items });
       })(),
   );
@@ -368,17 +380,18 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
     async (args) =>
       guarded(async () => {
-        authorize("dsh_send_message");
+        const identity = authorize("dsh_send_message");
         const input = sendMessageInputSchema.parse(args);
         assertMessageModes(identity, [input.message.mode]);
+        const workspace = await requireSession(identity, deps.hosts, input.sessionId);
         const inspection = await deps.hosts.inspectSession(input.sessionId);
         if (!inspection.exists) {
           throw new ControlError("dsh-control/session-not-found", "session does not exist and is not resumable", {
             sessionId: input.sessionId,
           });
         }
-        const root = inspection.cwd ?? process.cwd();
-        const refs = await resolveDocumentRefs(input.message.documentRefs as readonly DocumentRefInput[], root, deps.guard());
+        const root = workspace?.path ?? inspection.cwd ?? process.cwd();
+        const refs = await resolveDocumentRefs(input.message.documentRefs as readonly DocumentRefInput[], root, documentGuard(identity, deps.guard()));
         const text = `${input.message.text}${renderDocumentRefs(refs)}`;
         throwOnViolations(
           checkPolicy(deps.policy(), {
@@ -407,16 +420,17 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
     async (args) =>
       guarded(async () => {
-        authorize("dsh_inject_context");
+        const identity = authorize("dsh_inject_context");
         const input = injectContextInputSchema.parse(args);
+        const workspace = await requireSession(identity, deps.hosts, input.sessionId);
         const inspection = await deps.hosts.inspectSession(input.sessionId);
         if (!inspection.exists) {
           throw new ControlError("dsh-control/session-not-found", "session does not exist and is not resumable", {
             sessionId: input.sessionId,
           });
         }
-        const root = inspection.cwd ?? process.cwd();
-        const refs = await resolveDocumentRefs(input.documentRefs, root, deps.guard());
+        const root = workspace?.path ?? inspection.cwd ?? process.cwd();
+        const refs = await resolveDocumentRefs(input.documentRefs, root, documentGuard(identity, deps.guard()));
         const text = `${input.text}${renderDocumentRefs(refs)}`;
         throwOnViolations(
           checkPolicy(deps.policy(), {
@@ -442,7 +456,7 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
     async (args) =>
       guarded(async () => {
-        authorize("dsh_get_task");
+        const identity = authorize("dsh_get_task");
         const input = getTaskInputSchema.parse(args);
         const snapshot = deps.orchestrator.getTask(identity, {
           taskId: input.taskId,
@@ -462,7 +476,7 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
     async (args) =>
       guarded(async () => {
-        authorize("dsh_wait_task");
+        const identity = authorize("dsh_wait_task");
         const input = waitTaskInputSchema.parse(args);
         const snapshot = await deps.orchestrator.waitTask(identity, {
           taskId: input.taskId,
@@ -484,7 +498,7 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     },
     async (args) =>
       guarded(async () => {
-        authorize("dsh_cancel_task");
+        const identity = authorize("dsh_cancel_task");
         const input = cancelTaskInputSchema.parse(args);
         const task = await deps.orchestrator.cancelTask(identity, { taskId: input.taskId });
         return ok(task);
@@ -498,6 +512,7 @@ export function createControlMcpServer(deps: ControlToolDeps, identity: CallerId
     new ResourceTemplate("dsh://tasks/{taskId}/events", { list: undefined }),
     { title: "Control task events", description: "Bounded event page for one control task.", mimeType: "application/json" },
     async (uri: URL, variables) => {
+      const identity = authorize("dsh_get_task");
       const raw = variables["taskId"];
       const taskId = Array.isArray(raw) ? raw[0] : raw;
       if (taskId === undefined) {
@@ -585,6 +600,7 @@ function toSessionCommand(
 export interface McpHttpHandlerOptions {
   readonly deps: ControlToolDeps;
   readonly authenticator: Authenticator;
+  readonly allowedOrigins?: () => readonly string[];
 }
 
 /**
@@ -620,6 +636,8 @@ const MCP_SESSION_IDLE_MS = 5 * 60_000;
 export function createMcpHttpHandler(options: McpHttpHandlerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { deps, authenticator } = options;
   const sessions = new Map<string, McpSession>();
+  // 每个并发请求保留自己的最新身份，不能把共享 Session 上的 mutable identity 交叉覆盖。
+  const callers = new AsyncLocalStorage<CallerIdentity>();
 
   const closeSession = (sessionId: string): void => {
     const session = sessions.get(sessionId);
@@ -644,6 +662,7 @@ export function createMcpHttpHandler(options: McpHttpHandlerOptions): (req: Inco
 
   return async (req, res) => {
     try {
+      requireOrigin(req.headers.origin, options.allowedOrigins?.() ?? []);
       const identity = authenticator.authenticate(req.headers.authorization);
       const sessionId = headerValue(req.headers["mcp-session-id"]);
       const now = Date.now();
@@ -679,7 +698,7 @@ export function createMcpHttpHandler(options: McpHttpHandlerOptions): (req: Inco
           return;
         }
         session.lastSeen = now;
-        await session.transport.handleRequest(req, res, body);
+        await callers.run(identity, () => session.transport.handleRequest(req, res, body));
         return;
       }
 
@@ -694,7 +713,11 @@ export function createMcpHttpHandler(options: McpHttpHandlerOptions): (req: Inco
         return;
       }
 
-      const server = createControlMcpServer(deps, identity);
+      const server = createControlMcpServer(deps, () => {
+        const current = callers.getStore();
+        if (current === undefined) throw new ControlError("dsh-control/unauthorized", "no authenticated request context");
+        return current;
+      });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (created) => {
@@ -706,7 +729,7 @@ export function createMcpHttpHandler(options: McpHttpHandlerOptions): (req: Inco
         if (created !== undefined) sessions.delete(created);
       };
       await server.connect(transport);
-      await transport.handleRequest(req, res, body);
+      await callers.run(identity, () => transport.handleRequest(req, res, body));
     } catch (error) {
       if (res.headersSent) {
         res.end();
@@ -716,7 +739,9 @@ export function createMcpHttpHandler(options: McpHttpHandlerOptions): (req: Inco
         error instanceof ControlError
           ? { ok: false, error: error.toPayload() }
           : { ok: false, error: { code: "dsh-control/internal", message: "control plane failed to handle the request" } };
-      res.writeHead(error instanceof ControlError && error.code === "dsh-control/unauthorized" ? 401 : 400, {
+      const status = error instanceof ControlError && error.code === "dsh-control/unauthorized" ? 401
+        : error instanceof ControlError && error.code === "dsh-control/forbidden-origin" ? 403 : 400;
+      res.writeHead(status, {
         "content-type": "application/json",
       });
       res.end(JSON.stringify(payload));

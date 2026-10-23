@@ -329,6 +329,7 @@ export interface TokenRow {
   callerId: string;
   tokenEnv: string;
   operations: string[];
+  workspaceIds?: string[];
 }
 
 /**
@@ -387,6 +388,13 @@ export function TokensField(props: {
                   onClick: () => remove(index),
                 }, h(IconTrash, { size: 16 })),
           ),
+          h(ListField, {
+            label: "工作区白名单（Workspace ID）",
+            help: "每行一个已登记的 Workspace ID；留空拒绝工作区/会话访问。* 显式允许全部，仅用于可信调用方。",
+            value: row.workspaceIds ?? [],
+            readOnly: locked,
+            onChange: (next: string[]) => replace(index, { workspaceIds: next }),
+          }),
           h(OperationsField, {
             label: "该调用方的权限",
             help: row.operations.length === 0 ? "留空则用上面的默认授权集合。" : undefined,
@@ -413,7 +421,7 @@ export function TokensField(props: {
               variant: "ghost",
               size: "sm",
               icon: h(IconPlus, { size: 16 }),
-              onClick: () => add({ callerId: "", tokenEnv: "", operations: [] }),
+              onClick: () => add({ callerId: "", tokenEnv: "", operations: [], workspaceIds: [] }),
             }, "添加调用方"),
           ),
     ),

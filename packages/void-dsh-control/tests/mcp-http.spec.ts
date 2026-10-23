@@ -62,12 +62,12 @@ async function start(options: { policy?: CallerPolicy; guard?: PathGuard; tokens
       options.tokens === false
         ? []
         : [
-            { callerId: "full", token: TOKEN_FULL, operations },
-            { callerId: "readonly", token: TOKEN_READONLY, operations: ["workspace.read", "session.list"] },
+            { callerId: "full", token: TOKEN_FULL, operations, workspaceIds: ["*"] },
+            { callerId: "readonly", token: TOKEN_READONLY, operations: ["workspace.read", "session.list"], workspaceIds: ["*"] },
             // `session.prompt` expands to session.create → workspace.read, but deliberately
             // not to workspace.open, which is what §26.1-1 is about.
-            { callerId: "promptonly", token: TOKEN_PROMPT_ONLY, operations: ["session.prompt", "task.read"] },
-            { callerId: "planonly", token: TOKEN_PLAN_ONLY, operations: ["session.plan", "task.read"] },
+            { callerId: "promptonly", token: TOKEN_PROMPT_ONLY, operations: ["session.prompt", "task.read"], workspaceIds: ["*"] },
+            { callerId: "planonly", token: TOKEN_PLAN_ONLY, operations: ["session.plan", "task.read"], workspaceIds: ["*"] },
           ],
     allowAnonymous: false,
   });

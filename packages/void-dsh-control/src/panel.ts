@@ -149,7 +149,7 @@ export function buildPanelManifest(runtime: RuntimeConfig): unknown {
             path: ["tokens"],
             label: "机器调用凭据",
             widget: "tokens",
-            help: "每行是一个调用方。token 的值只从环境变量读，不写进配置，也不显示在这里。",
+            help: "每行是一个调用方。token 只从环境变量读；工作区白名单留空会拒绝访问，* 表示显式允许全部。",
           },
         ],
       },
@@ -158,6 +158,7 @@ export function buildPanelManifest(runtime: RuntimeConfig): unknown {
         title: "工作区根目录",
         summary: "允许按路径寻址的目录",
         fields: [
+          { path: ["allowedOrigins"], label: "允许的浏览器来源", widget: "list", help: "填写精确 Origin（例如 https://console.example）。留空拒绝浏览器来源；原生 MCP 客户端无需填写。" },
           {
             path: ["allowedRoots"],
             label: "允许的根目录",

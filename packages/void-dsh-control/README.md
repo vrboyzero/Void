@@ -6,9 +6,14 @@ DeepSeek Harness Web profile 下达会话级任务。
 插件运行在 DSH 进程内，直接访问当前 Web profile 的 Workspace、Session 与 Agent；
 MCP 只是外部调用协议，不是一个独立的状态源。
 
-- 目标 DSH 版本：`0.1.5-rc.2`（peerDependencies `^0.1.5-rc.2`）。
-  实测承载 Web profile 的全局 CLI 是 `0.1.5-rc.1`，其内置子包为 `0.1.5-rc.2`。
+- 目标 DSH 契约：`>=0.2.0-rc.1 <0.3.0-0`；本机已装宿主为 `0.2.1-rc.2`。
+  运行时以已安装子包为准，不能只看 CLI 外壳版本。
 - 插件名：`@void/void-dsh-control`，运行时名称：`void-dsh-control`。
+
+跨电脑接入：先给远程 token 配置 `workspaceIds`，再用 Tailscale Serve 只代理 MCP 路径。
+仓库根运行 `pwsh -File scripts/lingbang-remote.ps1` 预览配置；完整步骤见 `docs/灵榜跨电脑接入.md`。
+旧 token 也需选择工作区；仅可信调用方用 `["*"]` 保留全工作区访问。
+重新安装须 `remove → 残留包目录移到回收站 → add`，按文件内容核对，避免 pnpm 静默复用旧代码。
 
 ## 1. 安装
 
@@ -183,6 +188,8 @@ bearer_token_env_var = "VOID_DSH_CONTROL_TOKEN"
 | `enabled` | `true` | 设为 `false` 后不注册端点，回滚只需改这一行 |
 | `path` | `/mcp/dsh-agent-control` | 挂到现有 WebServer 的精确路径 |
 | `tokens[]` | `[{callerId: default, tokenEnv: VOID_DSH_CONTROL_TOKEN}]` | `tokenEnv` 是环境变量名，**不是** token 本身 |
+| `tokens[].workspaceIds` | `[]` | 工作区白名单；空列表拒绝工作区和会话访问，`["*"]` 显式允许全部工作区。已有 token 升级后也需配置 |
+| `allowedOrigins` | `[]` | 精确 HTTP(S) Origin 白名单；默认拒绝所有带 Origin 的请求（403），原生无 Origin 客户端仍需 Bearer |
 | `allowAnonymous` | `false` | 仅用于本机 smoke；默认关闭 |
 | `allowedRoots` | `[]` | 允许按绝对路径寻址的根目录；**留空即完全禁用路径寻址** |
 | `allowedOperations` | 见 bundle 层 | token 未显式声明 `operations` 时使用的授权集合 |

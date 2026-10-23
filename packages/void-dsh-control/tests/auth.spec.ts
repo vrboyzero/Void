@@ -116,7 +116,7 @@ describe("auth: environment grants", () => {
       ],
       { TEST_ALPHA_TOKEN: "  value  " } as NodeJS.ProcessEnv,
     );
-    expect(grants).toEqual([{ callerId: "alpha", token: "value", operations: ALPHA }]);
+    expect(grants).toEqual([{ callerId: "alpha", token: "value", operations: ALPHA, workspaceIds: [] }]);
     expect(missingEnv).toEqual(["TEST_BETA_TOKEN"]);
   });
 
@@ -153,7 +153,7 @@ describe("auth: operator-facing token setup guidance", () => {
     const message = describeTokenSetup(["VOID_DSH_CONTROL_TOKEN"], "C:\\Users\\me\\.dsh\\.env");
     expect(message).toContain("VOID_DSH_CONTROL_TOKEN");
     expect(message).toContain("C:\\Users\\me\\.dsh\\.env");
-    expect(message).toContain("Get-Random");
+    expect(message).toContain("RandomNumberGenerator");
     expect(message).toContain("§25.3");
     // The remediation must name the variable the operator has to set.
     expect(message).toContain("VOID_DSH_CONTROL_TOKEN=$t");
@@ -193,7 +193,7 @@ describe("auth: token guidance follows the shell the operator actually has", () 
       "win32",
     );
     expect(message).toContain("Add-Content");
-    expect(message).toContain("Get-Random");
+    expect(message).toContain("RandomNumberGenerator");
     expect(message).not.toContain("/dev/urandom");
   });
 

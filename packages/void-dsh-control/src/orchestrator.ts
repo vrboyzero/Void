@@ -29,6 +29,7 @@ import { summarizeFailure } from "./ledger.js";
 import { idempotencyKey, mintTaskId, satisfiesWait, type DispatchWaitTarget } from "./state-machine.js";
 import type { CallerIdentity } from "./auth.js";
 import type { CompiledCallerPolicy } from "./policy.js";
+import { hasWorkspaceScope, requireWorkspace, requireWorkspacePath, requireSession, scopedWorkspaces } from "./access.js";
 
 /** One Workspace row as the host reports it. */
 export interface HostWorkspace {
@@ -262,6 +263,7 @@ export class ControlOrchestrator {
       const existing = this.ledger.findIdempotent(key);
       if (existing !== undefined) {
         const task = this.requireTask(existing.taskId);
+        this.assertTaskVisible(identity, task);
         await this.record(task.taskId, "idempotent_replay", task.status, "replayed an earlier request with the same requestId");
         return this.toDispatchResult(task);
       }
@@ -272,7 +274,8 @@ export class ControlOrchestrator {
         throw new ControlError("dsh-control/capability-unavailable", "native planning is unavailable on this host");
       }
 
-      const workspace = await this.resolveWorkspace(command.workspace);
+      const workspace = await this.resolveWorkspace(command.workspace, identity);
+      if (command.session.kind !== "new") await requireSession(identity, this.hosts, command.session.sessionId);
       const task = await this.createTask(identity, command, workspace.workspaceId);
 
       try {
@@ -324,6 +327,7 @@ export class ControlOrchestrator {
       const existing = this.ledger.findIdempotent(key);
       if (existing !== undefined) {
         const task = this.requireTask(existing.taskId);
+        this.assertTaskVisible(identity, task);
         await this.record(task.taskId, "idempotent_replay", task.status, "replayed an earlier request with the same requestId");
         return this.toTaskView(task);
       }
@@ -331,6 +335,7 @@ export class ControlOrchestrator {
       this.assertCallerCapacity(identity.callerId);
       this.checkTexts([command.message.text]);
 
+      const workspace = await requireSession(identity, this.hosts, command.sessionId);
       const inspection = await this.hosts.inspectSession(command.sessionId);
       if (!inspection.exists) {
         throw new ControlError("dsh-control/session-not-found", "session does not exist and is not resumable", {
@@ -341,7 +346,7 @@ export class ControlOrchestrator {
       const task = await this.createTask(
         identity,
         { requestId: command.requestId, metadata: command.metadata } as DispatchCommand,
-        undefined,
+        workspace?.workspaceId,
         command.sessionId,
       );
 
@@ -392,12 +397,14 @@ export class ControlOrchestrator {
       const existing = this.ledger.findIdempotent(key);
       if (existing !== undefined) {
         const task = this.requireTask(existing.taskId);
+        this.assertTaskVisible(identity, task);
         await this.record(task.taskId, "idempotent_replay", task.status, "replayed an earlier request with the same requestId");
         return this.toTaskView(task);
       }
 
       this.checkTexts([command.text]);
 
+      const workspace = await requireSession(identity, this.hosts, command.sessionId);
       const inspection = await this.hosts.inspectSession(command.sessionId);
       if (!inspection.exists) {
         throw new ControlError("dsh-control/session-not-found", "session does not exist and is not resumable", {
@@ -408,7 +415,7 @@ export class ControlOrchestrator {
       const task = await this.createTask(
         identity,
         { requestId: command.requestId } as DispatchCommand,
-        undefined,
+        workspace?.workspaceId,
         command.sessionId,
       );
 
@@ -485,6 +492,7 @@ export class ControlOrchestrator {
 
     const sessionId = record.sessionId;
     if (sessionId !== undefined) {
+      await requireSession(identity, this.hosts, sessionId);
       const holder = this.locks.get(sessionId);
       if (holder !== undefined && holder !== record.taskId && !identity.operations.has("task.cancel")) {
         throw new ControlError("dsh-control/session-locked", "another control task owns this session", { sessionId });
@@ -503,8 +511,8 @@ export class ControlOrchestrator {
    * @param pathPrefix - Optional absolute path prefix.
    * @returns Bounded Workspace projections.
    */
-  async listWorkspaces(pathPrefix?: string): Promise<readonly WorkspaceProjection[]> {
-    const workspaces = await this.hosts.listWorkspaces();
+  async listWorkspaces(pathPrefix?: string, identity?: CallerIdentity): Promise<readonly WorkspaceProjection[]> {
+    const workspaces = identity === undefined ? await this.hosts.listWorkspaces() : await scopedWorkspaces(identity, this.hosts);
     const normalized = pathPrefix?.replace(/[\\/]+$/, "").toLowerCase();
     return workspaces
       .filter((workspace) => normalized === undefined || workspace.path.toLowerCase().startsWith(normalized))
@@ -517,9 +525,17 @@ export class ControlOrchestrator {
    * @param query - Filter and archived-inclusion options.
    * @returns Bounded Session projections.
    */
-  async listSessions(query: { workspaceId?: string; path?: string }): Promise<readonly SessionProjection[]> {
-    const sessions = await this.hosts.listSessions();
+  async listSessions(query: { workspaceId?: string; path?: string }, identity?: CallerIdentity): Promise<readonly SessionProjection[]> {
     let allowed: Set<string> | undefined;
+
+    if (identity !== undefined && hasWorkspaceScope(identity)) {
+      if (query.workspaceId !== undefined) requireWorkspace(identity, query.workspaceId);
+      const workspaces = query.path === undefined
+        ? await scopedWorkspaces(identity, this.hosts)
+        : [await requireWorkspacePath(identity, this.hosts, query.path)];
+      allowed = new Set(workspaces.flatMap(item => item?.sessionIds ?? []));
+      if (allowed.size === 0) return [];
+    }
 
     if (query.workspaceId !== undefined) {
       const workspace = await this.hosts.getWorkspace(query.workspaceId);
@@ -530,7 +546,7 @@ export class ControlOrchestrator {
       }
       allowed = new Set(workspace.sessionIds);
     } else if (query.path !== undefined) {
-      const workspaces = await this.hosts.listWorkspaces();
+      const workspaces = identity === undefined ? await this.hosts.listWorkspaces() : await scopedWorkspaces(identity, this.hosts);
       const target = query.path.replace(/[\\/]+$/, "").toLowerCase();
       const workspace = workspaces.find((candidate) => candidate.path.toLowerCase() === target);
       if (workspace === undefined) {
@@ -541,6 +557,7 @@ export class ControlOrchestrator {
       allowed = new Set(workspace.sessionIds);
     }
 
+    const sessions = await this.hosts.listSessions();
     return sessions
       .filter((session) => allowed === undefined || allowed.has(session.sessionId))
       .map((session) => toSessionProjection(session));
@@ -724,8 +741,9 @@ export class ControlOrchestrator {
     }
   }
 
-  private async resolveWorkspace(target: { workspaceId?: string; path?: string }): Promise<HostWorkspace> {
+  private async resolveWorkspace(target: { workspaceId?: string; path?: string }, identity: CallerIdentity): Promise<HostWorkspace> {
     if (target.workspaceId !== undefined) {
+      requireWorkspace(identity, target.workspaceId);
       const workspace = await this.hosts.getWorkspace(target.workspaceId);
       if (workspace === undefined) {
         throw new ControlError("dsh-control/workspace-not-found", "workspace is not registered", {
@@ -735,6 +753,8 @@ export class ControlOrchestrator {
       return workspace;
     }
     if (target.path !== undefined) {
+      const granted = await requireWorkspacePath(identity, this.hosts, target.path);
+      if (granted !== undefined) return granted;
       // Path policy (existence, allowedRoots, realpath containment) is enforced
       // by the caller before this point; the host call only registers the result.
       return await this.hosts.openWorkspace(target.path);
@@ -938,6 +958,7 @@ export class ControlOrchestrator {
   }
 
   private assertTaskVisible(identity: CallerIdentity, record: TaskRecord): void {
+    requireWorkspace(identity, record.workspaceId);
     if (record.callerId === identity.callerId) return;
     if (identity.operations.has("task.read")) return;
     throw new ControlError("dsh-control/task-not-found", "unknown task", { taskId: record.taskId });

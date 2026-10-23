@@ -23,6 +23,8 @@ export interface TokenGrant {
   readonly token: string;
   /** Operations this token may perform. */
   readonly operations: readonly ControlOperation[];
+  /** Explicit Workspace IDs; [] denies access, ["*"] grants all Workspaces. */
+  readonly workspaceIds?: readonly string[];
 }
 
 /** Authentication policy for the MCP endpoint. */
@@ -40,6 +42,8 @@ export interface AuthPolicy {
 export interface CallerIdentity {
   readonly callerId: string;
   readonly operations: ReadonlySet<ControlOperation>;
+  /** Always set for HTTP callers. Omission is a trusted in-process legacy identity. */
+  readonly workspaceIds?: readonly string[];
 }
 
 /** Digest helper: fixed-length input for {@link timingSafeEqual}. */
@@ -96,7 +100,7 @@ export class Authenticator {
 
     if (presented === undefined) {
       if (this.policy.allowAnonymous) {
-        return { callerId: "anonymous", operations: expandOperations(this.unionOfOperations()) };
+        return { callerId: "anonymous", operations: expandOperations(this.unionOfOperations()), workspaceIds: [] };
       }
       throw unauthorized();
     }
@@ -110,12 +114,12 @@ export class Authenticator {
 
     if (matched === undefined) {
       if (this.policy.allowAnonymous && this.policy.tokens.length === 0) {
-        return { callerId: "anonymous", operations: expandOperations(this.unionOfOperations()) };
+        return { callerId: "anonymous", operations: expandOperations(this.unionOfOperations()), workspaceIds: [] };
       }
       throw unauthorized();
     }
 
-    return { callerId: matched.callerId, operations: expandOperations(matched.operations) };
+    return { callerId: matched.callerId, operations: expandOperations(matched.operations), workspaceIds: [...(matched.workspaceIds ?? [])] };
   }
 
   /**
@@ -176,7 +180,7 @@ function unauthorized(): ControlError {
  * @returns Resolved grants plus the names that were absent.
  */
 export function readTokenGrants(
-  specs: readonly { callerId: string; tokenEnv: string; operations: readonly ControlOperation[] }[],
+  specs: readonly { callerId: string; tokenEnv: string; operations: readonly ControlOperation[]; workspaceIds?: readonly string[] }[],
   env: NodeJS.ProcessEnv = process.env,
 ): { grants: TokenGrant[]; missingEnv: string[] } {
   const grants: TokenGrant[] = [];
@@ -187,7 +191,7 @@ export function readTokenGrants(
       missingEnv.push(spec.tokenEnv);
       continue;
     }
-    grants.push({ callerId: spec.callerId, token: token.trim(), operations: spec.operations });
+    grants.push({ callerId: spec.callerId, token: token.trim(), operations: spec.operations, workspaceIds: [...(spec.workspaceIds ?? [])] });
   }
   return { grants, missingEnv };
 }
@@ -241,7 +245,7 @@ function tokenFixCommands(
 ): string[] {
   if (platform === "win32") {
     return [
-      `    $t = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 48 | ForEach-Object { [char]$_ })`,
+      `    $t = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))`,
       `    Add-Content "${envFile}" "${variable}=$t"`,
     ];
   }

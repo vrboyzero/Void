@@ -13,13 +13,14 @@ const TOKEN_ENV = "VOID_DSH_CONTROL_SPEC_TOKEN";
 /**
  * 设置表单里的字段，按声明顺序。
  *
- * 这十个在 `Config` 里标了 `.volatile()`：宿主把它们包成稳定引用，改完下一次读取就生效。
+ * 这些字段在 `Config` 里标了 `.volatile()`：宿主把它们包成稳定引用，改完下一次读取就生效。
  * 另外四个（`enabled` / `transport` / `path` / `ledger`）决定插件是否加载、挂在哪、账本落在
  * 哪里，属于组合入口，**不进表单**——面板只读展示，所以下面同时钉住这两组的分界。
  */
 const VOLATILE_FIELDS = [
   "tokens",
   "allowAnonymous",
+  "allowedOrigins",
   "allowedRoots",
   "allowedOperations",
   "callerInstructions",
@@ -47,7 +48,7 @@ describe("settings: 命名空间与表单由宿主从入口的 Config 派生", (
   // 注销命名空间，重载不撞名」——描述的概念都已不存在，故删除；它们想守的两件事改由
   // 「命名空间等于入口 id」与「`settings/document-updated` 到达即读到新值」继续守着。
 
-  it("表单里的字段恰好是那十个 volatile 字段", () => {
+  it("表单里的字段恰好是声明的 volatile 字段", () => {
     // 宿主用 `volatileForm()` 挑出「最近的 volatile 祖先」构成表单（dsh-settings），
     // 所以对空对象解析一遍，带引用协议的就是表单要渲染的字段。
     const parsed = Control.Config({}) as unknown as Record<string, unknown>;
@@ -103,7 +104,7 @@ describe("settings: 命名空间与表单由宿主从入口的 Config 派生", (
     expect(ctx.get("voidDshControl")!.policy.instructionsVersion).toBe(7);
     // 入口没写的字段由 schema 默认值补齐。
     expect(resolved.allowAnonymous).toBe(false);
-    expect(resolved.tokens).toEqual([{ callerId: "spec", tokenEnv: TOKEN_ENV, operations: [] }]);
+    expect(resolved.tokens).toEqual([{ callerId: "spec", tokenEnv: TOKEN_ENV, operations: [], workspaceIds: [] }]);
   });
 
   it("settings/document-updated 到达时，插件读到的是新值", async () => {

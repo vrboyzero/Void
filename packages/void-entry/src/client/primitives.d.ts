@@ -52,7 +52,7 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
    * @param props - Visual content, controlled state, and interaction policy.
    * @returns the disclosure row.
    */
-  export const DisclosureRow: import("react").MemoExoticComponent<({ icon, title, open, expandable, onToggle, running, expandOnRowClick, previewChevron, keepContentWhenOpen, collapsedContent, children, className, rowClassName, contentClassName, contentLayoutClassName, leadingClassName, chevronClassName, titleClassName, }: DisclosureRowProps) => import("react").JSX.Element>;
+  export const DisclosureRow: import("react").MemoExoticComponent<({ icon, title, open, expandable, onToggle, running, expandOnRowClick, previewChevron, keepContentWhenOpen, collapsedContent, headerAccessory, children, className, rowClassName, contentClassName, contentLayoutClassName, leadingClassName, chevronClassName, titleClassName, }: DisclosureRowProps) => import("react").JSX.Element>;
 
   /** Shared 24px process row: tertiary text and icons, secondary on hover. */
   export interface DisclosureRowProps {
@@ -63,13 +63,15 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
       onToggle: () => void;
       /** Animate the complete header while its owning operation is running. */
       running?: boolean | undefined;
-      /** Makes the complete title row the disclosure target. */
+      /** Makes the title row the disclosure target; with an accessory, it shrinks to its content width. */
       expandOnRowClick?: boolean | undefined;
       /** Replaces the collapsed icon with a chevron while the row is hovered. */
       previewChevron?: boolean | undefined;
       /** Keeps `collapsedContent` inline while open. */
       keepContentWhenOpen?: boolean | undefined;
       collapsedContent?: ReactNode;
+      /** Independent action beside the title, outside the disclosure target and shimmer. */
+      headerAccessory?: ReactNode;
       children?: ReactNode;
       className?: string | undefined;
       rowClassName?: string | undefined;

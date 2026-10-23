@@ -127,7 +127,7 @@ describe("composition: plugin activation", () => {
     const output = written.join("");
     expect(output).toContain("VOID_DSH_CONTROL_MISSING_TOKEN");
     expect(output).toContain("401");
-    expect(output).toContain("Get-Random");
+    expect(output).toContain("RandomNumberGenerator");
     // Attribution matters: dsh prints other plugins' banners on the same stream.
     expect(output).toContain("[void-dsh-control]");
   });

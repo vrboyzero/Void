@@ -18,6 +18,9 @@
         tokens:
           - callerId: default
             tokenEnv: VOID_DSH_CONTROL_TOKEN
+            # 空列表拒绝所有工作区/会话；远程调用方只填写需要的 Workspace ID。
+            # 可信本机调用方可显式设为 ["*"] 保留全工作区访问。
+            workspaceIds: []
             operations:
               - workspace.read
               - workspace.open
@@ -29,6 +32,7 @@
               - session.observe
               - task.read
         allowAnonymous: false
+        allowedOrigins: []
 
         # 留空 = 完全禁用「按路径打开 Workspace」。要允许外部 Agent 用绝对路径
         # 登记项目目录，必须在这里显式列出允许的根目录。
