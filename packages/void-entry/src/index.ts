@@ -320,7 +320,7 @@ export class VoidSuite extends Service {
             kind: "exact",
             path: "/void/api/status",
             handler: (_req, res) => {
-              void this.handleStatus(res);
+              this.respondFailures(this.handleStatus(res), res);
             },
           }),
         "void-entry: /void/api/status",
@@ -331,7 +331,7 @@ export class VoidSuite extends Service {
             kind: "exact",
             path: "/void/api/toggle",
             handler: (req, res) => {
-              void this.handleToggle(req, res);
+              this.respondFailures(this.handleToggle(req, res), res);
             },
           }),
         "void-entry: /void/api/toggle",
@@ -342,7 +342,7 @@ export class VoidSuite extends Service {
             kind: "exact",
             path: "/void/api/panels",
             handler: (_req, res) => {
-              void this.handlePanels(res);
+              this.respondFailures(this.handlePanels(res), res);
             },
           }),
         "void-entry: /void/api/panels",
@@ -353,7 +353,7 @@ export class VoidSuite extends Service {
             kind: "exact",
             path: "/void/api/facet-versions",
             handler: (_req, res) => {
-              void this.handleFacetVersions(webCtx, res);
+              this.respondFailures(this.handleFacetVersions(webCtx, res), res);
             },
           }),
         "void-entry: /void/api/facet-versions",
@@ -364,7 +364,7 @@ export class VoidSuite extends Service {
             kind: "exact",
             path: "/void/api/facet-selection",
             handler: (req, res) => {
-              void this.handleFacetSelection(webCtx, req, res);
+              this.respondFailures(this.handleFacetSelection(webCtx, req, res), res);
             },
           }),
         "void-entry: /void/api/facet-selection",
@@ -375,7 +375,7 @@ export class VoidSuite extends Service {
             kind: "exact",
             path: "/void/api/detail",
             handler: (req, res) => {
-              void this.handleDetail(webCtx, req, res);
+              this.respondFailures(this.handleDetail(webCtx, req, res), res);
             },
           }),
         "void-entry: /void/api/detail",
@@ -387,11 +387,28 @@ export class VoidSuite extends Service {
             kind: "exact",
             path: "/void/api/notifications",
             handler: (req, res) => {
-              void this.handleNotifications(req, res);
+              this.respondFailures(this.handleNotifications(req, res), res);
             },
           }),
         "void-entry: /void/api/notifications",
       );
+    });
+  }
+
+  /**
+   * 路由处理器的统一兜底：Void 的错误就地变成 500，绝不让它变成未捕获的 rejection。
+   *
+   * 宿主的 fail-loud 钩子会把任何未捕获的 promise rejection 当作致命加载失败并直接
+   * 退出宿主进程——2026-10-29 实测：路径守卫在面板数据里抛 `PathGuardError`，整个桌面
+   * 应用弹「应用无法启动或已意外停止」。一个数据错误只该让一个请求 500，不该带走进程。
+   */
+  private respondFailures(work: Promise<void>, res: JsonResponseLike): void {
+    void work.catch((error: unknown) => {
+      try {
+        sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      } catch {
+        // 连接已经断开（面板关了、刷新了），再写只会再抛一次；兜底到此为止。
+      }
     });
   }
 

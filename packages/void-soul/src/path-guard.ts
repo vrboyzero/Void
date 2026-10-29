@@ -112,21 +112,18 @@ export function assertPathInsideRoots(input: string, options: PathGuardOptions):
  *
  * 字符串检查拦不住「先建一个指向外部的链接、再访问链接」这种写法，所以凡是要
  * 真正落盘的调用都得再走一遍这里。目标不存在时按 ENOENT 放行到调用方处理。
+ *
+ * **根自己也允许落在链接下面**（整个数据根做成 junction 是一种合法部署）：根的
+ * 真实位置先解析出来，字符串层与真实路径层都拿它比。否则调用方「先把某个目录看穿
+ * 得到真实路径、再拼上名字」时，字符串层会先拿未解析的根把它判成越界——2026-10-29
+ * 的 `loadFacetFiles` 就是这样在 junction 数据根上抛的。
  */
 export async function assertRealPathInsideRoots(input: string, options: PathGuardOptions): Promise<string> {
   const platform = options.platform ?? process.platform;
-  const candidate = assertPathInsideRoots(input, options);
-  let real: string;
-  try {
-    real = await realpath(candidate);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return candidate;
-    throw new PathGuardError(`路径无法解析真实位置: ${candidate}（${error instanceof Error ? error.message : String(error)}）`);
-  }
   const roots = await Promise.all(
     options.roots.map(async (root) => {
       const normalized = normalizeHostPath(root, platform);
-      // 根自己也可能在链接下面（例如数据根落在 junction 里）。根不存在就按原样比。
+      // 根不存在就按原样比：还没创建的数据根不该让调用方在这里失败。
       try {
         return normalizeHostPath(await realpath(normalized), platform);
       } catch {
@@ -134,6 +131,25 @@ export async function assertRealPathInsideRoots(input: string, options: PathGuar
       }
     }),
   );
+  let candidate: string;
+  try {
+    candidate = assertPathInsideRoots(input, options);
+  } catch (error) {
+    // 输入可能已经是链接外侧的真实位置（见上面 `loadFacetFiles` 那种写法）。
+    // 用解析后的根再判一次；仍然越界就把原错误原样抛出去，别让诊断信息变样。
+    try {
+      candidate = assertPathInsideRoots(input, { ...options, roots });
+    } catch {
+      throw error;
+    }
+  }
+  let real: string;
+  try {
+    real = await realpath(candidate);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return candidate;
+    throw new PathGuardError(`路径无法解析真实位置: ${candidate}（${error instanceof Error ? error.message : String(error)}）`);
+  }
   if (roots.some((root) => isInside(real, root, platform))) return real;
   throw new PathGuardError(`路径经链接后越界: ${candidate} → ${real}`);
 }
@@ -143,18 +159,10 @@ export async function assertRealPathInsideRoots(input: string, options: PathGuar
  *
  * 给那些「拿不到 await 位置」的调用方用：例如 sqlite 句柄在构造函数里就同步打开，
  * 人格记忆的 store 工厂也是同步的。语义刻意与异步版逐条对齐（ENOENT 放行、根自己
- * 在链接下按原样比、越界抛同一条消息），免得同一个洞在两个版本里被查出两种结论。
+ * 在链接下按解析后的真实位置比、越界抛同一条消息），免得同一个洞在两个版本里被查出两种结论。
  */
 export function assertRealPathInsideRootsSync(input: string, options: PathGuardOptions): string {
   const platform = options.platform ?? process.platform;
-  const candidate = assertPathInsideRoots(input, options);
-  let real: string;
-  try {
-    real = realpathSync(candidate);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return candidate;
-    throw new PathGuardError(`路径无法解析真实位置: ${candidate}（${error instanceof Error ? error.message : String(error)}）`);
-  }
   const roots = options.roots.map((root) => {
     const normalized = normalizeHostPath(root, platform);
     try {
@@ -163,6 +171,23 @@ export function assertRealPathInsideRootsSync(input: string, options: PathGuardO
       return normalized;
     }
   });
+  let candidate: string;
+  try {
+    candidate = assertPathInsideRoots(input, options);
+  } catch (error) {
+    try {
+      candidate = assertPathInsideRoots(input, { ...options, roots });
+    } catch {
+      throw error;
+    }
+  }
+  let real: string;
+  try {
+    real = realpathSync(candidate);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return candidate;
+    throw new PathGuardError(`路径无法解析真实位置: ${candidate}（${error instanceof Error ? error.message : String(error)}）`);
+  }
   if (roots.some((root) => isInside(real, root, platform))) return real;
   throw new PathGuardError(`路径经链接后越界: ${candidate} → ${real}`);
 }

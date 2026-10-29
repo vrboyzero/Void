@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -207,5 +207,58 @@ describe("sync real path containment", () => {
       if (existsSync(root)) rmSync(root, { force: true, maxRetries: 5, retryDelay: 100 });
       root = base;
     }
+  });
+});
+
+// 2026-10-29 生产事故的回归：`loadFacetFiles` 先对 `<根>/agents/facets` 调一次
+// `assertRealPathInsideRoots`（看穿链接后拿到**真实**目录），再拿这个真实目录拼文件名、
+// 用同一个「未解析的根」再查一次。旧实现第一层字符串检查就判越界，整棵面板数据 500。
+// 根落在链接里是合法部署，因此这里要保证「调用方已经看穿根」也能通过——同时不能
+// 顺手放过真的越界。
+describe("caller who already resolved the root link", () => {
+  let base: string | undefined;
+
+  afterEach(async () => {
+    if (base !== undefined) await rm(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    base = undefined;
+  });
+
+  /** 建一棵「真实根 + 指向它的链接根」；建不了链接时按工具限制 skip，不假装通过。 */
+  async function linkedRoot(context: { skip: () => void }): Promise<{ realRoot: string; linkedRoot: string } | undefined> {
+    base = await mkdtemp(join(tmpdir(), "void-path-guard-resolved-"));
+    const realRoot = join(base, "real-root");
+    const linkedRoot = join(base, "linked-root");
+    await mkdir(join(realRoot, "agents", "facets"), { recursive: true });
+    await writeFile(join(realRoot, "agents", "facets", "十年一剑.md"), "# 模组", "utf8");
+    try {
+      await symlink(realRoot, linkedRoot, "junction");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      context.skip();
+      return undefined;
+    }
+    return { realRoot, linkedRoot };
+  }
+
+  it("accepts a path the caller built from the real root", async (context) => {
+    const roots = await linkedRoot(context);
+    if (roots === undefined) return;
+    const realFile = join(await realpath(roots.realRoot), "agents", "facets", "十年一剑.md");
+    // 输入是链接外侧的真实位置、根仍是链接：字符串层原本会判越界。
+    await expect(assertRealPathInsideRoots(realFile, { roots: [roots.linkedRoot] })).resolves.toBe(realFile);
+    expect(assertRealPathInsideRootsSync(realFile, { roots: [roots.linkedRoot] })).toBe(realFile);
+  });
+
+  it("still refuses an escape that leaves the real root", async (context) => {
+    const roots = await linkedRoot(context);
+    if (roots === undefined) return;
+    const outside = join(base as string, "outside");
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, "secret.txt"), "host secret", "utf8");
+    await symlink(outside, join(roots.realRoot, "escape"), "junction");
+    // 即使调用方用的是真实根拼出来的路径，指向根外的链接也必须被拒。
+    const realEscape = join(await realpath(roots.realRoot), "escape", "secret.txt");
+    await expect(assertRealPathInsideRoots(realEscape, { roots: [roots.linkedRoot] })).rejects.toThrow(/路径经链接后越界/);
+    expect(() => assertRealPathInsideRootsSync(realEscape, { roots: [roots.linkedRoot] })).toThrow(/路径经链接后越界/);
   });
 });
