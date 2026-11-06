@@ -298,3 +298,4 @@ export {
 export { GhCliGateway, GhCliError, type GhCliGatewayOptions } from "./gh-cli-gateway.js";
 export { GitHubSourceRunner, type GitHubSourceRunnerOptions, type GitHubSourceRunnerStatus } from "./github-source-runner.js";
 export { GitHubSourceService } from "./source-github.js";
+export { createSourceView, SOURCE_VIEW_ID, type SourceViewHost } from "./source-view.js";

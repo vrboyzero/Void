@@ -23,6 +23,7 @@
     "./gh-cli-gateway": "./lib/gh-cli-gateway.js",
     "./github-source-runner": "./lib/github-source-runner.js",
     "./source-github": "./lib/source-github.js",
+    "./source-view": "./lib/source-view.js",
     "./package.json": "./package.json"
   },
   "files": [

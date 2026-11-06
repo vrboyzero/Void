@@ -10,12 +10,13 @@ import { randomUUID } from "node:crypto";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { AuthoritySource } from "@void/void-soul";
-import { ExternalSourceRepository, type ExternalSourceDocument } from "./external-source.js";
+import { ExternalSourceRepository, externalSourceSnapshotOf, type ExternalSourceDocument, type ExternalSourceMode, type ExternalSourceSnapshot } from "./external-source.js";
 import { GhCliGateway } from "./gh-cli-gateway.js";
 import { deliveryComment, type GitHubGateway, type GitHubTicket } from "./github-source.js";
 import { GitHubSourceRunner } from "./github-source-runner.js";
 import { loadMemberPersonas, personaOf } from "./member-identity.js";
 import { createScheduledWorker } from "./subagent-provider.js";
+import { createSourceView } from "./source-view.js";
 import type { VoidTeam } from "./service.js";
 
 export const name = "void-legion-source-github";
@@ -38,6 +39,10 @@ interface HostPresets {
   resolve(id?: string): Promise<{ id: string }>;
   mount(ctx: unknown, id?: string): Promise<unknown>;
 }
+interface DetailHost {
+  registerDetail(source: ReturnType<typeof createSourceView>): () => void;
+}
+
 interface HostDefaultModel {
   currentSelection(): { provider?: string; model?: string } | undefined;
 }
@@ -55,6 +60,15 @@ export class GitHubSourceService extends Service {
     this.team = ctx.get("voidTeam") as VoidTeam;
     const dataRoot = this.team.dataRoot;
     this.repository = dataRoot === undefined ? undefined : new ExternalSourceRepository({ dataDir: dataRoot });
+    // 入口面板在 web 组合里才有；headless 没有 voidSuite，回调永不执行，来源照常工作。
+    this.ctx.inject(["voidSuite"], (viewCtx) => {
+      const suite = viewCtx.get("voidSuite") as DetailHost | undefined;
+      if (suite === undefined || typeof suite.registerDetail !== "function") return;
+      viewCtx.effect(
+        () => suite.registerDetail(createSourceView(() => this)),
+        "void-legion: detail view void-legion:sources",
+      );
+    });
     // 网关配置（ghConfigDir/tokenEnv）在来源文件里，可能被面板改；每次调用时按当前配置取。
     this.lazyGateway = {
       checkAuth: async (repo, signal) => (await this.gateway()).checkAuth(repo, signal),
@@ -89,6 +103,10 @@ export class GitHubSourceService extends Service {
       this.ctx.logger?.warn?.("GitHub 来源缺少数据根，已禁用（不影响内部派活）");
       return;
     }
+    if (this.runner !== undefined) {
+      await this.runner.start();
+      return;
+    }
     const runner = new GitHubSourceRunner({
       repository: this.repository,
       gateway: this.lazyGateway,
@@ -112,8 +130,61 @@ export class GitHubSourceService extends Service {
     return this.runner?.pollNow();
   }
 
-  async snapshot(): Promise<unknown> {
+  async readSnapshot(): Promise<ExternalSourceSnapshot | undefined> {
     return this.repository?.trySnapshot();
+  }
+
+  /** 面板切 observe/live。动作带 CAS；配置修订号 +1。 */
+  async setMode(mode: ExternalSourceMode, expectedRevision: number): Promise<ExternalSourceSnapshot> {
+    return this.mutate(expectedRevision, (document) => ({
+      ...document,
+      runtime: { ...document.runtime, mode },
+    }));
+  }
+
+  /** 面板启停。停用只改状态并停轮询；启用后重新跑 setup。 */
+  async setEnabled(enabled: boolean, expectedRevision: number): Promise<ExternalSourceSnapshot> {
+    const next = await this.mutate(expectedRevision, (document) => ({
+      ...document,
+      runtime: {
+        ...document.runtime,
+        status: enabled ? "setup" : "off",
+        ...(enabled ? {} : { nextPollAt: undefined }),
+      },
+    }));
+    if (enabled) {
+      await this.start();
+    } else {
+      this.runner?.stop();
+    }
+    return next;
+  }
+
+  /** 面板「测试账号」：只读校验，不改状态。 */
+  async testAuth(): Promise<{ login: string; canPush: boolean }> {
+    if (this.repository === undefined) throw new Error("GitHub 来源缺少数据根");
+    const document = await this.repository.load();
+    if (document === undefined) throw new Error("GitHub 来源还没配置");
+    return (await this.gateway()).checkAuth(document.config.repo, AbortSignal.timeout(30_000));
+  }
+
+  private async mutate(
+    expectedRevision: number,
+    change: (document: ExternalSourceDocument) => ExternalSourceDocument,
+  ): Promise<ExternalSourceSnapshot> {
+    if (this.repository === undefined) throw new Error("GitHub 来源缺少数据根");
+    const next = await this.repository.mutate((document) => {
+      if (document.revision !== expectedRevision) {
+        throw new Error(`外部来源已被其他保存更新（期望修订 ${expectedRevision}，实际 ${document.revision}），请重读后再改`);
+      }
+      return {
+        ...change(document),
+        revision: document.revision + 1,
+        updatedAt: new Date().toISOString(),
+        updatedBy: "owner",
+      };
+    });
+    return externalSourceSnapshotOf(next);
   }
 
   private async ensureParent(document: ExternalSourceDocument): Promise<Agent> {
