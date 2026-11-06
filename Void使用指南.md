@@ -619,6 +619,38 @@ node scripts/legion-health.mjs --data-dir "C:/Users/…/.dsh/void-data/web" --re
 - **健康探针**：`legion-health` 会把 sources 坏 JSON 判 2、setup 未完成判 3、连续失败/超过 3×interval 没成功轮询判 1。
 - **第一期不做**：飞书入站、全仓 API 扫描（`receive` 只放大通知流类别）、配置表单、PR 创建/合并、B7 的 PATH shim。真实 gh 账号/评论回写/rate limit 还没真机验。
 
+**飞书入站来源（B8-2，2026-11-06）**：机器人被 @ 或私聊时，按名单把消息变成军团运行；事件走飞书 WS 长连接，不需要公网回调地址。
+
+- **默认观察**：`mode=observe`，只记账不派活；`live` 下的外部 run 仍强制 human 验收。
+- **fail-closed**：`allowed` 为空 = 谁都不能下单；`bots` 为空 = 所有 bot 都不接；没有列出的群按 `none`，私聊按 `direct`。
+- **配置文件**：`<数据根>/legion/sources/feishu.json`。最小例子（只写环境变量名，不写 app secret）：
+
+```json
+{
+  "schemaVersion": 1,
+  "revision": 0,
+  "updatedAt": "2026-11-06T00:00:00.000Z",
+  "updatedBy": "owner",
+  "config": {
+    "appIdEnv": "VOID_FEISHU_APP_ID",
+    "appSecretEnv": "VOID_FEISHU_APP_SECRET",
+    "teamId": "alpha",
+    "allowed": ["ou_xxx"],
+    "bots": [],
+    "chats": { "oc_xxx": "mentions" },
+    "direct": "mentions"
+  },
+  "runtime": { "status": "setup", "mode": "observe", "consecutiveFailures": 0, "seen": [], "counts": {}, "entries": [] }
+}
+```
+
+- **群/私聊规则**：`mentions`（必须 @ 机器人）、`all`（该会话所有消息）、`none`（不接）。
+- **凭据**：自建应用 + 机器人能力，发布版本并授予「接收消息 / 读群成员」权限；`appIdEnv`/`appSecretEnv` 指向宿主环境变量。凭据值不进文件、不进日志。
+- **面板**：设置 → 业务视图 →「外部来源（飞书）」；能看状态、配置摘要、最近 20 条账本；动作：停用/启用、切 observe/live、从群同步允许名单、测试机器人。写动作要求同源 Origin + revision CAS。
+- **回原对话**：run 落定后主动发一条文本消息（runId、状态、已结算数、待验收提示）；发送失败只记在来源状态里。
+- **第一期不做**：全群扫描、配置表单、真实凭据验证。WS 连接与真实事件/群成员同步/回写限流都还没真机验；需要用户提供自建应用凭据。
+- **依赖**：`void-legion` 新增 `@larksuiteoapi/node-sdk`（与 `void-channel-feishu` 同版本）；打包时 lockfile 要一起更新。
+
 ### 3.5 渠道（void-channel-feishu）
 
 **能力**：渠道注册表 `ctx.voidChannels` + 一个 mock 飞书传输（receive → ingress → reply），证明"收消息 → 路由 → 回消息"的 seam 形状。
