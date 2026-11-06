@@ -106,9 +106,14 @@ describe("统一外部来源视图", () => {
     expect(typeof view.save).toBe("function");
   });
 
-  it("列表先 GitHub 后飞书，缺哪个就不列哪个", async () => {
+  it("列表先 GitHub 后飞书；服务装上但还没配置时也要列出两行", async () => {
     const both = createCombinedSourceView(() => ({ github: githubApi(githubSnapshot()).api, feishu: feishuApi(feishuSnapshot()).api }));
     expect((await both.list(profile)).map((item) => item.id)).toEqual(["github", "feishu"]);
+
+    const unconfigured = createCombinedSourceView(() => ({ github: githubApi(undefined).api, feishu: feishuApi(undefined).api }));
+    const rows = await unconfigured.list(profile);
+    expect(rows.map((item) => item.id)).toEqual(["github", "feishu"]);
+    expect(rows.map((item) => item.summary)).toEqual(["还没配置", "还没配置"]);
 
     const onlyFeishu = createCombinedSourceView(() => ({ feishu: feishuApi(feishuSnapshot()).api }));
     expect((await onlyFeishu.list(profile)).map((item) => item.id)).toEqual(["feishu"]);
@@ -190,12 +195,44 @@ describe("统一外部来源视图", () => {
     expect(sent.appIdEnv).toBe("MY_APP_ID");
   });
 
-  it("来源没配置时保存与详情都明确报错", async () => {
-    const view = createCombinedSourceView(() => ({ github: githubApi(undefined).api }));
-    await expect(view.detail({ ...profile, itemId: "github" })).rejects.toThrow("还没配置");
-    await expect(
-      view.save?.({ ...profile, itemId: "github", expectedRevision: 0, changes: {} }),
-    ).rejects.toThrow("还没配置");
+  it("还没配置时详情给空表、保存用默认值创建，不报错也不给动作", async () => {
+    const { api, calls } = githubApi(undefined);
+    const view = createCombinedSourceView(() => ({ github: api }));
+    const body = await view.detail({ ...profile, itemId: "github" });
+    expect(body.revision).toBe(0);
+    expect(body.markdown).toContain("还没配置");
+    expect(body.actions).toEqual([]);
+    const fields = new Map(body.fields.map((field) => [field.key, field]));
+    expect(fields.get("repo")?.readOnly).toBeFalsy();
+
+    const saved = await view.save?.({
+      ...profile,
+      itemId: "github",
+      expectedRevision: 0,
+      changes: { repo: "acme/widgets", teamId: "alpha" },
+    });
+    expect(calls.save).toHaveLength(1);
+    expect(calls.save[0]?.revision).toBe(0);
+    expect(calls.save[0]?.config.repo).toBe("acme/widgets");
+    expect(calls.save[0]?.config.teamId).toBe("alpha");
+    expect(saved?.markdown).toContain("已创建");
+  });
+
+  it("飞书还没配置时同样给空表并可创建", async () => {
+    const { api, calls } = feishuApi(undefined);
+    const view = createCombinedSourceView(() => ({ feishu: api }));
+    const body = await view.detail({ ...profile, itemId: "feishu" });
+    expect(body.revision).toBe(0);
+    expect(body.actions).toEqual([]);
+    await view.save?.({
+      ...profile,
+      itemId: "feishu",
+      expectedRevision: 0,
+      changes: { teamId: "alpha", chats: "oc_1=mentions" },
+    });
+    expect(calls.save[0]?.revision).toBe(0);
+    expect(calls.save[0]?.config.teamId).toBe("alpha");
+    expect(calls.save[0]?.config.chats).toEqual({ oc_1: "mentions" });
   });
 
   it("动作走服务：启停、切模式、立即轮询、测试账号", async () => {

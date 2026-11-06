@@ -438,6 +438,21 @@ export class FeishuSourceRepository {
     });
   }
 
+  /**
+   * 允许「首次配置」：文件不存在时把 `undefined` 交给回调，由回调新建文档。
+   * 与 `mutate` 分开，避免放宽入站/账本写入的 fail-closed 语义。
+   */
+  async upsert(
+    fn: (document: FeishuSourceDocument | undefined) => FeishuSourceDocument,
+  ): Promise<FeishuSourceDocument> {
+    return this.enqueue(async () => {
+      const current = await this.load();
+      const next = fn(current);
+      await writeFileAtomic(this.path, serializeFeishuSourceDocument(next));
+      return next;
+    });
+  }
+
   async trySnapshot(now = new Date()): Promise<FeishuSourceSnapshot | undefined> {
     return this.load()
       .then((document) => document === undefined ? undefined : feishuSourceSnapshotOf(document, now))

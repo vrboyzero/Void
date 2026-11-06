@@ -556,6 +556,23 @@ export class ExternalSourceRepository {
     });
   }
 
+  /**
+   * 允许「首次配置」：文件不存在时把 `undefined` 交给回调，由回调决定新建什么。
+   *
+   * 面板要在没有 `github.json` 时也能保存第一份配置；`mutate` 的「没配置就拒绝」
+   * 语义不能放宽（轮询/账本写入必须 fail-closed），所以单独开一条口子。
+   */
+  async upsert(
+    fn: (document: ExternalSourceDocument | undefined) => ExternalSourceDocument,
+  ): Promise<ExternalSourceDocument> {
+    return this.enqueue(async () => {
+      const current = await this.load();
+      const next = fn(current);
+      await writeFileAtomic(this.filePath, serializeExternalSourceDocument(next));
+      return next;
+    });
+  }
+
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
     const next = this.queue.then(work, work);
     this.queue = next.then(() => undefined, () => undefined);

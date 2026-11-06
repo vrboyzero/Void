@@ -133,4 +133,17 @@ describe("ExternalSourceRepository", () => {
     expect(next.runtime.counts["2026-11-06"]?.observed).toBe(1);
     expect((await repo.load())?.runtime.counts["2026-11-06"]?.observed).toBe(1);
   });
+
+  it("upsert 允许在没有文件时创建第一份配置，不改 mutate 的 fail-closed 语义", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "void-source-"));
+    directories.push(dataDir);
+    const repo = new ExternalSourceRepository({ dataDir });
+    expect(await repo.load()).toBeUndefined();
+    const created = await repo.upsert((current) => {
+      expect(current).toBeUndefined();
+      return { ...document(), revision: 1 };
+    });
+    expect(created.revision).toBe(1);
+    expect((await repo.load())?.revision).toBe(1);
+  });
 });

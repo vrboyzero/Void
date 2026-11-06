@@ -13,6 +13,7 @@ import type { AuthoritySource } from "@void/void-soul";
 import {
   FeishuInbox,
   FeishuSourceRepository,
+  createFeishuSourceDocument,
   feishuSourceSnapshotOf,
   parseFeishuSourceDocument,
   serializeFeishuSourceDocument,
@@ -72,16 +73,38 @@ export class FeishuSourceService extends Service {
     return this.repository?.trySnapshot();
   }
 
+  /** 面板保存飞书配置；文件还不存在时创建（status=off，等用户显式启用）。 */
   async saveConfig(config: FeishuSourceConfig, expectedRevision: number): Promise<FeishuSourceSnapshot> {
-    const next = await this.repository?.mutate((document) => {
+    if (this.repository === undefined) throw new Error("飞书来源缺少数据根");
+    const next = await this.repository.upsert((document) => {
+      const now = new Date().toISOString();
+      if (document === undefined) {
+        if (expectedRevision !== 0) {
+          throw new Error("飞书来源还没配置（期望修订 0，实际 0），请刷新后重试");
+        }
+        const created = createFeishuSourceDocument({ config });
+        const candidate: FeishuSourceDocument = {
+          ...created,
+          revision: 1,
+          updatedAt: now,
+          runtime: { ...created.runtime, status: "off", mode: "observe" },
+        };
+        parseFeishuSourceDocument(serializeFeishuSourceDocument(candidate));
+        return candidate;
+      }
       if (document.revision !== expectedRevision) {
         throw new Error(`飞书来源已被其他保存更新（期望 ${expectedRevision}，实际 ${document.revision}）`);
       }
-      const candidate = { ...document, config };
+      const candidate: FeishuSourceDocument = {
+        ...document,
+        config,
+        revision: document.revision + 1,
+        updatedAt: now,
+        updatedBy: "owner",
+      };
       parseFeishuSourceDocument(serializeFeishuSourceDocument(candidate));
-      return { ...candidate, revision: document.revision + 1, updatedAt: new Date().toISOString(), updatedBy: "owner" };
+      return candidate;
     });
-    if (next === undefined) throw new Error("飞书来源缺少数据根");
     return feishuSourceSnapshotOf(next);
   }
 

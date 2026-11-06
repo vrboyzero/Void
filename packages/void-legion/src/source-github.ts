@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { AuthoritySource } from "@void/void-soul";
-import { ExternalSourceRepository, externalSourceSnapshotOf, parseExternalSourceDocument, serializeExternalSourceDocument, type ExternalSourceConfig, type ExternalSourceDocument, type ExternalSourceMode, type ExternalSourceSnapshot } from "./external-source.js";
+import { ExternalSourceRepository, createExternalSourceDocument, externalSourceSnapshotOf, parseExternalSourceDocument, serializeExternalSourceDocument, type ExternalSourceConfig, type ExternalSourceDocument, type ExternalSourceMode, type ExternalSourceSnapshot } from "./external-source.js";
 import { GhCliGateway } from "./gh-cli-gateway.js";
 import { deliveryComment, type GitHubGateway, type GitHubTicket } from "./github-source.js";
 import { GitHubSourceRunner } from "./github-source-runner.js";
@@ -123,13 +123,42 @@ export class GitHubSourceService extends Service {
   }
 
   /** 面板保存来源配置；先按仓库解析器校验，再 CAS 写盘。 */
+  /** 面板保存来源配置；文件还不存在时创建（status=off，等用户显式启用）。 */
   async saveConfig(config: ExternalSourceConfig, expectedRevision: number): Promise<ExternalSourceSnapshot> {
-    return this.mutate(expectedRevision, (document) => {
-      const next = { ...document, config };
-      // 复用同一份解析器：面板交什么都不能绕过 fail-closed 的字段校验。
-      parseExternalSourceDocument(serializeExternalSourceDocument(next));
-      return next;
+    if (this.repository === undefined) throw new Error("GitHub 来源缺少数据根");
+    const next = await this.repository.upsert((document) => {
+      const now = new Date().toISOString();
+      if (document === undefined) {
+        // 首次配置：面板读到的修订是 0。别的修订说明有人抢先创建了，按冲突拒绝。
+        if (expectedRevision !== 0) {
+          throw new Error("外部来源还没配置（期望修订 0，实际 0），请刷新后重试");
+        }
+        const created = createExternalSourceDocument({ config });
+        const candidate: ExternalSourceDocument = {
+          ...created,
+          revision: 1,
+          updatedAt: now,
+          updatedBy: "owner",
+          runtime: { ...created.runtime, status: "off", mode: "observe" },
+        };
+        // 复用同一份解析器：首次创建也不能绕过 fail-closed 的字段校验。
+        parseExternalSourceDocument(serializeExternalSourceDocument(candidate));
+        return candidate;
+      }
+      if (document.revision !== expectedRevision) {
+        throw new Error(`外部来源已被其他保存更新（期望修订 ${expectedRevision}，实际 ${document.revision}），请重读后再改`);
+      }
+      const candidate: ExternalSourceDocument = {
+        ...document,
+        config,
+        revision: document.revision + 1,
+        updatedAt: now,
+        updatedBy: "owner",
+      };
+      parseExternalSourceDocument(serializeExternalSourceDocument(candidate));
+      return candidate;
     });
+    return externalSourceSnapshotOf(next);
   }
 
   /** 面板切 observe/live。动作带 CAS；配置修订号 +1。 */

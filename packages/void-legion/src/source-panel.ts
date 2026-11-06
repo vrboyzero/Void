@@ -18,8 +18,20 @@ import type {
   ViewSource,
   ViewTextSection,
 } from "./detail-view.js";
-import type { ExternalSourceConfig, ExternalSourceSnapshot } from "./external-source.js";
-import type { FeishuSourceConfig, FeishuSourceSnapshot } from "./feishu-source.js";
+import {
+  createExternalSourceDocument,
+  defaultExternalSourceConfig,
+  externalSourceSnapshotOf,
+  type ExternalSourceConfig,
+  type ExternalSourceSnapshot,
+} from "./external-source.js";
+import {
+  createFeishuSourceDocument,
+  defaultFeishuSourceConfig,
+  feishuSourceSnapshotOf,
+  type FeishuSourceConfig,
+  type FeishuSourceSnapshot,
+} from "./feishu-source.js";
 import type { Context } from "@deepseek-ai/cordis";
 
 export const SOURCE_PANEL_ID = "void-legion:sources";
@@ -69,6 +81,23 @@ function parseNumber(value: unknown, fallback: number): number {
 
 function summaryBase(state: string, mode: string, today: { observed: number; dispatched: number; filtered: number; dropped: number }): string {
   return `${state} · ${mode} · 今日 观察${today.observed} / 派发${today.dispatched} / 过滤${today.filtered} / 丢弃${today.dropped}`;
+}
+
+/**
+ * 未配置时的占位快照：详情要能画出一份可编辑的空表，保存时由服务创建文件。
+ *
+ * 不能复用「读不到快照就报错」的路径——那会让全新 profile 永远打不开第一份配置。
+ */
+function unconfiguredGithubSnapshot(): ExternalSourceSnapshot {
+  return externalSourceSnapshotOf(createExternalSourceDocument({
+    config: defaultExternalSourceConfig({ repo: "", teamId: "" }),
+  }));
+}
+
+function unconfiguredFeishuSnapshot(): FeishuSourceSnapshot {
+  return feishuSourceSnapshotOf(createFeishuSourceDocument({
+    config: defaultFeishuSourceConfig({ teamId: "" }),
+  }));
 }
 
 function githubFields(snapshot: ExternalSourceSnapshot): ViewField[] {
@@ -148,10 +177,12 @@ function ledger(snapshot: ExternalSourceSnapshot | FeishuSourceSnapshot): ViewTe
   };
 }
 
-function githubBody(snapshot: ExternalSourceSnapshot, note?: string): ViewBody {
+function githubBody(snapshot: ExternalSourceSnapshot, note?: string, unconfigured = false): ViewBody {
   return {
     title: "外部来源 · GitHub",
-    markdown: note ?? "改完输入栏点「保存」；保存会 bump 修订号并重新校验。status=off 时保存不会启动轮询。",
+    markdown: note ?? (unconfigured
+      ? "还没配置：填好下面的字段后点「保存」会创建 github.json；status=off，不会启动轮询。"
+      : "改完输入栏点「保存」；保存会 bump 修订号并重新校验。status=off 时保存不会启动轮询。"),
     revision: snapshot.revision,
     fields: [
       { key: "state", label: "状态", value: snapshot.state, readOnly: true, help: snapshot.reason },
@@ -162,7 +193,7 @@ function githubBody(snapshot: ExternalSourceSnapshot, note?: string): ViewBody {
       { key: "lastError", label: "最近错误", value: snapshot.runtime.lastError ?? null, readOnly: true },
     ],
     sections: [...readOnlySections(snapshot, "github"), ledger(snapshot)],
-    actions: [
+    actions: unconfigured ? [] : [
       ...(snapshot.runtime.status === "off"
         ? [{ id: "source-on", label: "启用来源", hint: "保存后再点；会重新做 gh setup。" }]
         : [
@@ -177,10 +208,12 @@ function githubBody(snapshot: ExternalSourceSnapshot, note?: string): ViewBody {
   };
 }
 
-function feishuBody(snapshot: FeishuSourceSnapshot, note?: string): ViewBody {
+function feishuBody(snapshot: FeishuSourceSnapshot, note?: string, unconfigured = false): ViewBody {
   return {
     title: "外部来源 · 飞书",
-    markdown: note ?? "改完输入栏点「保存」；保存会 bump 修订号。status=off 时保存不会连 WS。",
+    markdown: note ?? (unconfigured
+      ? "还没配置：填好下面的字段后点「保存」会创建 feishu.json；status=off，不会连 WS。"
+      : "改完输入栏点「保存」；保存会 bump 修订号。status=off 时保存不会连 WS。"),
     revision: snapshot.revision,
     fields: [
       { key: "state", label: "状态", value: snapshot.state, readOnly: true, help: snapshot.reason },
@@ -191,7 +224,7 @@ function feishuBody(snapshot: FeishuSourceSnapshot, note?: string): ViewBody {
       { key: "lastError", label: "最近错误", value: snapshot.runtime.lastError ?? null, readOnly: true },
     ],
     sections: [...readOnlySections(snapshot, "feishu"), ledger(snapshot)],
-    actions: [
+    actions: unconfigured ? [] : [
       ...(snapshot.runtime.status === "off"
         ? [{ id: "source-on", label: "启用来源", hint: "保存后再点；会重新建 WS 连接。" }]
         : [
@@ -283,32 +316,51 @@ export function createCombinedSourceView(host: () => CombinedSourceHost): ViewSo
     requireOrigin: true,
     async list(_profile: ViewProfile): Promise<readonly ViewItem[]> {
       const { github, feishu } = await snapshots();
+      const service = requireHost();
+      // 行是否存在看「来源服务装没装上」，不看「配置文件在不在」：
+      // 全新 profile 也必须能点开第一份配置，否则编辑/保存就成了死路。
       const items: ViewItem[] = [];
-      if (github !== undefined) {
-        items.push({ id: "github", title: "GitHub", summary: summaryBase(github.state, github.runtime.mode, github.today), meta: `修订 ${github.revision}` });
+      if (service.github !== undefined) {
+        items.push(github === undefined
+          ? { id: "github", title: "GitHub", summary: "还没配置", meta: "点开填写" }
+          : { id: "github", title: "GitHub", summary: summaryBase(github.state, github.runtime.mode, github.today), meta: `修订 ${github.revision}` });
       }
-      if (feishu !== undefined) {
-        items.push({ id: "feishu", title: "飞书", summary: summaryBase(feishu.state, feishu.runtime.mode, feishu.today), meta: `修订 ${feishu.revision}` });
+      if (service.feishu !== undefined) {
+        items.push(feishu === undefined
+          ? { id: "feishu", title: "飞书", summary: "还没配置", meta: "点开填写" }
+          : { id: "feishu", title: "飞书", summary: summaryBase(feishu.state, feishu.runtime.mode, feishu.today), meta: `修订 ${feishu.revision}` });
       }
       return items;
     },
     async detail(input: ViewProfile & { itemId: string }): Promise<ViewBody> {
-      if (input.itemId === "github") return githubBody(requireSnapshot(await githubApi().readSnapshot(), "GitHub "));
-      if (input.itemId === "feishu") return feishuBody(requireSnapshot(await feishuApi().readSnapshot(), "飞书"));
+      if (input.itemId === "github") {
+        const snapshot = await githubApi().readSnapshot();
+        return githubBody(snapshot ?? unconfiguredGithubSnapshot(), undefined, snapshot === undefined);
+      }
+      if (input.itemId === "feishu") {
+        const snapshot = await feishuApi().readSnapshot();
+        return feishuBody(snapshot ?? unconfiguredFeishuSnapshot(), undefined, snapshot === undefined);
+      }
       throw new Error(`没有这个外部来源: ${input.itemId}`);
     },
     async save(input): Promise<ViewBody> {
       if (input.itemId === "github") {
         const api = githubApi();
-        const snapshot = requireSnapshot(await api.readSnapshot(), "GitHub ");
-        const saved = await api.saveConfig(githubConfigFromChanges(snapshot.config, input.changes), requireRevision(input, snapshot.revision));
-        return githubBody(saved, "已保存 GitHub 来源配置；下一步可点「启用来源」。");
+        const snapshot = await api.readSnapshot();
+        const current = snapshot?.config ?? defaultExternalSourceConfig({ repo: "", teamId: "" });
+        const saved = await api.saveConfig(githubConfigFromChanges(current, input.changes), requireRevision(input, snapshot?.revision ?? 0));
+        return githubBody(saved, snapshot === undefined
+          ? "已创建 GitHub 来源配置（status=off）；下一步可点「启用来源」。"
+          : "已保存 GitHub 来源配置；下一步可点「启用来源」。");
       }
       if (input.itemId === "feishu") {
         const api = feishuApi();
-        const snapshot = requireSnapshot(await api.readSnapshot(), "飞书");
-        const saved = await api.saveConfig(feishuConfigFromChanges(snapshot.config, input.changes), requireRevision(input, snapshot.revision));
-        return feishuBody(saved, "已保存飞书来源配置；下一步可点「启用来源」。");
+        const snapshot = await api.readSnapshot();
+        const current = snapshot?.config ?? defaultFeishuSourceConfig({ teamId: "" });
+        const saved = await api.saveConfig(feishuConfigFromChanges(current, input.changes), requireRevision(input, snapshot?.revision ?? 0));
+        return feishuBody(saved, snapshot === undefined
+          ? "已创建飞书来源配置（status=off）；下一步可点「启用来源」。"
+          : "已保存飞书来源配置；下一步可点「启用来源」。");
       }
       throw new Error(`没有这个外部来源: ${input.itemId}`);
     },

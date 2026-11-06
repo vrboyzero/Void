@@ -125,6 +125,28 @@ describe("飞书来源契约", () => {
   });
 });
 
+describe("FeishuSourceRepository", () => {
+  it("upsert 允许在没有文件时创建第一份飞书配置", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "void-feishu-upsert-"));
+    directories.push(dataDir);
+    const repository = new FeishuSourceRepository(dataDir);
+    expect(await repository.load()).toBeUndefined();
+    const base = doc();
+    const created = await repository.upsert((current) => {
+      expect(current).toBeUndefined();
+      return {
+        ...base,
+        revision: 1,
+        runtime: { ...base.runtime, status: "off", mode: "observe" },
+      };
+    });
+    expect(created.revision).toBe(1);
+    const loaded = await repository.load();
+    expect(loaded?.revision).toBe(1);
+    expect(loaded?.runtime.status).toBe("off");
+  });
+});
+
 describe("FeishuInbox 开关", () => {
   it("status=off 时 start 不认证、不连 WS", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "void-feishu-off-"));
