@@ -214,9 +214,11 @@ export class FeishuSourceService extends Service {
 }
 
 export function apply(ctx: Context): void {
-  const service = new FeishuSourceService(ctx);
-  void service.start().catch((error: unknown) => {
-    ctx.logger?.warn?.(`飞书来源启动失败（只禁用本来源）: ${error instanceof Error ? error.message : String(error)}`);
+  ctx.inject(["voidTeam"], (teamCtx) => {
+    const service = new FeishuSourceService(teamCtx);
+    void service.start().catch((error: unknown) => {
+      teamCtx.logger?.warn?.(`飞书来源启动失败（只禁用本来源）: ${error instanceof Error ? error.message : String(error)}`);
+    });
   });
 }
 

@@ -292,9 +292,13 @@ export class GitHubSourceService extends Service {
 }
 
 export function apply(ctx: Context): void {
-  const service = new GitHubSourceService(ctx);
-  void service.start().catch((error: unknown) => {
-    ctx.logger?.warn?.(`GitHub 来源启动失败（只禁用本来源）: ${error instanceof Error ? error.message : String(error)}`);
+  // 不能在 apply 顶层直接 new：bundle 内各 entry 并行激活时 `voidTeam` 可能还没就绪。
+  // `ctx.inject` 等它出现再建服务；服务拿不到就整条来源不激活，但绝不带走宿主。
+  ctx.inject(["voidTeam"], (teamCtx) => {
+    const service = new GitHubSourceService(teamCtx);
+    void service.start().catch((error: unknown) => {
+      teamCtx.logger?.warn?.(`GitHub 来源启动失败（只禁用本来源）: ${error instanceof Error ? error.message : String(error)}`);
+    });
   });
 }
 
