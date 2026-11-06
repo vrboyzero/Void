@@ -202,11 +202,15 @@ describe("composition: configuration validation", () => {
 
 describe("composition: host port adapter", () => {
   it("exposes the controller surface through HostPorts", async () => {
-    const ctx = await bootControl();
+    const ctx = await bootControl({ sessions: [{ sessionId: "session-1", cwd: "E:/work/app" }] });
     const ports: HostPorts = createHostPorts(ctx);
-    await expect(ports.listSessions()).resolves.toEqual([]);
+    await expect(ports.listSessions()).resolves.toEqual([
+      { sessionId: "session-1", running: false, blank: false, updatedAt: 0, cwd: "E:/work/app" },
+    ]);
     await expect(ports.listWorkspaces()).resolves.toEqual([]);
+    // 0.2.2 起会话巡检走 `list()`：命中 id 即 exists:true 并带 cwd，未命中即 exists:false。
     await expect(ports.inspectSession("session-1")).resolves.toEqual({ exists: true, cwd: "E:/work/app" });
+    await expect(ports.inspectSession("session-404")).resolves.toEqual({ exists: false });
     await expect(ports.createSession({ workspaceId: "workspace-1" })).resolves.toEqual({ sessionId: "session-1" });
     await expect(ports.openWorkspace("E:/work/app")).resolves.toMatchObject({ workspaceId: "workspace-1" });
   });

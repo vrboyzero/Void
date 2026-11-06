@@ -3,6 +3,14 @@ import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SubagentProvider, SubagentResult } from "@deepseek-ai/dsh-subagent";
 import { ScheduleCancelledError, type ScheduleWorker, type TaskRunContext } from "./scheduler.js";
+import {
+  SubagentDispatchError,
+  startSubagent,
+  usesActivationApi,
+  withPersonaInstructions,
+  type StartedSubagent,
+  type SubagentRuntime,
+} from "./subagent-compat.js";
 import type { DelegationTeamMember } from "./team.js";
 
 /**
@@ -14,17 +22,14 @@ import type { DelegationTeamMember } from "./team.js";
  * 2. **逐任务模型路由**——`modelRef` 走 `agentOptions` 落到子代理上（§15.3）。
  * 3. **能力预检**——provider 声明不支持的能力，**在派出去之前就拒绝**，不静默降级
  *    （dsh 服务自己也会校验，但那时错误已经发生在半路）。
- * 4. **取消真的传到子代理**——调度器的逐任务 signal 直接交给 `start`，并且
+ * 4. **取消真的传到子代理**——调度器的逐任务 signal 直接交给派活 API，并且
  *    abort 后的失败按「已取消」上报，不记成任务自己的错（§15.2）。
+ *
+ * 派活 API 的版本差异（0.2.0 的 start vs 0.2.1+ 的 startActivation）由
+ * `subagent-compat.ts` 收口，本文件只消费统一的 `{ id, result, dispose }` 句柄。
  */
 
-/** 派活侧的错误：能力不匹配、模型路由写法不对。 */
-export class SubagentDispatchError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SubagentDispatchError";
-  }
-}
+export { SubagentDispatchError } from "./subagent-compat.js";
 
 /**
  * 取子代理 seam：**必须用 `ctx.get("subagents")`，不能写 `ctx.subagents`**。
@@ -173,10 +178,20 @@ export interface DispatchRequirements {
  * 这个字段（`SubagentStartRequest.agentOptions` 却存在且被 spawn provider 真正读取，
  * 见其 `index.js` 的 `request.agentOptions?.provider ?? parent.options.provider`）。
  * 字段缺失＝没声明不支持，不能当成不支持。
+ *
+ * @param mode - `legacy` 表示旧宿主（0.2.0 及以前，persona 走 request.persona）；
+ *   `activation` 表示 0.2.1+（没有 persona 能力，身份文本由调用方并入提示词）。
  */
-export function assertProviderSupports(provider: SubagentProvider, requirements: DispatchRequirements): void {
-  const capabilities = provider.capabilities;
-  const supportsAgentOptions = (capabilities as { agentOptions?: boolean }).agentOptions !== false;
+export function assertProviderSupports(
+  provider: SubagentProvider,
+  requirements: DispatchRequirements,
+  mode: "legacy" | "activation" = "legacy",
+): void {
+  const capabilities = provider.capabilities as SubagentProvider["capabilities"] & {
+    agentOptions?: boolean;
+    persona?: boolean;
+  };
+  const supportsAgentOptions = capabilities.agentOptions !== false;
   if (requirements.modelRef !== undefined && !supportsAgentOptions) {
     throw new SubagentDispatchError(
       `子代理 provider "${provider.name}" 不支持逐任务模型路由，拒绝按 ${requirements.modelRef} 派活（不会退回默认模型）`,
@@ -185,7 +200,8 @@ export function assertProviderSupports(provider: SubagentProvider, requirements:
   if (requirements.structured === true && !capabilities.outputSchema) {
     throw new SubagentDispatchError(`子代理 provider "${provider.name}" 不支持结构化产出，拒绝派活`);
   }
-  if (requirements.persona !== undefined && !capabilities.persona) {
+  // 0.2.1+ 删掉了逐子代理 persona：身份文本改由提示词承载，不再作为能力门槛。
+  if (mode === "legacy" && requirements.persona !== undefined && !capabilities.persona) {
     throw new SubagentDispatchError(`子代理 provider "${provider.name}" 不支持逐子代理身份注入，拒绝派活`);
   }
 }
@@ -228,8 +244,8 @@ async function startWithBoundIdentity(
   member: DelegationTeamMember,
   signal: AbortSignal,
   bind: (sessionId: string, agentId: string) => Promise<void>,
-  start: () => Promise<Awaited<ReturnType<Context["subagents"]["start"]>>>,
-): Promise<Awaited<ReturnType<Context["subagents"]["start"]>>> {
+  start: () => Promise<StartedSubagent>,
+): Promise<StartedSubagent> {
   const previous = bindingStartTail;
   let release!: () => void;
   bindingStartTail = new Promise<void>((resolve) => { release = resolve; });
@@ -284,14 +300,20 @@ export function createScheduledWorker(
   return async (context: TaskRunContext): Promise<unknown> => {
     const brief = laneBriefFromContext(context);
     const subagents = subagentHost(ctx);
+    // 0.2.1+ 用 startActivation；旧宿主（0.2.0 及以前）仍走 start。见 subagent-compat.ts。
+    const activationApi = usesActivationApi(subagents);
     const provider = subagents.getProvider(providerName);
     if (provider === undefined) {
       throw new SubagentDispatchError(`没有这个子代理 provider: ${providerName}`);
     }
-    assertProviderSupports(provider, { modelRef: brief.modelRef, persona: options.persona?.(context) });
+    const persona = options.persona?.(context);
+    assertProviderSupports(
+      provider,
+      { modelRef: brief.modelRef, persona },
+      activationApi ? "activation" : "legacy",
+    );
 
     const agentOptions = brief.modelRef === undefined ? undefined : parseModelRef(brief.modelRef);
-    const persona = options.persona?.(context);
     options.onDispatch?.({
       laneId: brief.laneId,
       provider: providerName,
@@ -299,13 +321,17 @@ export function createScheduledWorker(
     });
 
     const buildPrompt = options.buildPrompt ?? ((item: TaskRunContext) => renderLanePrompt(laneBriefFromContext(item)));
-    const start = () => subagents.start(providerName, {
-      parent,
+    const basePrompt = buildPrompt(context);
+    // 0.2.1+ 删掉了 request.persona：身份说明并入提示词（见 subagent-compat.ts 的降级说明）。
+    const prompt = activationApi && persona !== undefined ? withPersonaInstructions(basePrompt, persona) : basePrompt;
+    const start = (): Promise<StartedSubagent> => startSubagent(subagents as unknown as SubagentRuntime, {
+      provider: providerName,
       label: brief.member.identityLabel ?? brief.laneId,
-      prompt: buildPrompt(context),
+      parent,
+      prompt,
       signal: context.signal,
       ...(agentOptions === undefined ? {} : { agentOptions }),
-      ...(persona === undefined ? {} : { persona }),
+      ...(!activationApi && persona !== undefined ? { persona } : {}),
     });
     const run = options.bindChildSession === undefined
       ? await start()

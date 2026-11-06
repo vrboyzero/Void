@@ -2,18 +2,20 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SubagentResult } from "@deepseek-ai/dsh-subagent";
+import { SubagentDispatchError, startSubagent, type SubagentRuntime } from "./subagent-compat.js";
 import type { LaneWorker, LaneWorkerInput } from "./service.js";
 
 /**
  * 真实子代理 worker（阶段 3 收尾）：把军团 lane 派活给 dsh 的真实子代理
- * （`ctx.subagents.start`，一次性 one-shot 子代理），替代可注入回调的缺省 no-op。
+ * （一次性 one-shot 子代理），替代可注入回调的缺省 no-op。
  *
  * 依赖 dsh 的 subagents seam（`@deepseek-ai/dsh-subagent`）：
- * - `ctx.subagents.start(name, request)` 建立一次性子代理，`name` 是 provider 名
- *   （默认 `spawn`，与 dsh 的 `subagent-spawn-in-process` 对齐）；
+ * - 0.2.1+：`ctx.subagents.startActivation({provider,label,request,signal,delivery})`
+ *   返回 `SubagentActivation`（`childId` / `result` / `dispose`）；
+ * - 0.2.0 及以前：`ctx.subagents.start(name, request)` 返回 `SubagentRun`（`id` / `result` / `dispose`）。
+ * 版本差异与 dispatch 的收口在 `subagent-compat.ts`；本文件只消费统一句柄。
  * - `request.parent` 必须是发起派活的 Agent（在 launch_legion 工具里来自 `exec.agent`）；
- * - `SubagentRun.result` 解析子代理终态（`stopReason !== 'completed'` 即失败），
- *   `dispose` 必须 finally 调用以释放子代理。
+ * - `SubagentResult` 的 `stopReason !== 'completed'` 即失败，`dispose` 必须 finally 调用。
  */
 export interface SubagentWorkerOptions {
   /** 目标 provider 名；默认 `spawn`。 */
@@ -38,11 +40,12 @@ export function createSubagentWorker(
     // `cannot get property "subagents" without inject`（真机派活撞过，见 subagent-provider.ts）。
     const subagents = ctx.get("subagents") as Context["subagents"] | undefined;
     if (subagents === undefined) {
-      throw new Error("派活缺少子代理 seam：宿主没有装 subagents（@deepseek-ai/dsh-subagent）");
+      throw new SubagentDispatchError("派活缺少子代理 seam：宿主没有装 subagents（@deepseek-ai/dsh-subagent）");
     }
-    const run = await subagents.start(provider, {
-      parent,
+    const run = await startSubagent(subagents as unknown as SubagentRuntime, {
+      provider,
       label: input.member.identityLabel ?? input.laneId,
+      parent,
       prompt: buildPrompt(input),
       signal,
     });

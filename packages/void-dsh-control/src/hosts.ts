@@ -186,11 +186,22 @@ export function createHostPorts(ctx: Context): HostPorts {
 
     async inspectSession(sessionId: string): Promise<{ exists: boolean; cwd?: string }> {
       try {
-        const inspection = await ctx.sessionController.inspect(SessionId(sessionId), neverAbort());
-        const cwd = inspection.meta.cwd;
-        return { exists: true, ...(cwd === undefined ? {} : { cwd }) };
+        // 0.2.2 的 SessionController Remote 方法表里已经没有 `inspect`（只剩
+        // attachment/cancel/create/fork/list/modelCatalog/openWorkspacePath/page/
+        // projections/prompt/rename/search/selectModel/updateQueue/
+        // workspacePathApplications 等），继续调用会得到运行期 TypeError。
+        // `list()` 的每一行都带 `cwd`（由宿主从 `header.cwd` 投影，见 0.2.2
+        // dsh-api-session-controller 的 listFields），是现存 API 里唯一能在不恢复
+        // Agent 的前提下读到同等信息的入口：命中 id 即存在，未命中即不存在
+        // （与旧 `inspect` 把 cwd 缺失的会话视为 not-found 的语义一致——0.2.2 的
+        // list 同样只收编有无 cwd 的持久化会话）。
+        // TODO(perf): 控制面命令频率低，一次全量 list 可以接受；若将来要按单会话
+        // 高频巡检，需要在宿主侧提供按 id 读取的接口。
+        const value = await ctx.sessionController.list({}, neverAbort());
+        const item = value.items.find((row) => String(row.sessionId) === sessionId);
+        if (item === undefined) return { exists: false };
+        return { exists: true, ...(item.cwd === undefined ? {} : { cwd: item.cwd }) };
       } catch (error) {
-        if (error instanceof ApiSessionNotFound) return { exists: false };
         throw toControlError(error, "inspectSession");
       }
     },

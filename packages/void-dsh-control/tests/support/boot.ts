@@ -36,6 +36,18 @@ export interface BootOptions {
   withControllers?: boolean;
   /** Entry configuration merged over the fixture defaults. */
   config?: Record<string, unknown>;
+  /** Session rows the stub Session controller reports from `list()`. */
+  sessions?: readonly BootSessionRow[];
+}
+
+/** One `sessionController.list()` item the stub reports, in host contract shape. */
+export interface BootSessionRow {
+  sessionId: string;
+  cwd?: string;
+  running?: boolean;
+  blank?: boolean;
+  updatedAt?: number;
+  parentSessionId?: string;
 }
 
 /**
@@ -55,13 +67,22 @@ export async function bootControl(options: BootOptions = {}): Promise<Context> {
   await ctx.plugin(Loader);
 
   const hosts = new FakeHosts();
+  // 0.2.2 去掉了 `sessionController.inspect`；会话巡检改走 `list()` 的逐行 cwd。
+  // 桩按 0.2.2 list 契约报告行数据，默认空列表。
+  const sessionRows = options.sessions ?? [];
   const controllers = {
     sessionController: {
       async list() {
-        return { items: [] };
-      },
-      async inspect() {
-        return { meta: { cwd: "E:/work/app" }, inheritedEventCount: 0, events: [] };
+        return {
+          items: sessionRows.map((row) => ({
+            sessionId: row.sessionId,
+            running: row.running ?? false,
+            blank: row.blank ?? false,
+            updatedAt: row.updatedAt ?? 0,
+            ...(row.cwd === undefined ? {} : { cwd: row.cwd }),
+            ...(row.parentSessionId === undefined ? {} : { parentSessionId: row.parentSessionId }),
+          })),
+        };
       },
       async create() {
         return { sessionId: "session-1" };
