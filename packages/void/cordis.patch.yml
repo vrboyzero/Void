@@ -75,3 +75,6 @@
       name: "@void/void-legion/source-github"
     - id: void-legion-source-feishu
       name: "@void/void-legion/source-feishu"
+    # 外部来源统一页签（GitHub + 飞书合成一页，配置可在界面里改）。
+    - id: void-legion-source-panel
+      name: "@void/void-legion/source-panel"

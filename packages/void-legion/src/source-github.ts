@@ -10,13 +10,12 @@ import { randomUUID } from "node:crypto";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { AuthoritySource } from "@void/void-soul";
-import { ExternalSourceRepository, externalSourceSnapshotOf, type ExternalSourceDocument, type ExternalSourceMode, type ExternalSourceSnapshot } from "./external-source.js";
+import { ExternalSourceRepository, externalSourceSnapshotOf, parseExternalSourceDocument, serializeExternalSourceDocument, type ExternalSourceConfig, type ExternalSourceDocument, type ExternalSourceMode, type ExternalSourceSnapshot } from "./external-source.js";
 import { GhCliGateway } from "./gh-cli-gateway.js";
 import { deliveryComment, type GitHubGateway, type GitHubTicket } from "./github-source.js";
 import { GitHubSourceRunner } from "./github-source-runner.js";
 import { loadMemberPersonas, personaOf } from "./member-identity.js";
 import { createScheduledWorker } from "./subagent-provider.js";
-import { createSourceView } from "./source-view.js";
 import type { VoidTeam } from "./service.js";
 
 export const name = "void-legion-source-github";
@@ -39,10 +38,6 @@ interface HostPresets {
   resolve(id?: string): Promise<{ id: string }>;
   mount(ctx: unknown, id?: string): Promise<unknown>;
 }
-interface DetailHost {
-  registerDetail(source: ReturnType<typeof createSourceView>): () => void;
-}
-
 interface HostDefaultModel {
   currentSelection(): { provider?: string; model?: string } | undefined;
 }
@@ -60,15 +55,8 @@ export class GitHubSourceService extends Service {
     this.team = ctx.get("voidTeam") as VoidTeam;
     const dataRoot = this.team.dataRoot;
     this.repository = dataRoot === undefined ? undefined : new ExternalSourceRepository({ dataDir: dataRoot });
-    // 入口面板在 web 组合里才有；headless 没有 voidSuite，回调永不执行，来源照常工作。
-    this.ctx.inject(["voidSuite"], (viewCtx) => {
-      const suite = viewCtx.get("voidSuite") as DetailHost | undefined;
-      if (suite === undefined || typeof suite.registerDetail !== "function") return;
-      viewCtx.effect(
-        () => suite.registerDetail(createSourceView(() => this)),
-        "void-legion: detail view void-legion:sources",
-      );
-    });
+    // 视图不在这里登记：统一的外部来源页签由 `void-legion-source-panel` 负责，
+    // 它等服务就绪后把 GitHub 与飞书合成一页（见 source-panel.ts）。
     // 网关配置（ghConfigDir/tokenEnv）在来源文件里，可能被面板改；每次调用时按当前配置取。
     this.lazyGateway = {
       checkAuth: async (repo, signal) => (await this.gateway()).checkAuth(repo, signal),
@@ -132,6 +120,16 @@ export class GitHubSourceService extends Service {
 
   async readSnapshot(): Promise<ExternalSourceSnapshot | undefined> {
     return this.repository?.trySnapshot();
+  }
+
+  /** 面板保存来源配置；先按仓库解析器校验，再 CAS 写盘。 */
+  async saveConfig(config: ExternalSourceConfig, expectedRevision: number): Promise<ExternalSourceSnapshot> {
+    return this.mutate(expectedRevision, (document) => {
+      const next = { ...document, config };
+      // 复用同一份解析器：面板交什么都不能绕过 fail-closed 的字段校验。
+      parseExternalSourceDocument(serializeExternalSourceDocument(next));
+      return next;
+    });
   }
 
   /** 面板切 observe/live。动作带 CAS；配置修订号 +1。 */

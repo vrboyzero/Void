@@ -21,3 +21,7 @@
     # 飞书入站来源（B8-2）：WS 长连接；来源文件不存在时自动不工作。
     - id: void-legion-source-feishu
       name: "@void/void-legion/source-feishu"
+    # 外部来源的统一页签：GitHub 与飞书合成一页，含可编辑配置与保存。
+    # 两个来源服务都就绪后才登记视图；缺一个就不登记（不显示半页）。
+    - id: void-legion-source-panel
+      name: "@void/void-legion/source-panel"

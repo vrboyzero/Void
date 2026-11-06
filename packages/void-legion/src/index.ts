@@ -298,7 +298,7 @@ export {
 export { GhCliGateway, GhCliError, type GhCliGatewayOptions } from "./gh-cli-gateway.js";
 export { GitHubSourceRunner, type GitHubSourceRunnerOptions, type GitHubSourceRunnerStatus } from "./github-source-runner.js";
 export { GitHubSourceService } from "./source-github.js";
-export { createSourceView, SOURCE_VIEW_ID, type SourceViewHost } from "./source-view.js";
+export { createCombinedSourceView, SOURCE_PANEL_ID, type CombinedSourceHost, type FeishuSourcePanelApi, type GitHubSourcePanelApi } from "./source-panel.js";
 export {
   FeishuInbox,
   FeishuSourceError,
@@ -326,4 +326,3 @@ export {
 } from "./feishu-source.js";
 export { FeishuWsGateway, normalizeEvent, type FeishuWsGatewayOptions } from "./feishu-ws-gateway.js";
 export { FeishuSourceService } from "./source-feishu.js";
-export { createFeishuSourceView, FEISHU_VIEW_ID, type FeishuSourceViewHost } from "./feishu-source-view.js";

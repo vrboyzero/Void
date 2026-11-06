@@ -13,11 +13,14 @@ import type { AuthoritySource } from "@void/void-soul";
 import {
   FeishuInbox,
   FeishuSourceRepository,
+  feishuSourceSnapshotOf,
+  parseFeishuSourceDocument,
+  serializeFeishuSourceDocument,
   type FeishuInboundEvent,
+  type FeishuSourceConfig,
   type FeishuSourceDocument,
   type FeishuSourceSnapshot,
 } from "./feishu-source.js";
-import { createFeishuSourceView } from "./feishu-source-view.js";
 import { FeishuWsGateway } from "./feishu-ws-gateway.js";
 import { deliveryComment } from "./github-source.js";
 import { loadMemberPersonas, personaOf } from "./member-identity.js";
@@ -56,14 +59,7 @@ export class FeishuSourceService extends Service {
     this.repository = this.team.dataRoot === undefined
       ? undefined
       : new FeishuSourceRepository(this.team.dataRoot);
-    this.ctx.inject(["voidSuite"], (viewCtx) => {
-      const suite = viewCtx.get("voidSuite") as { registerDetail?: (source: unknown) => () => void } | undefined;
-      if (suite === undefined || typeof suite.registerDetail !== "function") return;
-      viewCtx.effect(
-        () => suite.registerDetail!(createFeishuSourceView(() => this)),
-        "void-legion: detail view void-legion:feishu-source",
-      );
-    });
+    // 视图由 `void-legion-source-panel` 统一登记（GitHub + 飞书合成一页）。
   }
 
   async start(): Promise<void> {
@@ -74,6 +70,19 @@ export class FeishuSourceService extends Service {
 
   async readSnapshot(): Promise<FeishuSourceSnapshot | undefined> {
     return this.repository?.trySnapshot();
+  }
+
+  async saveConfig(config: FeishuSourceConfig, expectedRevision: number): Promise<FeishuSourceSnapshot> {
+    const next = await this.repository?.mutate((document) => {
+      if (document.revision !== expectedRevision) {
+        throw new Error(`飞书来源已被其他保存更新（期望 ${expectedRevision}，实际 ${document.revision}）`);
+      }
+      const candidate = { ...document, config };
+      parseFeishuSourceDocument(serializeFeishuSourceDocument(candidate));
+      return { ...candidate, revision: document.revision + 1, updatedAt: new Date().toISOString(), updatedBy: "owner" };
+    });
+    if (next === undefined) throw new Error("飞书来源缺少数据根");
+    return feishuSourceSnapshotOf(next);
   }
 
   async setMode(mode: "observe" | "live", expectedRevision: number): Promise<FeishuSourceSnapshot> {

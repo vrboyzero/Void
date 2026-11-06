@@ -23,12 +23,11 @@
     "./gh-cli-gateway": "./lib/gh-cli-gateway.js",
     "./github-source-runner": "./lib/github-source-runner.js",
     "./source-github": "./lib/source-github.js",
-    "./source-view": "./lib/source-view.js",
     "./package.json": "./package.json",
     "./feishu-source": "./lib/feishu-source.js",
     "./feishu-ws-gateway": "./lib/feishu-ws-gateway.js",
     "./source-feishu": "./lib/source-feishu.js",
-    "./feishu-source-view": "./lib/feishu-source-view.js"
+    "./source-panel": "./lib/source-panel.js"
   },
   "files": [
     "lib/",
