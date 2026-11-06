@@ -22,6 +22,7 @@ import { createElement as h, useCallback, useEffect, useState, type ReactElement
 import { postDetailAction, postFacetSelection } from './api.js'
 import { BRAND_LOGO_DATA_URI } from './brand-logo.js'
 import type { Context } from './context-types.js'
+import { VoidDetails, type DetailViewManifest } from './details.js'
 import { BORDER, BORDER_SOFT, BRAND, BUTTON_FILL, DANGER, SURFACE_HOVER, SURFACE_PANEL, TEXT_PRIMARY, TEXT_SECONDARY } from './theme.js'
 
 /** 主面板 key 与侧栏行的 `id` 必须相等，这是配对本身。 */
@@ -44,6 +45,29 @@ export const FACETS_VIEW_ID = 'void-soul:facets'
 
 const PROFILES_ENDPOINT = `/void/api/detail?view=${PROFILES_VIEW_ID}`
 const FACETS_ENDPOINT = `/void/api/detail?view=${FACETS_VIEW_ID}`
+
+/**
+ * B1 派活名单视图。由 `void-legion` 注册到入口，这里只把它嵌进本面板的页签。
+ *
+ * 不在设置页的「业务视图」里再挂一份：同一块数据两处入口，改完两边不同步比不显示更糟
+ * （入口的设置区会按这个 id 过滤掉）。
+ */
+export const POLICY_VIEW_ID = 'void-legion:dispatch-policy'
+
+/** 单视图模式的 manifest。**模块常量**：每次渲染新建数组会让嵌入组件反复重读。 */
+const POLICY_VIEWS: DetailViewManifest[] = [{ id: POLICY_VIEW_ID, title: '派活名单' }]
+
+/** 主面板的两个页签：现有的 Agent 卡片 / B1 派活名单。 */
+type PanelTab = 'agents' | 'policy'
+
+/**
+ * 设置页「业务视图」的可见目录。
+ *
+ * 派活名单已经在主面板的页签里，不再在设置页重复挂一份。纯函数，便于钉住这条去重规则。
+ */
+export function settingsDetailViews(views: readonly DetailViewManifest[]): DetailViewManifest[] {
+  return views.filter((view) => view.id !== POLICY_VIEW_ID)
+}
 
 /** 下拉里「不装模组」那一项的值。宿主把 `facetId: null` 解释成摘掉角色。 */
 export const NO_FACET_VALUE = ''
@@ -406,16 +430,56 @@ function Card(props: {
   )
 }
 
+/** 页签按钮。用 `role=tab` + `aria-selected`，键盘/读屏至少能知道当前是哪一个。 */
+function TabButton(props: {
+  tab: PanelTab
+  label: string
+  active: boolean
+  onSelect: (tab: PanelTab) => void
+}): ReactElement {
+  return h('button', {
+    type: 'button',
+    role: 'tab',
+    'aria-selected': props.active,
+    'data-void-agents-tab': props.tab,
+    onClick: () => props.onSelect(props.tab),
+    style: {
+      border: 'none',
+      borderBottom: `2px solid ${props.active ? BRAND : 'transparent'}`,
+      background: 'transparent',
+      color: props.active ? TEXT_PRIMARY : TEXT_SECONDARY,
+      cursor: 'pointer',
+      fontSize: 13,
+      fontWeight: props.active ? 600 : 400,
+      padding: '6px 10px',
+    },
+  }, props.label)
+}
+
 /**
- * 主面板：灵魂档案卡片网格。
+ * 主面板：灵魂档案卡片网格 + B1 派活名单。
  *
  * - **点卡片主体** = 把当前会话绑到那份档案（没有当前会话时给门禁提示）；
- * - **下拉 + 「加载模组」** = 只换该档案的角色层，不动底线。
+ * - **下拉 + 「加载模组」** = 只换该档案的角色层，不动底线；
+ * - **顶部页签** = 在「Agent」与「派活名单」之间切换。派活名单是军团侧的运营视图，
+ *   嵌在这里是为了让「谁能派活」和「谁是谁」在同一块面板里看，不用开两个侧栏面板。
  *
  * 门禁不做复杂流程（用户 2026-09-26 裁定：用户总是先进入会话才会改选 Agent，
  * 空态只可能是刻意构造的）。
  */
 export function VoidAgentsPage(props: Record<string, unknown> = {}): ReactElement {
+  const [tab, setTab] = useState<PanelTab>('agents')
+  /**
+   * 派活名单页签**第一次打开后保持挂载**，只切 `display`。
+   *
+   * 若按条件渲染，切回 Agent 时 `VoidDetails` 会被卸载，里面未保存的名单草稿
+   * 就无声丢了。首次打开挂载一次，之后两边都活着。
+   */
+  const [policyVisited, setPolicyVisited] = useState(false)
+  const selectTab = useCallback((next: PanelTab) => {
+    setTab(next)
+    if (next === 'policy') setPolicyVisited(true)
+  }, [])
   const [state, setState] = useState<PanelState>({ kind: 'loading' })
   const [reloadToken, setReloadToken] = useState(0)
   const [currentSession, setCurrentSession] = useState<string | undefined>(undefined)
@@ -520,7 +584,7 @@ export function VoidAgentsPage(props: Record<string, unknown> = {}): ReactElemen
     })
   }, [facetOptions])
 
-  const status = state.kind === 'ready' ? `${state.cards.length} 份档案` : ''
+  const status = tab === 'agents' && state.kind === 'ready' ? `${state.cards.length} 份档案` : ''
   const sessionLabel = currentSession === undefined
     ? (sessionIds.length > 0 ? '没有选中的会话' : '还没有会话')
     : `当前会话 …${currentSession.slice(-8)}`
@@ -535,15 +599,28 @@ export function VoidAgentsPage(props: Record<string, unknown> = {}): ReactElemen
     h('span', { style: { fontSize: 16, fontWeight: 600 } }, VOID_AGENTS_LABEL),
     h('span', { 'data-void-agents-session': '', style: { fontSize: 12, color: TEXT_SECONDARY } }, sessionLabel),
     h('span', { style: { fontSize: 12, color: TEXT_SECONDARY, marginLeft: 'auto' } }, status),
-    h('button', {
-      type: 'button',
-      'data-void-agents-reload': '',
-      onClick: () => setReloadToken((value) => value + 1),
-      style: {
-        fontSize: 12, color: TEXT_SECONDARY, background: 'transparent',
-        border: `1px solid ${BORDER_SOFT}`, borderRadius: 8, padding: '4px 10px', cursor: 'pointer',
-      },
-    }, '刷新'),
+    // 派活名单详情自己带「重新读取」，不再放一颗点了不知道刷哪里的全局刷新。
+    tab === 'agents'
+      ? h('button', {
+          type: 'button',
+          'data-void-agents-reload': '',
+          onClick: () => setReloadToken((value) => value + 1),
+          style: {
+            fontSize: 12, color: TEXT_SECONDARY, background: 'transparent',
+            border: `1px solid ${BORDER_SOFT}`, borderRadius: 8, padding: '4px 10px', cursor: 'pointer',
+          },
+        }, '刷新')
+      : null,
+  )
+
+  /** 页签条：两个模块只换正文，标题栏与会话提示保持不变。 */
+  const tabsNode = h('div', {
+    role: 'tablist',
+    'data-void-agents-tabs': '',
+    style: { display: 'flex', gap: 4, marginBottom: 12, borderBottom: `1px solid ${BORDER}` },
+  },
+    h(TabButton, { tab: 'agents', label: 'Agent', active: tab === 'agents', onSelect: selectTab }),
+    h(TabButton, { tab: 'policy', label: '派活名单', active: tab === 'policy', onSelect: selectTab }),
   )
 
   /** 门禁与结果条：只在需要时出现，不占常驻空间。 */
@@ -569,50 +646,66 @@ export function VoidAgentsPage(props: Record<string, unknown> = {}): ReactElemen
     ? sessionIds.map((id) => h(CurrentSessionReporter, { key: id, id, useRetain, onResolve }))
     : []
 
-  if (state.kind === 'loading') {
-    return h('div', { 'data-void-agents-panel': '', style: PANEL_ROOT_STYLE }, reporters, header,
-      bodyArea(h('div', { style: { fontSize: 13, color: TEXT_SECONDARY } }, '正在读取灵魂档案…')))
-  }
-
-  if (state.kind === 'error') {
-    return h('div', { 'data-void-agents-panel': '', style: PANEL_ROOT_STYLE }, reporters, header,
-      bodyArea(
-        h('div', { style: { fontSize: 13, color: DANGER } }, `读取失败：${state.message}`),
-        h('div', { style: { fontSize: 12, color: TEXT_SECONDARY, marginTop: 8 } },
-          '灵魂插件没装或数据根还没配好时会出现这一条。装齐 void-soul 后点右上角刷新。'),
-      ))
-  }
+  /**
+   * Agent 页签的正文。加载中 / 读取失败 / 正常三态都收在这里，
+   * 这样派活名单页签不会因为灵魂档案读不出来而整块不可用。
+   */
+  const agentsBody = state.kind === 'loading'
+    ? h('div', { style: { fontSize: 13, color: TEXT_SECONDARY } }, '正在读取灵魂档案…')
+    : state.kind === 'error'
+      ? h('div', null,
+          h('div', { style: { fontSize: 13, color: DANGER } }, `读取失败：${state.message}`),
+          h('div', { style: { fontSize: 12, color: TEXT_SECONDARY, marginTop: 8 } },
+            '灵魂插件没装或数据根还没配好时会出现这一条。装齐 void-soul 后点右上角刷新。'),
+        )
+      : h('div', null,
+          noticeNode,
+          state.cards.length === 0
+            ? h('div', { style: { fontSize: 13, color: TEXT_SECONDARY } },
+                '还没有任何灵魂档案。建一份之后这里会出现它的卡片。')
+            : h('div', {
+                'data-void-agents-grid': '',
+                style: {
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+                  gap: 12,
+                  alignItems: 'start',
+                },
+              }, ...state.cards.map((card) => h(Card, {
+                key: card.id,
+                card,
+                currentSession,
+                onBind: bindCard,
+                bindBusy: bindBusy === card.id,
+                selected: drafts[card.id] ?? card.facetId ?? NO_FACET_VALUE,
+                onSelect: (profileId: string, value: string) =>
+                  setDrafts((current) => ({ ...current, [profileId]: value })),
+                facets: facetOptions,
+                onNeedFacets: needFacets,
+                onLoadFacet: loadFacet,
+                facetBusy: facetBusy === card.id,
+              }))),
+        )
 
   return h('div', { 'data-void-agents-panel': '', style: PANEL_ROOT_STYLE },
     reporters,
     header,
     bodyArea(
-      noticeNode,
-      state.cards.length === 0
-        ? h('div', { style: { fontSize: 13, color: TEXT_SECONDARY } },
-            '还没有任何灵魂档案。建一份之后这里会出现它的卡片。')
-        : h('div', {
-            'data-void-agents-grid': '',
-            style: {
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
-              gap: 12,
-              alignItems: 'start',
-            },
-          }, ...state.cards.map((card) => h(Card, {
-          key: card.id,
-          card,
-          currentSession,
-          onBind: bindCard,
-          bindBusy: bindBusy === card.id,
-          selected: drafts[card.id] ?? card.facetId ?? NO_FACET_VALUE,
-          onSelect: (profileId: string, value: string) =>
-            setDrafts((current) => ({ ...current, [profileId]: value })),
-          facets: facetOptions,
-          onNeedFacets: needFacets,
-          onLoadFacet: loadFacet,
-          facetBusy: facetBusy === card.id,
-        })))),
+      tabsNode,
+      h('div', {
+        'data-void-agents-tab-panel': 'agents',
+        style: { display: tab === 'agents' ? 'block' : 'none' },
+      }, agentsBody),
+      // 派活名单是 void-legion 注册的业务视图；单视图模式下它自己读列表、自动打开详情。
+      // 军团插件没装时这块会如实报错，不会假装「名单为空」。
+      // 第一次打开后保持挂载（只切 display），避免切页签丢掉未保存草稿。
+      policyVisited
+        ? h('div', {
+            'data-void-agents-tab-panel': 'policy',
+            style: { display: tab === 'policy' ? 'block' : 'none' },
+          }, h(VoidDetails, { views: POLICY_VIEWS, single: true }))
+        : null,
+    ),
   )
 }
 

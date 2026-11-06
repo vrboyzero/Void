@@ -1,6 +1,6 @@
 import { createElement as h, useCallback, useEffect, useRef, useState } from 'react'
 import type { Context } from './context-types.ts'
-import { registerVoidAgents } from './agents-panel.js'
+import { registerVoidAgents, settingsDetailViews } from './agents-panel.js'
 import { openSession } from './session-jump.js'
 import { createVoidWidgetsService, parseFacetVersionPayload, readOnlyWidgetLines, type ReadOnlyWidgetNode, type VoidWidgetsService } from './widgets.js'
 import {
@@ -607,7 +607,12 @@ function VoidSection(props: { widgets?: VoidWidgetsService; openSession?: (sessi
             ),
 
     // 业务详情视图（队伍/任务/记忆/…）：目录来自 host，这里只负责渲染。
-    h(VoidDetails, { views: detailViews, onOpenSession: props.openSession }),
+    // 派活名单挂在「虚空(Void) Agents」面板的页签里，这里不再重复一份；
+    // 同一块数据两个入口，改完两边不同步比不显示更糟。
+    h(VoidDetails, {
+      views: settingsDetailViews(detailViews),
+      onOpenSession: props.openSession,
+    }),
 
     error
       ? h('div', { style: { marginTop: 12 } }, h(Hint, { text: error, tone: 'danger' }))

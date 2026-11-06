@@ -67,6 +67,8 @@ export interface DetailRowsSection {
   rows: Record<string, unknown>[]
   key?: string
   editable?: boolean
+  /** 行级「移除」按钮；只给空行可忽略的名单用。 */
+  removable?: boolean
   addLabel?: string
   help?: string
 }
@@ -471,6 +473,7 @@ function RowsSection(props: {
 }): React.ReactElement {
   const { section, drafts, onDraft, added, onAddRow } = props
   const editable = section.editable === true && section.key !== undefined && section.key !== ''
+  const removable = editable && section.removable === true
   const sectionKey = section.key ?? section.id
   const total = section.rows.length + (editable ? added : 0)
   const indices = Array.from({ length: total }, (_, index) => index)
@@ -483,6 +486,7 @@ function RowsSection(props: {
       h('thead', null, h('tr', null,
         ...section.columns.map((column) =>
           h('th', { key: column.key, style: { ...CELL, color: TEXT_SECONDARY, fontWeight: 500 } }, column.label)),
+        removable ? h('th', { key: '__remove', style: { ...CELL, width: 52 } }, '') : null,
       )),
       h('tbody', null,
         ...indices.map((index) => {
@@ -506,6 +510,30 @@ function RowsSection(props: {
                 }),
               )
             }),
+            removable
+              ? h('td', { key: '__remove', style: CELL },
+                  h('button', {
+                    type: 'button',
+                    'data-detail-remove-row': `${sectionKey}[${index}]`,
+                    onClick: () => {
+                      // 清空整行＝移除：沿用同一份草稿，保存时整组交上去。服务端把空行
+                      // 当不存在（见 `readPolicyAllowlist`），不会写进磁盘再报「id 不合法」。
+                      for (const column of section.columns) {
+                        onDraft(cellDraftKey(sectionKey, index, column.key), '')
+                      }
+                    },
+                    style: {
+                      border: `1px solid ${BORDER}`,
+                      borderRadius: 6,
+                      background: 'transparent',
+                      color: TEXT_SECONDARY,
+                      cursor: 'pointer',
+                      fontSize: 12,
+                      padding: '2px 8px',
+                    },
+                  }, '移除'),
+                )
+              : null,
           )
         }),
       ),
@@ -619,9 +647,23 @@ function collectArgs(action: DetailAction, actionArgs: Record<string, string>, p
  * 没有登记任何视图时**什么都不画**：headless 组合或没装业务插件时，这里多一块空白
  * 只会让人以为坏了。
  */
-export function VoidDetails(props: { views: DetailViewManifest[]; onOpenSession?: (sessionId: string) => boolean | Promise<boolean> }): React.ReactElement | null {
-  const { views, onOpenSession } = props
-  const [openView, setOpenView] = useState<string | null>(null)
+export function VoidDetails(props: {
+  views: DetailViewManifest[]
+  onOpenSession?: (sessionId: string) => boolean | Promise<boolean>
+  /**
+   * 只画那一个视图的详情：不画「业务视图」标题、视图选择器与条目列表。
+   *
+   * 给「把某一块业务直接嵌进别的页签」用（B1 的派活名单）。视图只有一个时才会自动
+   * 打开；多于一个仍走普通模式，免得把「该选哪个」悄悄替用户决定。
+   */
+  single?: boolean
+}): React.ReactElement | null {
+  const { views, onOpenSession, single = false } = props
+  // 只有「声明了 single 且恰好一个视图」才进嵌入模式。多于一个时退回普通模式，
+  // 不能把选择器藏掉却又不自动打开任何一个——那会是一块空白。
+  const singleMode = single && views.length === 1
+  const onlyView = singleMode ? views[0]!.id : null
+  const [openView, setOpenView] = useState<string | null>(onlyView)
   const [lists, setLists] = useState<Record<string, DetailItem[]>>({})
   const [viewActions, setViewActions] = useState<Record<string, DetailAction[]>>({})
   const [searches, setSearches] = useState<Record<string, DetailSearch | undefined>>({})
@@ -700,6 +742,31 @@ export function VoidDetails(props: { views: DetailViewManifest[]; onOpenSession?
       setBusy(null)
     }
   }, [])
+
+  // 单视图模式：视图 manifest 换了（插件重载、被关掉）就跟着换或清空。
+  useEffect(() => {
+    if (!singleMode) return
+    const only = views[0]!.id
+    if (only === openView) return
+    setOpenView(only)
+    setItem(null)
+    setDrafts({})
+    setAdditions({})
+  }, [singleMode, views, openView])
+
+  // 单视图模式一挂载就自己读列表；普通模式要等用户点视图按钮。
+  useEffect(() => {
+    if (!singleMode || openView === null) return
+    void openList(openView)
+  }, [singleMode, openView, openList])
+
+  // 列表只有一条时自动打开它——嵌入页签时不该再让用户点一次。
+  useEffect(() => {
+    if (!singleMode || openView === null || item !== null) return
+    const entries = lists[openView]
+    if (entries === undefined || entries.length !== 1) return
+    void openItem(openView, entries[0]!.id)
+  }, [singleMode, openView, item, lists, openItem])
 
   const reload = useCallback(async () => {
     if (item === null) return
@@ -841,10 +908,21 @@ export function VoidDetails(props: { views: DetailViewManifest[]; onOpenSession?
   const openQuery = openView === null ? '' : activeQueries[openView] ?? ''
   // 输入框优先显示正在编辑的草稿；草稿是空串说明用户刚清掉，不能退回已提交的词。
   const openDraft = openView === null ? '' : queryDrafts[openView] ?? activeQueries[openView] ?? ''
+  // 单视图模式只有一条：**详情已经打开**才隐藏「点它」的列表项。自动打开失败时
+  // 列表必须还在，用户才有重试入口。
+  const hideSingleList =
+    singleMode && openView !== null && item !== null && (lists[openView] ?? []).length === 1
 
-  return h('section', { 'data-void-details': '', style: { marginTop: 16, borderTop: `1px solid ${BORDER}`, paddingTop: 12 } },
-    h('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 8 } }, '业务视图'),
-    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 } },
+  return h('section', {
+    'data-void-details': '',
+    ...(singleMode ? { 'data-void-details-single': '' } : {}),
+    // 嵌进别人的页签时不要再画一条顶边与内边距：那是「设置页里分隔业务视图」的框。
+    style: singleMode
+      ? { marginTop: 0, borderTop: 'none', paddingTop: 0 }
+      : { marginTop: 16, borderTop: `1px solid ${BORDER}`, paddingTop: 12 },
+  },
+    singleMode ? null : h('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 8 } }, '业务视图'),
+    singleMode ? null : h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 } },
       ...views.map((view) =>
         h('button', {
           key: view.id,
@@ -986,7 +1064,9 @@ export function VoidDetails(props: { views: DetailViewManifest[]; onOpenSession?
                 ),
               ),
 
-          (lists[openView] ?? []).length === 0 && busy === null
+          hideSingleList
+            ? null
+            : (lists[openView] ?? []).length === 0 && busy === null
             ? h('div', { style: { fontSize: 12, color: TEXT_SECONDARY } }, '这个视图现在是空的。')
             : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 } },
                 ...(lists[openView] ?? []).map((entry) =>

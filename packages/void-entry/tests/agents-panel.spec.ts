@@ -4,7 +4,9 @@ import {
   isCurrentSession,
   parseAgentCards,
   parseFacetOptions,
+  POLICY_VIEW_ID,
   PROFILES_VIEW_ID,
+  settingsDetailViews,
   VOID_AGENTS_LABEL,
   VOID_AGENTS_PANEL_ID,
   NO_FACET_VALUE,
@@ -222,6 +224,25 @@ describe('主题令牌', () => {
     for (const token of tokens) {
       expect(token).toMatch(/^var\(--dsw-alias-[a-z0-9-]+\)$/)
     }
+  })
+})
+
+describe('B1 派活名单页签', () => {
+  it('页签里嵌的视图 id 与军团侧注册的 id 逐字一致', () => {
+    // 两侧各写一份字符串：漂移的表现是「点了页签只看到一片空白/读取失败」。
+    expect(POLICY_VIEW_ID).toBe('void-legion:dispatch-policy')
+  })
+
+  it('设置页的业务视图目录去掉派活名单，其余原样保留', () => {
+    const views = [
+      { id: 'void-soul:profiles', title: '灵魂档案' },
+      { id: POLICY_VIEW_ID, title: '派活名单' },
+      { id: 'void-legion:teams', title: '军团队伍' },
+    ]
+    expect(settingsDetailViews(views)).toEqual([
+      { id: 'void-soul:profiles', title: '灵魂档案' },
+      { id: 'void-legion:teams', title: '军团队伍' },
+    ])
   })
 })
 
