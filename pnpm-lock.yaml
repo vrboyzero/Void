@@ -163,6 +163,9 @@ importers:
 
   packages/void-legion:
     dependencies:
+      '@larksuiteoapi/node-sdk':
+        specifier: ^1.71.1
+        version: 1.73.0
       '@void/void-soul':
         specifier: workspace:*
         version: link:../void-soul
@@ -3993,6 +3996,7 @@ packages:
 
   fastembed@2.1.0:
     resolution: {integrity: sha512-oQkpcRHBppJ3+a3w9dU0uytSY0N1cnEa/iVMc8AXEd+tvT529GekOEFhNviJy89R3lvQXF6cdIMTXHj1Gi00xQ==}
+    deprecated: fastembed@v2 is deprecated. Please update to fastembed@v3.
 
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}

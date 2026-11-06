@@ -73,3 +73,5 @@
     # 外部触发来源（B8）：GitHub 通知轮询。来源文件不存在时自动不工作。
     - id: void-legion-source-github
       name: "@void/void-legion/source-github"
+    - id: void-legion-source-feishu
+      name: "@void/void-legion/source-feishu"

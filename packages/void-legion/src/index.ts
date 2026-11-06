@@ -299,3 +299,31 @@ export { GhCliGateway, GhCliError, type GhCliGatewayOptions } from "./gh-cli-gat
 export { GitHubSourceRunner, type GitHubSourceRunnerOptions, type GitHubSourceRunnerStatus } from "./github-source-runner.js";
 export { GitHubSourceService } from "./source-github.js";
 export { createSourceView, SOURCE_VIEW_ID, type SourceViewHost } from "./source-view.js";
+export {
+  FeishuInbox,
+  FeishuSourceError,
+  FeishuSourceRepository,
+  FEISHU_SOURCE_ID,
+  FEISHU_SOURCE_SCHEMA_VERSION,
+  MAX_FEISHU_SEEN,
+  createDefaultFeishuDocument,
+  createFeishuSourceDocument,
+  defaultFeishuSourceConfig,
+  emptyFeishuRuntime,
+  feishuSourceSnapshotOf,
+  feishuStateReason,
+  parseFeishuSourceDocument,
+  serializeFeishuSourceDocument,
+  type FeishuChatRule,
+  type FeishuGateway,
+  type FeishuInboundEvent,
+  type FeishuMember,
+  type FeishuSourceConfig,
+  type FeishuSourceDocument,
+  type FeishuSourceMode,
+  type FeishuSourceSnapshot,
+  type FeishuSourceStatus,
+} from "./feishu-source.js";
+export { FeishuWsGateway, normalizeEvent, type FeishuWsGatewayOptions } from "./feishu-ws-gateway.js";
+export { FeishuSourceService } from "./source-feishu.js";
+export { createFeishuSourceView, FEISHU_VIEW_ID, type FeishuSourceViewHost } from "./feishu-source-view.js";
