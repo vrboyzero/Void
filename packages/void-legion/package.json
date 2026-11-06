@@ -18,6 +18,11 @@
     "./detail-view": "./lib/detail-view.js",
     "./notifications": "./lib/notifications.js",
     "./notification-source": "./lib/notification-source.js",
+    "./external-source": "./lib/external-source.js",
+    "./github-source": "./lib/github-source.js",
+    "./gh-cli-gateway": "./lib/gh-cli-gateway.js",
+    "./github-source-runner": "./lib/github-source-runner.js",
+    "./source-github": "./lib/source-github.js",
     "./package.json": "./package.json"
   },
   "files": [

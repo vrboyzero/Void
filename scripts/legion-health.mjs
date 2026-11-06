@@ -110,7 +110,7 @@ async function checkCorrupt(dataDir) {
       problems.push(`${path.relative(dataDir, file)} 坏了：${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  for (const [dirName, label] of [["runs", "运行记录"], ["teams", "队伍配置"]]) {
+  for (const [dirName, label] of [["runs", "运行记录"], ["teams", "队伍配置"], ["sources", "外部来源"]]) {
     const dir = path.join(legion, dirName);
     for (const name of await listJson(dir)) {
       try {
@@ -121,6 +121,42 @@ async function checkCorrupt(dataDir) {
     }
   }
   return problems;
+}
+
+/**
+ * 外部来源（B8）的运行状态：坏 JSON 已在 checkCorrupt 判 2；这里只判
+ * 「setup 未完成」（3）与「连续失败 / 轮询陈旧」（1，重启可能修）。
+ */
+async function checkSourceRuntime(dataDir, now = Date.now()) {
+  const setup = [];
+  const unhealthy = [];
+  const dir = path.join(dataDir, "legion", "sources");
+  for (const name of await listJson(dir)) {
+    const file = path.join(dir, name);
+    let document;
+    try {
+      document = await readJsonFile(file);
+    } catch {
+      continue;
+    }
+    const config = document?.config ?? {};
+    const runtime = document?.runtime ?? {};
+    if (runtime.status === "off") continue;
+    if (runtime.status === "setup") {
+      setup.push(`${name} 未完成 setup${runtime.lastError === undefined ? "" : `：${runtime.lastError}`}`);
+      continue;
+    }
+    const failures = Number(runtime.consecutiveFailures ?? 0);
+    if (Number.isFinite(failures) && failures >= 3) {
+      unhealthy.push(`${name} 连续失败 ${failures} 次${runtime.lastError === undefined ? "" : `：${runtime.lastError}`}`);
+    }
+    const lastPoll = Date.parse(runtime.lastPollAt ?? "");
+    const interval = Number(config.intervalMs ?? 60_000);
+    if (Number.isFinite(lastPoll) && now - lastPoll > Math.max(interval * 3, 180_000)) {
+      unhealthy.push(`${name} 超过 3×interval 没有成功轮询（lastPollAt=${runtime.lastPollAt}）`);
+    }
+  }
+  return { setup, unhealthy };
 }
 
 async function countRunningRuns(dataDir) {
@@ -218,6 +254,24 @@ export async function evaluateLegionHealth(input = {}) {
       HEALTH_CODES.restartCannotFix,
       problems,
       ["人工修好损坏的 JSON/权限；重启不会修"],
+      { dataDir, checkedAt },
+    );
+  }
+
+  const sourceRuntime = await checkSourceRuntime(dataDir, Date.parse(checkedAt));
+  if (sourceRuntime.setup.length > 0) {
+    return codeResult(
+      HEALTH_CODES.waitingSetup,
+      sourceRuntime.setup,
+      ["先完成外部来源的 setup（账号/仓库权限/配置），再谈自动接活"],
+      { dataDir, checkedAt },
+    );
+  }
+  if (sourceRuntime.unhealthy.length > 0) {
+    return codeResult(
+      HEALTH_CODES.restartCanFix,
+      sourceRuntime.unhealthy,
+      ["检查来源账号/网络；失败会按指数退避，重启或修正后恢复"],
       { dataDir, checkedAt },
     );
   }

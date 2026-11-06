@@ -32,6 +32,7 @@ async function seedDataRoot(): Promise<string> {
   const dataDir = path.join(await tempRoot(), "void-data", "web");
   await mkdir(path.join(dataDir, "legion", "runs"), { recursive: true });
   await mkdir(path.join(dataDir, "legion", "teams"), { recursive: true });
+  await mkdir(path.join(dataDir, "legion", "sources"), { recursive: true });
   return dataDir;
 }
 
@@ -97,6 +98,58 @@ describe("军团健康探针（B4 四码）", () => {
     const result = await evaluateLegionHealth({ dataDir, fetchImpl: status({ enabled: true }) });
     expect(result.code).toBe(HEALTH_CODES.restartCannotFix);
     expect(result.reasons.join("\n")).toContain("dispatch-policy.json");
+  });
+
+  it("外部来源坏 JSON → 2（先于宿主状态判断）", async () => {
+    const dataDir = await seedDataRoot();
+    await writeFile(path.join(dataDir, "legion", "sources", "github.json"), "{坏", "utf8");
+    const result = await evaluateLegionHealth({ dataDir, fetchImpl: status({ enabled: true }) });
+    expect(result.code).toBe(HEALTH_CODES.restartCannotFix);
+    expect(result.reasons.join("\n")).toContain(path.join("sources", "github.json"));
+  });
+
+  it("外部来源 setup 未完成 → 3 等 setup", async () => {
+    const dataDir = await seedDataRoot();
+    await writeFile(path.join(dataDir, "legion", "sources", "github.json"), JSON.stringify({
+      config: { intervalMs: 60_000 },
+      runtime: { status: "setup", mode: "observe", consecutiveFailures: 0, lastError: "没有 GH_TOKEN" },
+    }), "utf8");
+    const result = await evaluateLegionHealth({ dataDir, fetchImpl: status({ enabled: true }) });
+    expect(result.code).toBe(HEALTH_CODES.waitingSetup);
+    expect(result.reasons.join("\n")).toContain("没有 GH_TOKEN");
+  });
+
+  it("外部来源连续失败 ≥3 → 1 重启可修", async () => {
+    const dataDir = await seedDataRoot();
+    await writeFile(path.join(dataDir, "legion", "sources", "github.json"), JSON.stringify({
+      config: { intervalMs: 60_000 },
+      runtime: { status: "error", mode: "live", consecutiveFailures: 3, lastError: "rate limited" },
+    }), "utf8");
+    const result = await evaluateLegionHealth({ dataDir, fetchImpl: status({ enabled: true }) });
+    expect(result.code).toBe(HEALTH_CODES.restartCanFix);
+    expect(result.reasons.join("\n")).toContain("rate limited");
+  });
+
+  it("外部来源轮询陈旧 → 1；已停用来源不误报", async () => {
+    const dataDir = await seedDataRoot();
+    const source = {
+      config: { intervalMs: 60_000 },
+      runtime: {
+        status: "ready",
+        mode: "observe",
+        consecutiveFailures: 0,
+        lastPollAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      },
+    };
+    await writeFile(path.join(dataDir, "legion", "sources", "github.json"), JSON.stringify(source), "utf8");
+    expect((await evaluateLegionHealth({ dataDir, fetchImpl: status({ enabled: true }) })).code)
+      .toBe(HEALTH_CODES.restartCanFix);
+    await writeFile(path.join(dataDir, "legion", "sources", "github.json"), JSON.stringify({
+      ...source,
+      runtime: { ...source.runtime, status: "off" },
+    }), "utf8");
+    expect((await evaluateLegionHealth({ dataDir, fetchImpl: status({ enabled: true }) })).code)
+      .toBe(HEALTH_CODES.ok);
   });
 
   it("手动停机标记 + --respect-stop → 0，不误报", async () => {

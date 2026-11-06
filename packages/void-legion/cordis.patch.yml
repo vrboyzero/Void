@@ -15,3 +15,6 @@
     # 终态通知来源（断线补读）。同样：没有入口面板时不生效，军团照常工作。
     - id: void-legion-notifications
       name: "@void/void-legion/notification-source"
+    # 外部触发来源（B8）：GitHub 通知轮询。来源文件不存在时自动不工作。
+    - id: void-legion-source-github
+      name: "@void/void-legion/source-github"
