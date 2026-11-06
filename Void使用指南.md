@@ -574,7 +574,50 @@ node scripts/legion-health.mjs --data-dir "C:/Users/…/.dsh/void-data/web" --re
 
 **这三条的真机验证（2026-11-06，隔离 profile `web` / 端口 3699 / 宿主 0.2.1-rc.2）**：B4 在活宿主上跑 `legion-health.mjs`，没有军团数据根时 `exit=3`、跑出数据后 `exit=0`（running 0）；B3 用宿主真实 `tools.execute` 调 `launch_legion`，observe 返回 `observed:true`、无 `runId`、`legion/runs/` 不增、账本 `observed` +1，切 live 后同请求产生 run；B6 的真实 `checkout:"worktree"` 派活写出 `checkoutPath` / `checkoutBranch`，子会话的宿主工作目录投影（`workingDirectory.get`）等于该路径、提示词里也写了 `独立检出：<同一路径>`，lane 结束后 worktree 与分支已清理。**限制**：隔离 home 没有账号凭据，子代理首轮停在 `stopReason:"error"`（run 记 `failed`），所以「模型在 worktree 里真的干活」仍未验；面板只核到接口与 bundle，没有做浏览器点击级验证。
 
-**命令 shim（B7，defer）**：这条要等 B8 的外部来源（GitHub/飞书）先落地——现在没有消费者，而写 `PATH` shim、切 `GH_CONFIG_DIR`/`LARKSUITE_CLI_CONFIG_DIR`、剔除 `*KEY*/*PASSWORD*/*SECRET*/*TOKEN*` 环境变量都是**环境级动作**，贸然做没有可验证的真实凭据。记 `defer`，等 B8 的 GitHub 源立项/落地后按「隔离 shell + dry-run shim 目录 → `gh auth status` 指向 Agent 账号 → 环境变量清洗 → `lark-cli config strict-mode bot` → 回滚」的步骤做；**绝不能顺手抄危及其隔离的 `danger-full-access` preset**。
+**命令 shim（B7，defer）**：这条要等 B8 的外部来源（GitHub/飞书）先落地——现在没有消费者，而写 `PATH` shim、切 `GH_CONFIG_DIR`/`LARKSUITE_CLI_CONFIG_DIR`、剔除 `*KEY*/*PASSWORD*/*SECRET*/*TOKEN*` 环境变量都是**环境级动作**，贸然做没有可验证的真实凭据。记 `defer`，等 B8 的 GitHub 源立项/落地后按「隔离 shell + dry-run shim 目录 → `gh auth status` 指向 Agent 账号 → 环境变量清洗 → `lark-cli config strict-mode bot` → 回滚」的步骤做；**绝不能顺手抄危及其隔离的 `danger-full-access` preset**。B8-1 先用 `GH_CONFIG_DIR` + 子进程 env 白名单做**最小**凭据隔离，不是 B7 的完整 shim。
+
+**外部触发源（B8-1，GitHub 先行，2026-11-06）**：Agent 账号的 GitHub 通知里出现新的 @ / 指派 / review 请求时，不用人在场就能产生一次军团运行。
+
+- **只轮询通知，不架 webhook**：默认 60 秒一轮，读 Agent 账号的未读通知；不需要公网入口/内网穿透。最慢一个 interval 才出结果。
+- **默认观察（observe）**：来源第一次配置好也只记账，不建 run、不启子代理、不回评论；主人在面板点「切到执行（live）」才真的派活。`live` 下的外部 run **一律 human 验收**，来源侧不能覆盖。
+- **fail-closed 名单**：`allowed` 为空 = 谁都不能下单；`bots` 为空 = 所有 bot 都不接；`admission.issues/pulls/comments/ci` 逐个类型判。发起人只看**最新评论作者/Issue 作者**，不看模型自称。
+- **配置文件**：`<数据根>/legion/sources/github.json`。最小例子（token 只写变量名，不写值）：
+
+```json
+{
+  "schemaVersion": 1,
+  "revision": 0,
+  "updatedAt": "2026-11-06T00:00:00.000Z",
+  "updatedBy": "owner",
+  "config": {
+    "repo": "owner/name",
+    "teamId": "alpha",
+    "ghConfigDir": "C:/Users/me/.config/gh-agent",
+    "tokenEnv": "VOID_GITHUB_TOKEN",
+    "intervalMs": 60000,
+    "receive": { "issues": false, "pulls": false, "comments": false, "ci": false },
+    "allowed": ["alice"],
+    "bots": [],
+    "admission": { "issues": "accept", "pulls": "accept", "comments": "accept", "ci": "reject" },
+    "admissionContextMaxPages": 2,
+    "admissionContextTimeoutMs": 15000
+  },
+  "runtime": {
+    "status": "setup",
+    "mode": "observe",
+    "consecutiveFailures": 0,
+    "seen": [],
+    "counts": {},
+    "entries": []
+  }
+}
+```
+
+- **凭据**：用独立的 `gh` 配置目录以 Agent 账号登录（`GH_CONFIG_DIR`），或把 token 放进 `tokenEnv` 指向的环境变量；token 值不进配置文件、不进日志、不进运行记录。setup 会校验账号对仓库有没有 push 权限。
+- **面板**：设置 → 业务视图 →「外部来源」。能看到状态、mode、今日观察/派发/过滤/丢弃、最近 20 条账本、最近错误；动作有停用/启用、切 observe/live、立即轮询、测试账号。写动作要求同源 `Origin`，并带面板读到的 revision 做 CAS。
+- **回原对话**：run 落定后向原 Issue/PR 发一条评论（runId、状态、已结算数、待验收提示）；发送失败只记在来源状态里，不改 run 结果；**不标记通知已读**（人还要看）。
+- **健康探针**：`legion-health` 会把 sources 坏 JSON 判 2、setup 未完成判 3、连续失败/超过 3×interval 没成功轮询判 1。
+- **第一期不做**：飞书入站、全仓 API 扫描（`receive` 只放大通知流类别）、配置表单、PR 创建/合并、B7 的 PATH shim。真实 gh 账号/评论回写/rate limit 还没真机验。
 
 ### 3.5 渠道（void-channel-feishu）
 
