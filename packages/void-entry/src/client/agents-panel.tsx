@@ -57,8 +57,24 @@ export const POLICY_VIEW_ID = 'void-legion:dispatch-policy'
 /** 单视图模式的 manifest。**模块常量**：每次渲染新建数组会让嵌入组件反复重读。 */
 const POLICY_VIEWS: DetailViewManifest[] = [{ id: POLICY_VIEW_ID, title: '派活名单' }]
 
-/** 主面板的两个页签：现有的 Agent 卡片 / B1 派活名单。 */
-type PanelTab = 'agents' | 'policy'
+/** 军团队伍视图。设置页里仍保留一份，主面板这里只是第二个入口。 */
+export const TEAMS_VIEW_ID = 'void-legion:teams'
+const TEAMS_VIEWS: DetailViewManifest[] = [{ id: TEAMS_VIEW_ID, title: '军团队伍' }]
+
+/** 军团运行视图。设置页里仍保留一份，主面板这里只是第二个入口。 */
+export const RUNS_VIEW_ID = 'void-legion:runs'
+const RUNS_VIEWS: DetailViewManifest[] = [{ id: RUNS_VIEW_ID, title: '军团运行' }]
+
+/** 主面板的四个页签：Agent 卡片 / 派活名单 / 军团队伍 / 军团运行。 */
+export type PanelTab = 'agents' | 'policy' | 'teams' | 'runs'
+
+/** 页签顺序与文案。导出给测试钉住，避免两侧各写一份字符串。 */
+export const PANEL_TABS: readonly { id: PanelTab; label: string }[] = [
+  { id: 'agents', label: 'Agent' },
+  { id: 'policy', label: '派活名单' },
+  { id: 'teams', label: '军团队伍' },
+  { id: 'runs', label: '军团运行' },
+]
 
 /**
  * 设置页「业务视图」的可见目录。
@@ -457,12 +473,13 @@ function TabButton(props: {
 }
 
 /**
- * 主面板：灵魂档案卡片网格 + B1 派活名单。
+ * 主面板：灵魂档案卡片网格 + 派活名单 / 军团队伍 / 军团运行三个军团页签。
  *
  * - **点卡片主体** = 把当前会话绑到那份档案（没有当前会话时给门禁提示）；
  * - **下拉 + 「加载模组」** = 只换该档案的角色层，不动底线；
- * - **顶部页签** = 在「Agent」与「派活名单」之间切换。派活名单是军团侧的运营视图，
- *   嵌在这里是为了让「谁能派活」和「谁是谁」在同一块面板里看，不用开两个侧栏面板。
+ * - **顶部页签** = 在「Agent」「派活名单」「军团队伍」「军团运行」之间切换。三个军团视图
+ *   原本在设置页的「业务视图」里，这里嵌一份方便和「谁是谁」在同一块面板里看；
+ *   设置页那一份保持不动。
  *
  * 门禁不做复杂流程（用户 2026-09-26 裁定：用户总是先进入会话才会改选 Agent，
  * 空态只可能是刻意构造的）。
@@ -470,15 +487,21 @@ function TabButton(props: {
 export function VoidAgentsPage(props: Record<string, unknown> = {}): ReactElement {
   const [tab, setTab] = useState<PanelTab>('agents')
   /**
-   * 派活名单页签**第一次打开后保持挂载**，只切 `display`。
+   * 非 Agent 页签**第一次打开后保持挂载**，只切 `display`。
    *
-   * 若按条件渲染，切回 Agent 时 `VoidDetails` 会被卸载，里面未保存的名单草稿
-   * 就无声丢了。首次打开挂载一次，之后两边都活着。
+   * 若按条件渲染，切回 Agent 时 `VoidDetails` 会被卸载，里面未保存的草稿
+   * 就无声丢了。首次打开挂载一次，之后各页签都活着。
    */
-  const [policyVisited, setPolicyVisited] = useState(false)
+  const [visited, setVisited] = useState<Readonly<Record<Exclude<PanelTab, 'agents'>, boolean>>>({
+    policy: false,
+    teams: false,
+    runs: false,
+  })
   const selectTab = useCallback((next: PanelTab) => {
     setTab(next)
-    if (next === 'policy') setPolicyVisited(true)
+    if (next !== 'agents') {
+      setVisited((current) => (current[next] ? current : { ...current, [next]: true }))
+    }
   }, [])
   const [state, setState] = useState<PanelState>({ kind: 'loading' })
   const [reloadToken, setReloadToken] = useState(0)
@@ -613,14 +636,19 @@ export function VoidAgentsPage(props: Record<string, unknown> = {}): ReactElemen
       : null,
   )
 
-  /** 页签条：两个模块只换正文，标题栏与会话提示保持不变。 */
+  /** 页签条：四个模块只换正文，标题栏与会话提示保持不变。 */
   const tabsNode = h('div', {
     role: 'tablist',
     'data-void-agents-tabs': '',
     style: { display: 'flex', gap: 4, marginBottom: 12, borderBottom: `1px solid ${BORDER}` },
   },
-    h(TabButton, { tab: 'agents', label: 'Agent', active: tab === 'agents', onSelect: selectTab }),
-    h(TabButton, { tab: 'policy', label: '派活名单', active: tab === 'policy', onSelect: selectTab }),
+    ...PANEL_TABS.map((item) => h(TabButton, {
+      key: item.id,
+      tab: item.id,
+      label: item.label,
+      active: tab === item.id,
+      onSelect: selectTab,
+    })),
   )
 
   /** 门禁与结果条：只在需要时出现，不占常驻空间。 */
@@ -687,6 +715,19 @@ export function VoidAgentsPage(props: Record<string, unknown> = {}): ReactElemen
               }))),
         )
 
+  /**
+   * 业务视图页签：每个页签嵌一个 `void-legion` 注册的视图，单视图模式自己读列表。
+   * 军团插件没装时这块会如实报错，不会假装「列表为空」。
+   */
+  const detailTab = (id: Exclude<PanelTab, 'agents'>, views: DetailViewManifest[]): ReactElement | null =>
+    visited[id]
+      ? h('div', {
+          key: id,
+          'data-void-agents-tab-panel': id,
+          style: { display: tab === id ? 'block' : 'none' },
+        }, h(VoidDetails, { views, single: true }))
+      : null
+
   return h('div', { 'data-void-agents-panel': '', style: PANEL_ROOT_STYLE },
     reporters,
     header,
@@ -696,15 +737,9 @@ export function VoidAgentsPage(props: Record<string, unknown> = {}): ReactElemen
         'data-void-agents-tab-panel': 'agents',
         style: { display: tab === 'agents' ? 'block' : 'none' },
       }, agentsBody),
-      // 派活名单是 void-legion 注册的业务视图；单视图模式下它自己读列表、自动打开详情。
-      // 军团插件没装时这块会如实报错，不会假装「名单为空」。
-      // 第一次打开后保持挂载（只切 display），避免切页签丢掉未保存草稿。
-      policyVisited
-        ? h('div', {
-            'data-void-agents-tab-panel': 'policy',
-            style: { display: tab === 'policy' ? 'block' : 'none' },
-          }, h(VoidDetails, { views: POLICY_VIEWS, single: true }))
-        : null,
+      detailTab('policy', POLICY_VIEWS),
+      detailTab('teams', TEAMS_VIEWS),
+      detailTab('runs', RUNS_VIEWS),
     ),
   )
 }

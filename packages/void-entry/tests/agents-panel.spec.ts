@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   facetOption,
   isCurrentSession,
+  PANEL_TABS,
   parseAgentCards,
   parseFacetOptions,
   POLICY_VIEW_ID,
   PROFILES_VIEW_ID,
+  RUNS_VIEW_ID,
   settingsDetailViews,
+  TEAMS_VIEW_ID,
   VOID_AGENTS_LABEL,
   VOID_AGENTS_PANEL_ID,
   NO_FACET_VALUE,
@@ -233,15 +236,31 @@ describe('B1 派活名单页签', () => {
     expect(POLICY_VIEW_ID).toBe('void-legion:dispatch-policy')
   })
 
-  it('设置页的业务视图目录去掉派活名单，其余原样保留', () => {
+  it('军团队伍 / 军团运行页签复用设置页的同一批视图 id', () => {
+    expect(TEAMS_VIEW_ID).toBe('void-legion:teams')
+    expect(RUNS_VIEW_ID).toBe('void-legion:runs')
+  })
+
+  it('页签顺序固定：Agent → 派活名单 → 军团队伍 → 军团运行', () => {
+    expect(PANEL_TABS.map((item) => [item.id, item.label])).toEqual([
+      ['agents', 'Agent'],
+      ['policy', '派活名单'],
+      ['teams', '军团队伍'],
+      ['runs', '军团运行'],
+    ])
+  })
+
+  it('设置页的业务视图目录只去掉派活名单，军团队伍与军团运行原样保留', () => {
     const views = [
       { id: 'void-soul:profiles', title: '灵魂档案' },
       { id: POLICY_VIEW_ID, title: '派活名单' },
-      { id: 'void-legion:teams', title: '军团队伍' },
+      { id: TEAMS_VIEW_ID, title: '军团队伍' },
+      { id: RUNS_VIEW_ID, title: '军团运行' },
     ]
     expect(settingsDetailViews(views)).toEqual([
       { id: 'void-soul:profiles', title: '灵魂档案' },
-      { id: 'void-legion:teams', title: '军团队伍' },
+      { id: TEAMS_VIEW_ID, title: '军团队伍' },
+      { id: RUNS_VIEW_ID, title: '军团运行' },
     ])
   })
 })
