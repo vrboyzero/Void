@@ -6,6 +6,9 @@
       name: "@void/void-legion/tool"
     - id: void-legion-run-tool
       name: "@void/void-legion/run-tool"
+    # 派活名单的 Agent 通道（legion_policy）。授权只由面板发放；没有授权时这个工具只能读。
+    - id: void-legion-policy-tool
+      name: "@void/void-legion/policy-tool"
     # 业务详情视图（队伍/任务）。没有 voidSuite 的组合里它不生效，军团照常工作。
     - id: void-legion-detail
       name: "@void/void-legion/detail-view"

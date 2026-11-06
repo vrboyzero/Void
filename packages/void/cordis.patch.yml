@@ -63,6 +63,9 @@
       name: "@void/void-legion/tool"
     - id: void-legion-run-tool
       name: "@void/void-legion/run-tool"
+    # 派活名单的 Agent 通道（legion_policy）：授权只由面板发放，没有授权只能读。
+    - id: void-legion-policy-tool
+      name: "@void/void-legion/policy-tool"
     - id: void-legion-detail
       name: "@void/void-legion/detail-view"
     - id: void-legion-notifications

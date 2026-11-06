@@ -4,6 +4,7 @@ import Loader from "@deepseek-ai/cordis-plugin-loader";
 import * as VoidEntry from "../src/index.js";
 import {
   VOID_REQUEST_HEADER,
+  assertBrowserOrigin,
   assertSameOrigin,
   assertTrustedMutation,
   requestHeader,
@@ -184,6 +185,16 @@ describe("void-entry request guards", () => {
     );
     expect(() => assertTrustedMutation({ headers: TRUSTED })).not.toThrow();
   });
+
+  it("管理视图要求浏览器 Origin：无 Origin 的本机脚本写请求被拒", () => {
+    // 这是派活名单写路由的纵深防御：x-void-request 是公开头，同源检查又放行
+    // 无 Origin 的 curl；管理视图再多要一条 Origin。
+    expect(() => assertBrowserOrigin({ headers: { host: "127.0.0.1:3080" } })).toThrow(/必须来自浏览器面板/);
+    expect(() => assertBrowserOrigin({ headers: SAME_ORIGIN })).not.toThrow();
+    expect(() => assertBrowserOrigin({
+      headers: { host: "127.0.0.1:3080", origin: "http://evil.test" },
+    })).toThrow(/跨站请求被拒绝/);
+  });
 });
 
 describe("void-entry business detail route", () => {
@@ -323,6 +334,30 @@ describe("void-entry business detail route", () => {
     );
     expect(noMarker.statusCode).toBe(403);
     expect(json(noMarker).error).toBe("缺少同源标记（x-void-request），拒绝改动");
+  });
+
+  it("management views reject a write that lacks Origin even with the custom header", async () => {
+    const ctx = await boot();
+    ctx.provide("profileContext", PROFILE as never);
+    suiteOf(ctx).registerDetail(fakeSource({
+      requireOrigin: true,
+      async save() { return BODY; },
+    }));
+    const response = fakeResponse();
+    await routeOf(ctx)(
+      fakeRequest({
+        method: "POST",
+        headers: {
+          host: "127.0.0.1:3080",
+          [VOID_REQUEST_HEADER]: "1",
+          "content-type": "application/json",
+        },
+        body: { view: "fake:view", itemId: "a", expectedRevision: 1, changes: {} },
+      }),
+      response,
+    );
+    expect(response.statusCode).toBe(403);
+    expect(json(response).error).toContain("必须来自浏览器面板");
   });
 
   it("saves through POST and hands the source the parsed changes", async () => {

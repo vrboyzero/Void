@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { assertToolEntryAllowed, classifyToolEntry, EntryPolicyError, type ToolEntryKind } from "../src/entry-policy.js";
+import {
+  assertToolEntryAllowed,
+  classifyToolEntry,
+  entryDenialReason,
+  EntryPolicyError,
+  type ToolEntryKind,
+} from "../src/entry-policy.js";
 
 const NO_ISOLATION = { readIsolated: false, writeIsolated: true };
 const FULL_ISOLATION = { readIsolated: true, writeIsolated: true };
@@ -173,6 +179,17 @@ describe("coverage of the real host tool surface", () => {
     // 记忆读写里只有读的三个放行；写/改/撤回要显式放行（见插件配置）。
     expect(allowed).toEqual(expect.arrayContaining(["memory_search", "memory_read", "memory_list"]));
     expect(refused).toEqual(expect.arrayContaining(["memory_write", "memory_update", "memory_retract"]));
+  });
+
+  it("lets legion_policy through: its own grant check is finer than the manage blanket", () => {
+    const policy = { isolation: NO_ISOLATION };
+    // 分类上仍是 manage（它确实改状态），但入口门禁不再一刀切拒绝；工具内部
+    // 每次 add/remove 都会核主人发放的有效授权，那比工具名白名单细。
+    expect(classifyToolEntry({ name: "legion_policy" })).toBe("manage");
+    expect(assertToolEntryAllowed({ name: "legion_policy", policy })).toBe("manage");
+    expect(entryDenialReason({ name: "legion_policy", policy })).toBeUndefined();
+    // 例外只放这一个名字，别的管理工具照旧拒。
+    expect(() => assertToolEntryAllowed({ name: "team_task_update", policy })).toThrow(/管理入口/);
   });
 
   // 会话记录与插件运行时不是「隔离好了就能看」的东西。

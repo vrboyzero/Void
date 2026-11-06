@@ -101,6 +101,8 @@ async function boot(options: { maxCharacters?: number } = {}): Promise<Context> 
   await ctx.loader.create({ name: "@void/void-legion/tool" });
   await ctx.loader.create({ name: "@void/void-legion/run-tool" });
   await ctx.loader.await();
+  // B1 之后派活要先过派活名单；这条闭环只关心身份，所以把派活者放进名单。
+  await (ctx.get("voidTeam") as VoidTeam).saveDispatchPolicy({ allowlist: ["xiaobei"], expectedRevision: 0 });
   return ctx;
 }
 

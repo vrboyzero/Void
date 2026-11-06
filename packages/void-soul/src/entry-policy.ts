@@ -105,6 +105,16 @@ const HOST_PRIVATE_NAMES = new Set([
   "cordis_inspect_list", "cordis_inspect_query", "cordis_inspect_self",
 ]);
 
+/**
+ * 自带授权判定的工具：入口门禁**不**按 manage 一刀切拒绝。
+ *
+ * `legion_policy` 的每次 add/remove 都会在军团侧重新核主人发放的有效授权
+ * （B1，`dispatch-policy.ts`），比「工具名白名单」细得多。如果这里还按 manage
+ * 拒绝，授权永远用不上——门禁自己把更细的那一层挡掉了。只放这一个名字，
+ * 不放行任何普通管理工具。
+ */
+const SELF_GOVERNED_NAMES = new Set(["legion_policy"]);
+
 /** 会改动 Host 或派生别的 Agent 的工具名。 */
 const MANAGE_NAMES = new Set([
   "plugin_manager", "spawn_teammate", "team_task_create", "team_task_get", "team_task_list", "team_task_update",
@@ -112,6 +122,10 @@ const MANAGE_NAMES = new Set([
   "send_message", "interrupt_agent", "job_kill", "ralph", "present",
   // 动态改插件运行时：cordis_define/run/stop/undefine 是改 Host 本身，不是「看一眼」。
   "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine",
+  // 军团派活名单的 Agent 通道：改的是「谁能派活」，分类上属管理动作。
+  // 但它在 `SELF_GOVERNED_NAMES` 里：工具内部会核主人发放的有效授权（B1），
+  // 入口门禁不再一刀切拒绝，否则授权了也调不到。
+  "legion_policy",
 ]);
 
 /**
@@ -161,6 +175,7 @@ export function entryDenialReason(input: {
   const kind = classifyToolEntry({ name: input.name, contract: input.contract });
   if (kind === "read") return undefined;
   if ((input.policy.allowed ?? []).includes(input.name)) return undefined;
+  if (SELF_GOVERNED_NAMES.has(input.name)) return undefined;
   if (kind === "host-private") {
     return `工具 ${input.name} 会读到 Host 私人数据（会话记录或插件运行时），未开放给 Agent，已拒绝`;
   }

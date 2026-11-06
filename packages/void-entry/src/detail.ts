@@ -99,6 +99,13 @@ export interface VoidDetailRowsSection {
   /** 写回 `changes` 时用的字段名；不给就是只读表格。 */
   key?: string;
   editable?: boolean;
+  /**
+   * 每一行给一个「移除」按钮（把整行清空，沿用同一份草稿 → 保存路径）。
+   *
+   * 只给**空行可忽略**的名单用（派活名单）：整份表格仍是「整组替换」，服务端把
+   * 没有内容的行当不存在。不要把成员表打开——成员缺 laneId 会让保存失败。
+   */
+  removable?: boolean;
   /** 「加一行」按钮的文字；不给按「加一行」。 */
   addLabel?: string;
   help?: string;
@@ -175,6 +182,15 @@ export interface VoidDetailSource {
   id: string;
   title: string;
   /**
+   * 写操作必须来自**浏览器面板**（请求带 `Origin`），拒绝无 Origin 的本机脚本。
+   *
+   * 给「改权限/改名单」这类管理视图用：`x-void-request` 是公开头，同源检查又
+   * 放行无 Origin 的 curl；再加这一条，至少堵掉「本机脚本直接 POST 改名单」。
+   * 它不是完整的身份认证（拿到本机 UI 的 Agent 仍可伪造 Origin），只是纵深防御；
+   * 真正的边界仍是宿主沙箱 / 工具入口门禁。
+   */
+  requireOrigin?: boolean;
+  /**
    * 视图级动作：不针对某一条的动作（新建队伍这类「条目还不存在」的事）。
    *
    * 面板把它们显示在条目列表上方；点了就走 {@link VoidDetailSource.actView}，
@@ -247,6 +263,19 @@ export function requestHeader(req: VoidRequestLike, name: string): string | unde
  * 里的别的页面替用户发请求」，而不是挡命令行。有 Origin 就必须与 Host 一致——否则
  * 一个恶意页面就能让用户的面板替它读档案、改队伍。
  */
+/**
+ * 要求请求来自浏览器面板：必须有 `Origin`，且与 Host 同源。
+ *
+ * 单独抽出来给 `requireOrigin` 的管理视图用；无 Origin 的本地进程请求在这里
+ * 不再「默认可信」。
+ */
+export function assertBrowserOrigin(req: VoidRequestLike): void {
+  if (requestHeader(req, "origin") === undefined) {
+    throw new VoidRequestRejected("这个写操作必须来自浏览器面板（缺少 Origin），不接受本机脚本直接改");
+  }
+  assertSameOrigin(req);
+}
+
 export function assertSameOrigin(req: VoidRequestLike): void {
   const origin = requestHeader(req, "origin");
   if (origin === undefined) return;

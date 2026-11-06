@@ -14,6 +14,7 @@
     "./service": "./lib/service.js",
     "./tool": "./lib/tool.js",
     "./run-tool": "./lib/run-tool.js",
+    "./policy-tool": "./lib/policy-tool.js",
     "./detail-view": "./lib/detail-view.js",
     "./notifications": "./lib/notifications.js",
     "./notification-source": "./lib/notification-source.js",

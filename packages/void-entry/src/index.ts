@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/cordis-plugin-loader";
 import {
+  assertBrowserOrigin,
   assertSameOrigin,
   assertTrustedMutation,
   VoidRequestRejected,
@@ -969,6 +970,16 @@ export class VoidSuite extends Service {
     if (source === undefined) {
       sendJson(res, 404, { ok: false, error: `没有这个业务视图: ${view}` });
       return;
+    }
+    // 管理类视图（派活名单）要求写请求真的来自浏览器面板：没有 Origin 的本机脚本
+    // 一律拒绝，堵掉「Agent 用 curl 直接 POST 改名单」这条最省事的旁路。
+    if (source.requireOrigin === true) {
+      try {
+        assertBrowserOrigin(req);
+      } catch (error) {
+        rejectRequest(res, error);
+        return;
+      }
     }
     const itemId = typeof body.itemId === "string" && body.itemId.trim() !== "" ? body.itemId : undefined;
     const op = body.op ?? "save";
