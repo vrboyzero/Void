@@ -164,6 +164,32 @@ describe("GitHubSourceRunner", () => {
     runner.stop();
   });
 
+  it("status=off 时 start 不认证、不轮询，宿主不受影响", async () => {
+    const { repository } = await setup("observe");
+    await repository.mutate((document) => ({
+      ...document,
+      runtime: { ...document.runtime, status: "off" },
+    }));
+    let auth = 0;
+    const clock = timers();
+    const runner = new GitHubSourceRunner({
+      repository,
+      gateway: {
+        checkAuth: async () => { auth += 1; return { login: "void-agent", canPush: true }; },
+        listNotifications: async () => { throw new Error("不该轮询"); },
+        getContext: async () => { throw new Error("不该读上下文"); },
+        comment: async () => {},
+      },
+      dispatch: async () => ({ runId: "run-x" }),
+      now: () => new Date("2026-11-06T02:00:00Z"),
+      ...clock,
+    });
+    await runner.start();
+    expect(auth).toBe(0);
+    expect(clock.scheduled).toHaveLength(0);
+    expect((await repository.load())?.runtime.status).toBe("off");
+  });
+
   it("pollNow 不额外排定时器，也不要求先 start", async () => {
     const { repository } = await setup("observe");
     const clock = timers();

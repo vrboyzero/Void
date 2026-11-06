@@ -576,7 +576,9 @@ node scripts/legion-health.mjs --data-dir "C:/Users/…/.dsh/void-data/web" --re
 
 **命令 shim（B7，defer）**：这条要等 B8 的外部来源（GitHub/飞书）先落地——现在没有消费者，而写 `PATH` shim、切 `GH_CONFIG_DIR`/`LARKSUITE_CLI_CONFIG_DIR`、剔除 `*KEY*/*PASSWORD*/*SECRET*/*TOKEN*` 环境变量都是**环境级动作**，贸然做没有可验证的真实凭据。记 `defer`，等 B8 的 GitHub 源立项/落地后按「隔离 shell + dry-run shim 目录 → `gh auth status` 指向 Agent 账号 → 环境变量清洗 → `lark-cli config strict-mode bot` → 回滚」的步骤做；**绝不能顺手抄危及其隔离的 `danger-full-access` preset**。B8-1 先用 `GH_CONFIG_DIR` + 子进程 env 白名单做**最小**凭据隔离，不是 B7 的完整 shim。
 
-**外部触发源（B8-1，GitHub 先行，2026-11-06）**：Agent 账号的 GitHub 通知里出现新的 @ / 指派 / review 请求时，不用人在场就能产生一次军团运行。
+**B8 开关与宿主影响（2026-11-06 定案）**：B8 是**可选入口**，不是 dsh 启动的必需项。没有 `<数据根>/legion/sources/*.json` 时两个来源完全惰性；文件里 `runtime.status: "off"` 时面板仍会列出（可以看、可以配），但**不认证、不轮询、不连 WS、不派活**；只有面板「启用来源」（或文件 status 非 off）才会做 setup。配置/凭据错误只会把**本来源**标成 error，不影响 6 个插件、内部派活和另一个来源。`status` 是总开关，`mode`（observe/live）是接活之后「干不干」的第二道。
+
+**外部触发源（B8-1，GitHub 先行，2026-11-06）**：：Agent 账号的 GitHub 通知里出现新的 @ / 指派 / review 请求时，不用人在场就能产生一次军团运行。
 
 - **只轮询通知，不架 webhook**：默认 60 秒一轮，读 Agent 账号的未读通知；不需要公网入口/内网穿透。最慢一个 interval 才出结果。
 - **默认观察（observe）**：来源第一次配置好也只记账，不建 run、不启子代理、不回评论；主人在面板点「切到执行（live）」才真的派活。`live` 下的外部 run **一律 human 验收**，来源侧不能覆盖。

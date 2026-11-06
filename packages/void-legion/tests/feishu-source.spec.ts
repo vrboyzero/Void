@@ -125,6 +125,31 @@ describe("飞书来源契约", () => {
   });
 });
 
+describe("FeishuInbox 开关", () => {
+  it("status=off 时 start 不认证、不连 WS", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "void-feishu-off-"));
+    directories.push(dataDir);
+    const repository = new FeishuSourceRepository(dataDir);
+    const document = doc();
+    document.runtime.status = "off";
+    await repository.save(document);
+    const gateway = new FakeGateway();
+    let auth = 0;
+    let started = 0;
+    gateway.checkAuth = async () => { auth += 1; return { botOpenId: "bot-open" }; };
+    gateway.start = async () => { started += 1; };
+    const inbox = new FeishuInbox({
+      repository,
+      gateway,
+      dispatch: async () => ({ runId: "run-x" }),
+    });
+    await inbox.start();
+    expect(auth).toBe(0);
+    expect(started).toBe(0);
+    expect((await repository.load())?.runtime.status).toBe("off");
+  });
+});
+
 describe("FeishuInbox 入站", () => {
   it("observe：命中 @ + allowed 只记账，不派活", async () => {
     const { repository, inbox, dispatched } = await makeInbox({ mode: "observe" });
