@@ -29,6 +29,7 @@ import {
   type RunTaskRecord,
 } from "./run-store.js";
 import type { DelegationTeamMember, TeamSchedule } from "./team.js";
+import { WorktreeError, type CreatedWorktree, type WorktreeManager } from "./worktree.js";
 
 /** 取消引起的失败。调度器把它和「worker 自己跑挂了」分开记。 */
 export class ScheduleCancelledError extends Error {
@@ -51,6 +52,10 @@ export interface TaskRunContext {
   modelRef?: string;
   workspace: string;
   writesWorkspace: boolean;
+  /** 独立检出的绝对路径（B6）；shared 成员没有这一项。 */
+  cwd?: string;
+  /** 独立检出路径（与 cwd 同值；给提示词/记录用）。 */
+  checkoutPath?: string;
   /** 本次任务的取消信号。worker 应当把它转给底层执行体。 */
   signal: AbortSignal;
   /**
@@ -234,6 +239,11 @@ export interface ScheduleOptions {
   /** 子代理真正起来之后回调，交出原生子会话 id（§15.2「原生 child session 链接」）。 */
   onLaneStart?: ((info: { laneId: string; childSessionId: string }) => void) | undefined;
   now?: (() => Date) | undefined;
+  /**
+   * 独立检出管理器（B6）。成员声明 `checkout: "worktree"` 时才用；没有它而成员要求
+   * worktree 时，这条 lane 直接失败（不偷偷退回共享工作区）。
+   */
+  worktree?: WorktreeManager | undefined;
 }
 
 export interface ScheduleHandle {
@@ -392,10 +402,21 @@ export function startSchedule(options: ScheduleOptions): ScheduleHandle {
       task.error = "调度结束时这个任务既没派出去也没被阻塞，按失败记账";
       emit("task_failed", task.laneId, task.error);
     }
+    let finishDetail = cancelReason;
     if (runCancelled) {
       record.status = "cancelled";
     } else if (record.tasks.every((task) => task.status === "completed")) {
-      record.status = "completed";
+      // §22.4：执行体跑完 ≠ 验收完成。human 模式只到「待验收」，人点确认才转
+      // completed；auto 模式当场签收，但把来源记成 auto，事后可翻案。
+      if (record.acceptance === "auto") {
+        record.status = "completed";
+        record.acceptedBy = "auto";
+        record.acceptedAt = stamp();
+        finishDetail = "全部完成；按队伍设置自动确认（acceptedBy: auto）";
+      } else {
+        record.status = "awaiting_acceptance";
+        finishDetail = "全部完成；等待人工验收（未验收不算完成）";
+      }
     } else if (record.tasks.some((task) => task.status === "failed")) {
       record.status = "failed";
     } else if (record.tasks.some((task) => task.status === "cancelled")) {
@@ -409,7 +430,7 @@ export function startSchedule(options: ScheduleOptions): ScheduleHandle {
       record.status = "failed";
     }
     record.endedAt = stamp();
-    emit(runCancelled ? "run_cancelled" : "run_finished", undefined, cancelReason);
+    emit(runCancelled ? "run_cancelled" : "run_finished", undefined, finishDetail);
   };
 
   const run = async (): Promise<RunRecord> => {
@@ -463,13 +484,26 @@ export function startSchedule(options: ScheduleOptions): ScheduleHandle {
       const upstream = Object.fromEntries(task.dependsOn.map((dep) => [dep, outputs.get(dep)]));
       const workspace = workspaceOf(member);
       const writes = writesWorkspace(member);
+      const worktreeMode = member.checkout === "worktree";
 
       const promise = (async (): Promise<void> => {
         let releaseSlot: (() => void) | undefined;
         let releaseLock: (() => void) | undefined;
+        let tree: CreatedWorktree | undefined;
         try {
           releaseSlot = await gate.acquireSlot(controller.signal);
-          if (writes) releaseLock = await gate.acquireWorkspace(workspace, record.runId, task.laneId, controller.signal);
+          if (worktreeMode) {
+            if (options.worktree === undefined) {
+              throw new WorktreeError(`lane ${task.laneId} 要独立检出，但本次派活没有配检出管理器`);
+            }
+            // 独立检出不占共享工作区锁：每条 lane 写自己的目录。
+            tree = await options.worktree.create({ runId: record.runId, laneId: task.laneId });
+            task.checkoutPath = tree.path;
+            task.checkoutBranch = tree.branch;
+            emit("task_worktree_created", task.laneId, `独立检出 ${tree.path}（分支 ${tree.branch}）`);
+          } else if (writes) {
+            releaseLock = await gate.acquireWorkspace(workspace, record.runId, task.laneId, controller.signal);
+          }
         } catch (error) {
           // 排队期间被取消：一次都没执行，照实记 cancelled。也可能循环已经先一步
           // 把它记成 cancelled 了（单人取消），那就不再改一遍。
@@ -487,7 +521,13 @@ export function startSchedule(options: ScheduleOptions): ScheduleHandle {
 
         task.status = "running";
         task.startedAt = stamp();
-        emit("task_started", task.laneId, `工作区 ${workspace}${writes ? "（写）" : "（只读）"}`);
+        emit(
+          "task_started",
+          task.laneId,
+          tree === undefined
+            ? `工作区 ${workspace}${writes ? "（写）" : "（只读）"}`
+            : `独立检出 ${tree.path}（分支 ${tree.branch}）`,
+        );
         void publish();
 
         try {
@@ -501,6 +541,7 @@ export function startSchedule(options: ScheduleOptions): ScheduleHandle {
             ...(task.modelRef === undefined ? {} : { modelRef: task.modelRef }),
             workspace,
             writesWorkspace: writes,
+            ...(tree === undefined ? {} : { cwd: tree.path, checkoutPath: tree.path }),
             signal: controller.signal,
             reportChildSession: (childSessionId: string) => {
               task.childSessionId = childSessionId;
@@ -535,6 +576,18 @@ export function startSchedule(options: ScheduleOptions): ScheduleHandle {
             emit("task_failed", task.laneId, task.error);
           }
         } finally {
+          if (tree !== undefined && options.worktree !== undefined) {
+            try {
+              await options.worktree.remove(tree);
+            } catch (error) {
+              // 清理失败不改任务结果，但必须写进运行事件：不能静默留下一个检出。
+              emit(
+                "task_worktree_cleanup_failed",
+                task.laneId,
+                `清理独立检出失败 ${tree.path}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          }
           task.endedAt = stamp();
           controllers.delete(task.laneId);
           releaseLock?.();
@@ -612,7 +665,8 @@ export function startSchedule(options: ScheduleOptions): ScheduleHandle {
           if (budget <= 0) break;
           const member = members.get(task.laneId)!;
           // 写任务的工作区正被占着就跳过它，先看后面的候选，不占着槽位干等。
-          if (writesWorkspace(member) && gate.busyWorkspaces().includes(workspaceOf(member))) continue;
+          // 独立检出的成员不占共享工作区锁，直接派。
+          if (member.checkout !== "worktree" && writesWorkspace(member) && gate.busyWorkspaces().includes(workspaceOf(member))) continue;
           dispatch(task);
           dispatchedThisRound += 1;
           budget -= 1;

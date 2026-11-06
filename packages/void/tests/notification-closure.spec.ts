@@ -191,6 +191,8 @@ const TRUSTED = { ...SAME_ORIGIN, [VOID_REQUEST_HEADER]: "1", "content-type": "a
 const TEAM = {
   id: "legion-demo",
   mode: "plan_execute_verify" as const,
+  // 这条闭环只验通知，不验验收；用 auto 保持「跑完即 completed」的断言。
+  acceptance: "auto" as const,
   memberRoster: [
     { laneId: "lane_plan", role: "researcher" as const, authorityRelationToManager: "peer" as const },
     {

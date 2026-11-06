@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { DelegationTeamMember } from "../src/team.js";
 import {
+  acceptanceDeadline,
+  acceptanceOverdue,
   createRunRecord,
   LegionRunError,
   LegionRunNotFoundError,
@@ -144,7 +146,7 @@ describe("运行记录落盘", () => {
 describe("版本与损坏", () => {
   it("版本不认识就明确报错，不兼容解析", () => {
     const text = JSON.stringify({ schemaVersion: 99, runId: "legion-demo-20260922120000-01", teamId: "legion-demo", status: "running", tasks: [] });
-    expect(() => parseRunRecord(text, "x.json")).toThrow(/不支持的运行记录版本: 99（本版本只认 1）/);
+    expect(() => parseRunRecord(text, "x.json")).toThrow(/不支持的运行记录版本: 99（本版本只认 1 \/ 2）/);
   });
 
   it("结构缺件 / 状态不认识都报路径", () => {
@@ -274,6 +276,7 @@ describe("产出与摘要", () => {
       runId: "legion-demo-20260922120000-01",
       teamId: "legion-demo",
       status: "running",
+      acceptance: "human",
       schedule: "parallel",
       total: 4,
       completed: 1,
@@ -283,6 +286,62 @@ describe("产出与摘要", () => {
       running: 1,
       pending: 0,
     });
+  });
+
+  it("旧版本缺 acceptance 按 human 补齐，读出来升到当前版本", () => {
+    const old = JSON.parse(serializeRunRecord(record([member("lane_a")]))) as Record<string, unknown>;
+    old.schemaVersion = 1;
+    delete old.acceptance;
+    const parsed = parseRunRecord(JSON.stringify(old), "old.json");
+    expect(parsed.acceptance).toBe("human");
+    expect(parsed.schemaVersion).toBe(RUN_SCHEMA_VERSION);
+  });
+
+  it("没写 acceptance 的新版本记录也按 human，不猜自动放行", () => {
+    const raw = JSON.parse(serializeRunRecord(record([member("lane_a")]))) as Record<string, unknown>;
+    delete raw.acceptance;
+    expect(parseRunRecord(JSON.stringify(raw), "x.json").acceptance).toBe("human");
+  });
+
+  it("待验收与已完成之间允许保存迁移，其他终态不许倒退", async () => {
+    const { store } = await makeStore(() => new Date("2026-09-22T12:00:00Z"));
+    const awaiting = record([member("lane_a")], {
+      status: "awaiting_acceptance",
+      endedAt: "2026-09-22T12:00:00.000Z",
+    });
+    await store.save(awaiting);
+
+    const completed: RunRecord = {
+      ...awaiting,
+      status: "completed",
+      acceptedBy: "human",
+      acceptedAt: "2026-09-22T12:05:00.000Z",
+    };
+    await expect(store.save(completed)).resolves.toBeTruthy();
+
+    const reopened: RunRecord = { ...awaiting, status: "awaiting_acceptance" };
+    await expect(store.save(reopened)).resolves.toBeTruthy();
+
+    // 已结算是 failed 的记录不能被旧快照改回去（既有约束，B2 不放宽）。
+    const failed: RunRecord = {
+      ...record([member("lane_b")], { runId: "legion-demo-20260922120000-02" }),
+      status: "failed",
+      endedAt: "2026-09-22T12:00:00.000Z",
+    };
+    await store.save(failed);
+    await expect(store.save({ ...failed, status: "completed", acceptedBy: "human", acceptedAt: "2026-09-22T12:05:00.000Z" }))
+      .rejects.toThrow(/已是终态/);
+  });
+
+  it("验收超时只提示，绝不改状态", () => {
+    const pending = record([member("lane_a")], {
+      status: "awaiting_acceptance",
+      endedAt: "2026-09-22T12:00:00.000Z",
+    });
+    expect(acceptanceDeadline(pending)).toBe("2026-09-29T12:00:00.000Z");
+    expect(acceptanceOverdue(pending, new Date("2026-09-28T00:00:00Z"))).toBe(false);
+    expect(acceptanceOverdue(pending, new Date("2026-09-30T00:00:00Z"))).toBe(true);
+    expect(pending.status).toBe("awaiting_acceptance");
   });
 
   it("序列化出来的就是 parse 能吃回去的", () => {

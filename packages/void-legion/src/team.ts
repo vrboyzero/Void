@@ -18,6 +18,16 @@ export type LaunchRole = "default" | "commander" | "coder" | "researcher" | "ver
 export type AuthorityRelation = "self" | "superior" | "peer" | "subordinate" | "unknown";
 
 /**
+ * 工作单元的检出方式（B6）。
+ *
+ * `shared`（默认）：沿用工作区写锁，串行不互相踩；
+ * `worktree`：给这条 lane 开独立 `git worktree`，不占共享锁。需要仓库是 git，且
+ * 检出目录落在 `<数据根>/legion/worktrees/` 下。
+ */
+export const MEMBER_CHECKOUTS = ["shared", "worktree"] as const;
+export type MemberCheckout = (typeof MEMBER_CHECKOUTS)[number];
+
+/**
  * 三种调度语义（方案文档 §15.3）：同时干 / 按顺序干 / 分阶段干。
  *
  * 它与 {@link DelegationTeamMode} 是两件事：mode 是业务词汇（Star 的
@@ -53,6 +63,8 @@ export interface DelegationTeamMember {
    * 已隔离工作区/worktree 的才并发。
    */
   workspace?: string;
+  /** 检出方式；缺省 `shared`。`worktree` 需要 git 仓库（B6）。 */
+  checkout?: MemberCheckout;
   /**
    * 这个任务会不会改工作区。
    *
@@ -68,6 +80,17 @@ export interface DelegationTeamMember {
   stage?: number;
 }
 
+/**
+ * 验收模式（§22.4，B2）。
+ *
+ * - `human`（默认）：执行体跑完只到「待验收」，人点确认才转 `completed`；
+ * - `auto`：跑完直接 `completed`，但记 `acceptedBy: "auto"`，事后可被人翻案回
+ *   `awaiting_acceptance`。
+ *
+ * 默认必须是 `human`：新装、新队伍、缺字段的旧记录一律按「要人确认」处理。
+ */
+export type AcceptanceMode = "human" | "auto";
+
 export interface DelegationTeamMetadata {
   id: string;
   mode: DelegationTeamMode;
@@ -82,4 +105,6 @@ export interface DelegationTeamMetadata {
   memberLimit?: number;
   /** 本服务总并发上限（§15.3）；不写按 4。派活时冻结进运行记录。 */
   maxConcurrentTasks?: number;
+  /** 验收模式；不写按 `human`（§22.4 的 fail-closed 默认）。派活时冻结进运行记录。 */
+  acceptance?: AcceptanceMode;
 }

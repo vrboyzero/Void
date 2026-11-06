@@ -2,7 +2,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import { defineTool, type JsonValue } from "@deepseek-ai/dsh-tools";
 import type { AuthoritySource } from "@void/void-soul";
 import { assertTeamDispatch } from "./authority.js";
-import type { RunRecord } from "./run-store.js";
+import { acceptanceDeadline, acceptanceOverdue, type RunRecord } from "./run-store.js";
 import type { VoidTeam } from "./service.js";
 
 export const name = "void-legion-run-tool";
@@ -28,6 +28,16 @@ function renderRun(record: RunRecord) {
     ...(record.endedAt === undefined ? {} : { endedAt: record.endedAt }),
     memberLimit: record.memberLimit,
     maxConcurrentTasks: record.maxConcurrentTasks,
+    acceptance: record.acceptance,
+    ...(record.acceptedBy === undefined ? {} : { acceptedBy: record.acceptedBy }),
+    ...(record.acceptedAt === undefined ? {} : { acceptedAt: record.acceptedAt }),
+    ...(record.reopenedAt === undefined ? {} : { reopenedAt: record.reopenedAt }),
+    ...(record.status === "awaiting_acceptance"
+      ? {
+          ...(acceptanceDeadline(record) === undefined ? {} : { acceptanceDeadline: acceptanceDeadline(record) }),
+          acceptanceOverdue: acceptanceOverdue(record),
+        }
+      : {}),
     tasks: record.tasks.map((task) => ({
       laneId: task.laneId,
       ...(task.agentId === undefined ? {} : { agentId: task.agentId }),
@@ -75,6 +85,12 @@ const RUN_OUTPUT_SCHEMA = {
     endedAt: { type: "string" },
     memberLimit: { type: "integer", required: true },
     maxConcurrentTasks: { type: "integer", required: true },
+    acceptance: { type: "string", required: true },
+    acceptedBy: { type: "string" },
+    acceptedAt: { type: "string" },
+    reopenedAt: { type: "string" },
+    acceptanceDeadline: { type: "string" },
+    acceptanceOverdue: { type: "boolean" },
     tasks: {
       type: "array",
       required: true,
@@ -122,7 +138,11 @@ const RUN_OUTPUT_SCHEMA = {
 export function apply(ctx: Context): void {
   const team = ctx.get("voidTeam") as VoidTeam;
 
-  const authorize = async (record: RunRecord, sessionId: string | undefined): Promise<void> => {
+  const authorize = async (
+    record: RunRecord,
+    sessionId: string | undefined,
+    options: { requireDispatchPolicy: boolean },
+  ): Promise<void> => {
     if (sessionId === undefined || record.initiatedBy === undefined) {
       throw new Error("运行记录无权访问：缺少执行会话或发起者绑定");
     }
@@ -133,6 +153,9 @@ export function apply(ctx: Context): void {
     }
     const actor = snapshot.profiles.get(snapshot.actorId);
     if (actor === undefined) throw new Error("运行记录无权访问：发起者档案不存在");
+    // 名单门只管「指挥」这半：看进度、取产出是读自己发起的 run，仍按既有的
+    // 身份许可 ∩ 队伍许可判；叫停会改变别人的工作，必须仍在可派活名单里。
+    if (options.requireDispatchPolicy) await team.assertActorMayDispatch(actor.id);
     assertTeamDispatch({
       snapshot: { members: record.frozenRoster, managerAgentId: record.managerAgentId },
       actor,
@@ -159,11 +182,11 @@ export function apply(ctx: Context): void {
     async execute(args, exec) {
       const { runId, wait = false } = args as { runId: string; wait?: boolean };
       const current = await team.runRecord(runId);
-      await authorize(current, exec.agent?.id);
+      await authorize(current, exec.agent?.id, { requireDispatchPolicy: false });
       // 不在本进程里跑的（宿主重启过）也给磁盘上那份，如实报它是什么状态，
       // 不假装等到了结果、也不假装它还在跑。
       const record = wait ? await team.waitForRun(runId) : await team.runRecord(runId);
-      if (wait) await authorize(record, exec.agent?.id);
+      if (wait) await authorize(record, exec.agent?.id, { requireDispatchPolicy: false });
       return renderRun(record);
     },
   }));
@@ -203,7 +226,7 @@ export function apply(ctx: Context): void {
     },
     async execute(args, exec) {
       const { runId, laneId, reason } = args as { runId: string; laneId?: string; reason?: string };
-      await authorize(await team.runRecord(runId), exec.agent?.id);
+      await authorize(await team.runRecord(runId), exec.agent?.id, { requireDispatchPolicy: true });
       const record =
         laneId === undefined
           ? await team.cancelRun(runId, reason)
@@ -244,7 +267,7 @@ export function apply(ctx: Context): void {
     },
     async execute(args, exec) {
       const { runId, laneId, offset, length } = args as { runId: string; laneId: string; offset: number; length?: number };
-      await authorize(await team.runRecord(runId), exec.agent?.id);
+      await authorize(await team.runRecord(runId), exec.agent?.id, { requireDispatchPolicy: false });
       return team.readRunOutputPage(runId, laneId, offset, length);
     },
   }));

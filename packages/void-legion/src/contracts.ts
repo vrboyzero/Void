@@ -10,8 +10,16 @@
  *
  * @module @void/void-legion/contracts
  */
-import type { DelegationTeamMember, DelegationTeamMetadata, DelegationTeamMode, LaunchRole, TeamSchedule } from "./team.js";
-import { TEAM_SCHEDULES } from "./team.js";
+import type {
+  AcceptanceMode,
+  DelegationTeamMember,
+  DelegationTeamMetadata,
+  DelegationTeamMode,
+  LaunchRole,
+  MemberCheckout,
+  TeamSchedule,
+} from "./team.js";
+import { MEMBER_CHECKOUTS, TEAM_SCHEDULES } from "./team.js";
 
 export { TEAM_SCHEDULES, type TeamSchedule } from "./team.js";
 
@@ -88,6 +96,9 @@ export const TEAM_MODES: readonly DelegationTeamMode[] = [
 
 export const LAUNCH_ROLES: readonly LaunchRole[] = ["default", "commander", "coder", "researcher", "verifier"];
 
+/** 验收模式（B2）。默认 `human`，缺字段一律按最保守的「要人确认」。 */
+export const ACCEPTANCE_MODES: readonly AcceptanceMode[] = ["human", "auto"];
+
 /** 一支可保存、可复用的队伍。`revision` 是并发保存的乐观锁。 */
 export interface TeamDocument {
   schemaVersion: number;
@@ -107,6 +118,13 @@ export interface TeamDocument {
    */
   maxConcurrentTasks: number;
   members: DelegationTeamMember[];
+  /**
+   * 验收模式（§22.4）。缺字段 = `human`（旧队伍文件照最保守处理，不猜自动放行）。
+   *
+   * 加这个字段不改队伍文档版本：它是可选字段，读旧文件按默认值走；真正改变
+   * 「旧运行记录怎么读」的是 `run-store.ts` 的 `RUN_SCHEMA_VERSION`。
+   */
+  acceptance?: AcceptanceMode;
   /** 每次成功保存 +1。并发保存靠它挡住覆盖。 */
   revision: number;
   updatedAt: string;
@@ -139,6 +157,18 @@ function assertSchedule(schedule: string): asserts schedule is TeamSchedule {
 function assertMode(mode: string): asserts mode is DelegationTeamMode {
   if (!(TEAM_MODES as readonly string[]).includes(mode)) {
     throw new LegionRosterError(`不认识的队伍模式: ${mode}（只接受 ${TEAM_MODES.join(" / ")}）`);
+  }
+}
+
+export function assertAcceptance(value: string): asserts value is AcceptanceMode {
+  if (!(ACCEPTANCE_MODES as readonly string[]).includes(value)) {
+    throw new LegionRosterError(`不认识的验收模式: ${value}（只接受 ${ACCEPTANCE_MODES.join(" / ")}）`);
+  }
+}
+
+function assertCheckout(value: string): asserts value is MemberCheckout {
+  if (!(MEMBER_CHECKOUTS as readonly string[]).includes(value)) {
+    throw new LegionRosterError(`不认识的检出方式: ${value}（只接受 ${MEMBER_CHECKOUTS.join(" / ")}）`);
   }
 }
 
@@ -207,6 +237,11 @@ function parseMember(value: unknown, index: number): DelegationTeamMember {
   if (modelRef !== undefined) member.modelRef = modelRef;
   const workspace = readOptionalString(source, "workspace");
   if (workspace !== undefined) member.workspace = workspace;
+  const checkout = readOptionalString(source, "checkout");
+  if (checkout !== undefined) {
+    assertCheckout(checkout);
+    member.checkout = checkout;
+  }
   if (source.writes !== undefined) {
     if (typeof source.writes !== "boolean") throw new LegionSchemaError(`队伍文档的 ${where}.writes 必须是布尔值`);
     member.writes = source.writes;
@@ -249,6 +284,9 @@ export function parseTeamDocument(text: string): TeamDocument {
   assertMode(mode);
   const schedule = readOptionalString(source, "schedule") ?? DEFAULT_TEAM_SCHEDULE;
   assertSchedule(schedule);
+  // 缺字段不是错误：旧队伍文件没有这一项，读成 undefined，运行时按 human 处理。
+  const acceptance = readOptionalString(source, "acceptance");
+  if (acceptance !== undefined) assertAcceptance(acceptance);
   const memberLimit = readPositiveInteger(source, "memberLimit", "根");
   assertMemberLimit(memberLimit);
   // 老队伍文档没写这一项时按默认值走：这是加字段，不是改语义，没必要让已经存下来的
@@ -272,6 +310,7 @@ export function parseTeamDocument(text: string): TeamDocument {
     members: rawMembers.map((member, index) => parseMember(member, index)),
     revision,
     updatedAt: readString(source, "updatedAt", "根"),
+    ...(acceptance === undefined ? {} : { acceptance }),
   };
   const sharedGoal = readOptionalString(source, "sharedGoal");
   if (sharedGoal !== undefined) document.sharedGoal = sharedGoal;
@@ -293,6 +332,7 @@ export function createTeamDocument(input: {
   managerIdentityLabel?: string;
   memberLimit?: number;
   maxConcurrentTasks?: number;
+  acceptance?: AcceptanceMode;
   now?: Date;
 }): TeamDocument {
   assertTeamId(input.id);
@@ -303,6 +343,8 @@ export function createTeamDocument(input: {
   assertMemberLimit(memberLimit);
   const maxConcurrentTasks = input.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
   assertMaxConcurrentTasks(maxConcurrentTasks);
+  const acceptance = input.acceptance ?? "human";
+  assertAcceptance(acceptance);
   const document: TeamDocument = {
     schemaVersion: LEGION_SCHEMA_VERSION,
     id: input.id,
@@ -311,6 +353,7 @@ export function createTeamDocument(input: {
     memberLimit,
     maxConcurrentTasks,
     members: [...(input.members ?? [])],
+    acceptance,
     revision: 0,
     updatedAt: (input.now ?? new Date()).toISOString(),
   };
@@ -331,6 +374,8 @@ export function teamMetadataOf(document: TeamDocument): DelegationTeamMetadata {
     schedule: document.schedule,
     memberLimit: document.memberLimit,
     maxConcurrentTasks: document.maxConcurrentTasks,
+    // 旧文档没写这一项：冻结时显式落成 human，派活路径不用再各自兜默认值。
+    acceptance: document.acceptance ?? "human",
   };
 }
 
@@ -369,6 +414,7 @@ export function teamDocumentOf(
     memberLimit,
     maxConcurrentTasks,
     members: metadata.memberRoster.map((member) => ({ ...member })),
+    acceptance: metadata.acceptance ?? "human",
     revision: options.revision ?? 0,
     updatedAt: (options.now ?? new Date()).toISOString(),
     ...(metadata.sharedGoal === undefined ? {} : { sharedGoal: metadata.sharedGoal }),

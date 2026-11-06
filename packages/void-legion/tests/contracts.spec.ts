@@ -59,6 +59,21 @@ describe("legion contracts", () => {
     expect(() => parseTeamDocument(JSON.stringify({ ...base, mode: "nope", members: [] }))).toThrow(/不认识的队伍模式: nope/);
   });
 
+  it("成员的 checkout 只认 shared/worktree，缺省就是 shared", () => {
+    const base = { schemaVersion: 1, id: "legion-demo", mode: "parallel_subtasks", memberLimit: 8, revision: 0, updatedAt: "2026-09-22T00:00:00.000Z" };
+    const worktree = parseTeamDocument(JSON.stringify({
+      ...base,
+      members: [{ laneId: "lane_a", checkout: "worktree" }],
+    }));
+    expect(worktree.members[0]?.checkout).toBe("worktree");
+    const shared = parseTeamDocument(JSON.stringify({ ...base, members: [{ laneId: "lane_a" }] }));
+    expect(shared.members[0]?.checkout).toBeUndefined();
+    expect(() => parseTeamDocument(JSON.stringify({
+      ...base,
+      members: [{ laneId: "lane_a", checkout: "isolated" }],
+    }))).toThrow(/不认识的检出方式: isolated/);
+  });
+
   it("validates ids and member limits with actionable messages", () => {
     expect(() => assertTeamId("..")).toThrow(LegionRosterError);
     expect(() => assertTeamId("ab")).toThrow(/3–64 位/);

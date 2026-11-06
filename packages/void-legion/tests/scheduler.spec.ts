@@ -1,5 +1,10 @@
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRunRecord, type RunRecord, type RunTaskRecord } from "../src/run-store.js";
+import { WorktreeManager } from "../src/worktree.js";
 import {
   DispatchGate,
   ScheduleCancelledError,
@@ -51,6 +56,7 @@ function makeRecord(
   roster: DelegationTeamMember[],
   schedule: TeamSchedule = "parallel",
   maxConcurrentTasks = 4,
+  acceptance: "human" | "auto" = "auto",
 ): RunRecord {
   return createRunRecord({
     runId: "legion-demo-20260922120000-01",
@@ -59,6 +65,7 @@ function makeRecord(
     roster,
     memberLimit: 8,
     maxConcurrentTasks,
+    acceptance,
     at: new Date("2026-09-22T12:00:00Z"),
   });
 }
@@ -482,6 +489,43 @@ describe("取消", () => {
   });
 });
 
+describe("验收闸门（B2）", () => {
+  it("human：全部完成只到待验收，不自动 completed", async () => {
+    const { worker, pending } = recorder();
+    const record = makeRecord([member("lane_a")], "parallel", 4, "human");
+    const handle = startSchedule({ record, worker, gate: makeGate(2) });
+    await flush();
+    pending[0]!.resolve("ok");
+    const settled = await handle.done;
+    expect(settled.status).toBe("awaiting_acceptance");
+    expect(settled.acceptedBy).toBeUndefined();
+    expect(settled.acceptedAt).toBeUndefined();
+  });
+
+  it("auto：直接 completed 并记 acceptedBy: auto", async () => {
+    const { worker, pending } = recorder();
+    const record = makeRecord([member("lane_a")], "parallel", 4, "auto");
+    const handle = startSchedule({ record, worker, gate: makeGate(2) });
+    await flush();
+    pending[0]!.resolve("ok");
+    const settled = await handle.done;
+    expect(settled.status).toBe("completed");
+    expect(settled.acceptedBy).toBe("auto");
+    expect(settled.acceptedAt).toBeTruthy();
+  });
+
+  it("有任务失败时不进入待验收", async () => {
+    const { worker, pending } = recorder();
+    const record = makeRecord([member("lane_a")], "parallel", 4, "human");
+    const handle = startSchedule({ record, worker, gate: makeGate(2) });
+    await flush();
+    pending[0]!.reject(new Error("boom"));
+    const settled = await handle.done;
+    expect(settled.status).toBe("failed");
+    expect(settled.acceptedBy).toBeUndefined();
+  });
+});
+
 describe("进度回调", () => {
   it("每次状态变化都回调，runId 立刻可用", async () => {
     const snapshots: string[] = [];
@@ -500,5 +544,85 @@ describe("进度回调", () => {
     await handle.done;
     expect(snapshots).toContain("running");
     expect(snapshots.at(-1)).toBe("completed");
+  });
+});
+
+describe("独立检出（B6）", () => {
+  it("worktree 成员各拿独立 cwd、不占共享写锁，结束后清理", async () => {
+    const base = await mkdtemp(path.join(tmpdir(), "void-legion-sched-wt-"));
+    try {
+      const repo = path.join(base, "repo");
+      await mkdir(repo, { recursive: true });
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore", windowsHide: true });
+      await writeFile(path.join(repo, "README.md"), "hello\n", "utf8");
+      execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore", windowsHide: true });
+      execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"], {
+        cwd: repo,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      const manager = new WorktreeManager({ repoDir: repo, rootDir: path.join(base, "worktrees") });
+
+      const contexts: TaskRunContext[] = [];
+      let active = 0;
+      let maxActive = 0;
+      let release: (() => void) | undefined;
+      const bothStarted = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const worker = async (context: TaskRunContext): Promise<unknown> => {
+        contexts.push(context);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        // 两条都在等同一个闸：能同时看到 active=2，说明 worktree 模式确实没占共享写锁。
+        if (contexts.length >= 2) release?.();
+        await bothStarted;
+        active -= 1;
+        return { cwd: context.cwd };
+      };
+      const record = makeRecord([
+        member("lane_a", { checkout: "worktree", writes: true }),
+        member("lane_b", { checkout: "worktree", writes: true }),
+      ]);
+      const handle = startSchedule({ record, worker, gate: makeGate(4), worktree: manager });
+      for (let tick = 0; tick < 100 && contexts.length < 2; tick += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(contexts).toHaveLength(2);
+      const settled = await handle.done;
+
+      expect(settled.status).toBe("completed");
+      expect(contexts).toHaveLength(2);
+      const cwds = contexts.map((context) => context.cwd);
+      expect(cwds.every((cwd) => typeof cwd === "string")).toBe(true);
+      expect(new Set(cwds).size).toBe(2);
+      // 两条都写同一工作区；worktree 模式跳过共享写锁，所以能同时跑。
+      expect(maxActive).toBe(2);
+      expect(settled.tasks.every((task) => task.checkoutPath !== undefined)).toBe(true);
+      for (const cwd of cwds) {
+        await expect(stat(cwd!)).rejects.toThrow();
+      }
+      // 事件里能看到建立与开始，不靠猜。
+      expect(settled.events.some((event) => event.kind === "task_worktree_created")).toBe(true);
+    } finally {
+      await rm(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => undefined);
+    }
+  });
+
+  it("声明 worktree 但没配检出管理器：lane 失败，不偷偷退回共享目录", async () => {
+    let called = false;
+    const record = makeRecord([member("lane_a", { checkout: "worktree" })]);
+    const handle = startSchedule({
+      record,
+      worker: async () => {
+        called = true;
+        return "should not run";
+      },
+      gate: makeGate(2),
+    });
+    const settled = await handle.done;
+    expect(called).toBe(false);
+    expect(settled.status).toBe("failed");
+    expect(settled.tasks[0]!.error).toContain("独立检出");
   });
 });

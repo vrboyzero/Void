@@ -105,6 +105,9 @@ function toItem(record: LegionNotificationRecord): LegionNotificationItem {
 
 function statusText(status: LegionNotificationRecord["status"]): string {
   switch (status) {
+    // 执行体停了，但还没人签收：不能写「已跑完」，那会让人以为事情已经验收。
+    case "awaiting_acceptance":
+      return "待验收";
     case "completed":
       return "已跑完";
     case "failed":
@@ -121,6 +124,8 @@ function statusLevel(status: LegionNotificationRecord["status"]): "info" | "warn
     case "completed":
     case "cancelled":
       return "info";
+    // 待验收与重启中断都需要人看一眼，但不等于失败。
+    case "awaiting_acceptance":
     case "interrupted":
       return "warn";
     case "failed":

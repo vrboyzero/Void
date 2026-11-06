@@ -18,10 +18,19 @@ import { open, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-file.js";
 import { assertLaneId, DEFAULT_MAX_CONCURRENT_TASKS } from "./contracts.js";
-import type { DelegationTeamMember, TeamSchedule } from "./team.js";
+import type { AcceptanceMode, DelegationTeamMember, TeamSchedule } from "./team.js";
 
-/** 本版本能读写的运行记录版本。 */
-export const RUN_SCHEMA_VERSION = 1;
+/**
+ * 本版本写出的运行记录版本。
+ *
+ * B2 起新增 `awaiting_acceptance` 状态与 `acceptance` / `acceptedBy` 字段。版本号
+ * 往上走，但**仍读得进版本 1 的旧记录**：旧记录没有验收字段，一律按最保守的
+ * `human` 处理（§22.4「旧记录缺 acceptance 字段按 human」），不猜自动放行。
+ */
+export const RUN_SCHEMA_VERSION = 2;
+
+/** 本版本仍能正确读取的旧版本。只做「缺字段补默认」，不改写旧文件。 */
+export const READABLE_RUN_SCHEMA_VERSIONS: readonly number[] = [1, RUN_SCHEMA_VERSION];
 
 /** run id 直接当文件名用，所以形状比队伍 id 更严（首字符字母/数字，无路径分隔符）。 */
 export const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{2,82}$/;
@@ -52,8 +61,23 @@ export class LegionRunNotFoundError extends LegionRunError {
   }
 }
 
-/** 一次 run 的终态集合；`running` 之外都算结束。 */
-export type RunStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
+/**
+ * 一次 run 的状态。
+ *
+ * `awaiting_acceptance`（B2）是「执行体跑完了，但人还没签收」：它不是 `running`，
+ * 也不是 `completed`。执行侧已经停下，所以算终态；但**不算验收通过**，要人点确认
+ * （或 auto 模式下自动确认）才转 `completed`。
+ */
+export type RunStatus =
+  | "running"
+  | "awaiting_acceptance"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+/** 谁签收的。`auto` 必须能被翻案，不能伪装成人工验收。 */
+export type RunAcceptedBy = "human" | "auto";
 
 /** 单个任务的终态集合；`pending`/`running` 之外都算结束。 */
 export type RunTaskStatus =
@@ -70,7 +94,24 @@ export type RunTaskStatus =
  * 根本没跑（上游先挂了）。分开记，才答得上「是它不行还是没轮到它」（§17.2
  * 「失败阻塞准确」）。
  */
-export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ["completed", "failed", "cancelled", "interrupted"];
+export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = [
+  "awaiting_acceptance",
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+];
+
+/**
+ * 验收层：`awaiting_acceptance` 与 `completed` 之间可以来回（人验收 / 翻案），
+ * 其余终态不许改。运行记录落盘的「终态不倒退」检查必须放行这两者之间的迁移，
+ * 否则人工验收那一步会被自己的存储层挡住。
+ */
+export const ACCEPTANCE_RUN_STATUSES: readonly RunStatus[] = ["awaiting_acceptance", "completed"];
+
+export function isAcceptanceRunStatus(status: RunStatus): boolean {
+  return ACCEPTANCE_RUN_STATUSES.includes(status);
+}
 export const TERMINAL_TASK_STATUSES: readonly RunTaskStatus[] = [
   "completed",
   "failed",
@@ -85,6 +126,29 @@ export function isTerminalRunStatus(status: RunStatus): boolean {
 
 export function isTerminalTaskStatus(status: RunTaskStatus): boolean {
   return TERMINAL_TASK_STATUSES.includes(status);
+}
+
+/**
+ * 人工验收的默认超时（7 天，§22.4「验收不是无限期悬挂」）。
+ *
+ * 超时只用于**提示**：仍然算「待验收」，绝不自动通过。要改时限就改这个常量；
+ * 把它做成队伍字段属于另一层配置，B2 不做。
+ */
+export const ACCEPTANCE_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** 待验收的截止时间；不是待验收、或没有结束时间时返回 undefined。 */
+export function acceptanceDeadline(record: RunRecord): string | undefined {
+  if (record.status !== "awaiting_acceptance" || record.endedAt === undefined) return undefined;
+  const ended = Date.parse(record.endedAt);
+  if (Number.isNaN(ended)) return undefined;
+  return new Date(ended + ACCEPTANCE_TIMEOUT_MS).toISOString();
+}
+
+/** 是否已过人工验收时限。**超时不是自动通过**，只是面板/工具要说得出来。 */
+export function acceptanceOverdue(record: RunRecord, now: Date = new Date()): boolean {
+  const deadline = acceptanceDeadline(record);
+  if (deadline === undefined) return false;
+  return now.getTime() > Date.parse(deadline);
 }
 
 /** 一条任务记录。`attempts` 恒为 1——失败不自动返工（§17.2）。 */
@@ -103,6 +167,9 @@ export interface RunTaskRecord {
    * 有它才能从运行记录跳回宿主里那个真实子会话，而不是只看到「某个 lane 跑完了」。
    */
   childSessionId?: string;
+  /** 独立检出（B6）：路径与分支，便于事后审计/回滚。shared 成员没有。 */
+  checkoutPath?: string;
+  checkoutBranch?: string;
   startedAt?: string;
   endedAt?: string;
   /** 小产出原样存储；大产出在独立文件，这里只留预览。 */
@@ -121,10 +188,18 @@ export type RunEventKind =
   | "task_blocked"
   | "task_cancelling"
   | "task_cancelled"
+  /** 独立检出已建立（B6）。 */
+  | "task_worktree_created"
+  /** 独立检出清理失败（B6）：不会静默留下一个没人知道的检出。 */
+  | "task_worktree_cleanup_failed"
   | "task_output_truncated"
   | "run_finished"
   | "run_cancelled"
   | "run_settled"
+  /** 人工验收通过（B2）：`awaiting_acceptance` → `completed`。 */
+  | "run_accepted"
+  /** 自动确认被人翻案（B2）：`completed` → `awaiting_acceptance`。 */
+  | "run_reopened"
   /** 运行记录没写进磁盘（磁盘满了、目录被删了……）。内存里那份仍然是最新的。 */
   | "run_persist_failed"
   /** 终态通知没写进磁盘。**不影响运行结果**，只留痕：面板里看得到「通知没记上」。 */
@@ -147,6 +222,17 @@ export interface RunRecord {
   task: string;
   schedule: TeamSchedule;
   status: RunStatus;
+  /**
+   * 本次 run 的验收模式（§22.4）。派活时从队伍默认值（或可信调用方的单次覆盖）
+   * 冻结进来；旧记录没有这个字段时解析成 `human`，不猜自动放行。
+   */
+  acceptance: AcceptanceMode;
+  /** 谁签收的；只有 `completed` 才应该有值。人工与自动必须分得清。 */
+  acceptedBy?: RunAcceptedBy;
+  /** 签收时间；与 `endedAt`（执行结束）分开，别把「跑完」当「验收」。 */
+  acceptedAt?: string;
+  /** 最近一次被人工翻案的时间（自动确认被改回待验收）。 */
+  reopenedAt?: string;
   createdAt: string;
   updatedAt: string;
   endedAt?: string;
@@ -193,6 +279,7 @@ export interface CreateRunInput {
   roster: readonly DelegationTeamMember[];
   memberLimit: number;
   maxConcurrentTasks?: number | undefined;
+  acceptance?: AcceptanceMode;
   at: Date;
 }
 
@@ -207,6 +294,7 @@ export function createRunRecord(input: CreateRunInput): RunRecord {
     task: input.task ?? "",
     schedule: input.schedule,
     status: "running",
+    acceptance: input.acceptance ?? "human",
     createdAt: at,
     updatedAt: at,
     frozenRoster: input.roster.map((member) => structuredClone(member)),
@@ -230,6 +318,8 @@ export interface RunSummary {
   runId: string;
   teamId: string;
   status: RunStatus;
+  acceptance: AcceptanceMode;
+  acceptedBy?: RunAcceptedBy;
   schedule: TeamSchedule;
   total: number;
   completed: number;
@@ -246,6 +336,8 @@ export function summarizeRun(record: RunRecord): RunSummary {
     runId: record.runId,
     teamId: record.teamId,
     status: record.status,
+    acceptance: record.acceptance,
+    ...(record.acceptedBy === undefined ? {} : { acceptedBy: record.acceptedBy }),
     schedule: record.schedule,
     total: record.tasks.length,
     completed: count("completed"),
@@ -293,11 +385,16 @@ function isRunTaskStatus(value: string): value is RunTaskStatus {
 function isRunStatus(value: string): value is RunStatus {
   return (
     value === "running" ||
+    value === "awaiting_acceptance" ||
     value === "completed" ||
     value === "failed" ||
     value === "cancelled" ||
     value === "interrupted"
   );
+}
+
+function isAcceptedBy(value: string): value is RunAcceptedBy {
+  return value === "human" || value === "auto";
 }
 
 /**
@@ -315,8 +412,10 @@ export function parseRunRecord(text: string, source: string): RunRecord {
     throw new LegionRunSchemaError(`运行记录损坏: ${source}（顶层不是对象）`);
   }
   const value = raw as Record<string, unknown>;
-  if (value.schemaVersion !== RUN_SCHEMA_VERSION) {
-    throw new LegionRunSchemaError(`不支持的运行记录版本: ${String(value.schemaVersion)}（本版本只认 ${RUN_SCHEMA_VERSION}）`);
+  if (typeof value.schemaVersion !== "number" || !READABLE_RUN_SCHEMA_VERSIONS.includes(value.schemaVersion)) {
+    throw new LegionRunSchemaError(
+      `不支持的运行记录版本: ${String(value.schemaVersion)}（本版本只认 ${READABLE_RUN_SCHEMA_VERSIONS.join(" / ")}）`,
+    );
   }
   if (typeof value.runId !== "string" || typeof value.teamId !== "string") {
     throw new LegionRunSchemaError(`运行记录损坏: ${source}（缺少 runId 或 teamId）`);
@@ -327,10 +426,28 @@ export function parseRunRecord(text: string, source: string): RunRecord {
   if (!Array.isArray(value.tasks)) {
     throw new LegionRunSchemaError(`运行记录损坏: ${source}（缺少 tasks）`);
   }
+  const acceptance = value.acceptance;
+  if (acceptance !== undefined && acceptance !== "human" && acceptance !== "auto") {
+    throw new LegionRunSchemaError(`运行记录损坏: ${source}（acceptance 不认识: ${String(acceptance)}）`);
+  }
+  const acceptedBy = value.acceptedBy;
+  if (acceptedBy !== undefined && (typeof acceptedBy !== "string" || !isAcceptedBy(acceptedBy))) {
+    throw new LegionRunSchemaError(`运行记录损坏: ${source}（acceptedBy 不认识: ${String(acceptedBy)}）`);
+  }
+  for (const key of ["acceptedAt", "reopenedAt"] as const) {
+    if (value[key] !== undefined && typeof value[key] !== "string") {
+      throw new LegionRunSchemaError(`运行记录损坏: ${source}（${key} 必须是时间字符串）`);
+    }
+  }
   const record = value as unknown as RunRecord;
   record.tasks = value.tasks.map((task) => parseTask(task, record.runId));
   if (!Array.isArray(record.events)) record.events = [];
   if (!Array.isArray(record.frozenRoster)) record.frozenRoster = [];
+  // 旧版本没有验收字段：一律按最保守的 human 补齐。写入时顺手升到当前版本，
+  // 旧文件下一次被保存就会带上新字段（不猜测、不改写历史文件本身）。
+  record.schemaVersion = RUN_SCHEMA_VERSION;
+  record.acceptance = acceptance === "auto" ? "auto" : "human";
+  if (acceptedBy === undefined) delete record.acceptedBy;
   return record;
 }
 
@@ -409,7 +526,11 @@ export class RunStore {
 
   private async saveOnce(record: RunRecord): Promise<void> {
     const existing = await this.load(record.runId);
-    if (existing !== undefined && isTerminalRunStatus(existing.status) && existing.status !== record.status) {
+    // 验收层允许来回：待验收 → 已完成（人点确认）、已完成 → 待验收（翻案）。
+    // 其余终态不许改——旧快照不能把已结算的失败/取消盖回去。
+    const acceptanceTransition =
+      existing !== undefined && isAcceptanceRunStatus(existing.status) && isAcceptanceRunStatus(record.status);
+    if (existing !== undefined && isTerminalRunStatus(existing.status) && existing.status !== record.status && !acceptanceTransition) {
       throw new LegionRunError(`运行记录已是终态 ${existing.status}，拒绝旧快照覆盖: ${record.runId}`);
     }
     for (const task of record.tasks) {

@@ -46,6 +46,8 @@ async function makeRoot(): Promise<string> {
 const TEAM: DelegationTeamMetadata = {
   id: "legion-demo",
   mode: "plan_execute_verify",
+  // 这组用例测通知，不测验收；用 auto 保持「跑完即 completed」的旧断言。
+  acceptance: "auto",
   sharedGoal: "prove the notification outbox",
   memberRoster: [
     { laneId: "lane_plan", role: "researcher", authorityRelationToManager: "peer" },
@@ -62,6 +64,7 @@ function recordWith(runId: string, statuses: RunRecord["tasks"][number]["status"
     runId,
     teamId: "legion-demo",
     schedule: "sequential",
+    acceptance: "auto",
     roster: TEAM.memberRoster,
     memberLimit: 8,
     at: AT,

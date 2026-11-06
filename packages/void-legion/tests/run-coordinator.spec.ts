@@ -54,6 +54,8 @@ async function makeRoot(): Promise<string> {
 const TEAM: DelegationTeamMetadata = {
   id: "legion-demo",
   mode: "plan_execute_verify",
+  // 这组用例关心调度与记录，不关心验收；用 auto 保持「跑完即 completed」的旧断言。
+  acceptance: "auto",
   sharedGoal: "prove the coordinator seam",
   memberRoster: [
     { laneId: "lane_plan", role: "researcher", authorityRelationToManager: "peer" },
@@ -349,7 +351,7 @@ describe("RunCoordinator 查询", () => {
     expect(progress.runId).toBe(record.runId);
     expect(progress.teamId).toBe("legion-demo");
     expect(progress.summary.completed).toBe(3);
-    expect(progress.conclusion).toBe("全部干完：3/3");
+    expect(progress.conclusion).toBe("全部干完并自动确认：3/3（acceptedBy: auto，可人工翻案）");
     expect(progress.events.some((event) => event.kind === "run_finished")).toBe(true);
     expect(progress.lastActivityAt).toBe((await runs.require(record.runId)).updatedAt);
   });
@@ -395,6 +397,51 @@ describe("RunCoordinator 查询", () => {
 
     const settled = await settle(runs, record.runId, control);
     expect(settled.maxConcurrentTasks).toBe(1);
+  });
+});
+
+describe("验收闸门（B2）", () => {
+  it("human：跑完停在待验收，人点确认才 completed，并留痕", async () => {
+    const runs = new RunCoordinator({});
+    const record = await runs.dispatch({
+      teamId: "legion-demo",
+      team: { ...TEAM, acceptance: "human" },
+      worker: instantWorker(),
+    });
+    await runs.waitFor(record.runId);
+    const settled = await runs.require(record.runId);
+    expect(settled.status).toBe("awaiting_acceptance");
+    expect(settled.acceptedBy).toBeUndefined();
+    expect(settled.endedAt).toBeTruthy();
+
+    const accepted = await runs.acceptRun(record.runId, "human", "看过产出，接受");
+    expect(accepted.status).toBe("completed");
+    expect(accepted.acceptedBy).toBe("human");
+    expect(accepted.acceptedAt).toBeTruthy();
+    expect(accepted.events.at(-1)).toMatchObject({ kind: "run_accepted", detail: "人工验收通过：看过产出，接受" });
+    // 人工验收不提供「翻案」入口。
+    await expect(runs.reopenRun(record.runId)).rejects.toThrow(/只有自动确认/);
+  });
+
+  it("auto：跑完直接 completed 并记 acceptedBy: auto，可被翻案回待验收", async () => {
+    const runs = new RunCoordinator({});
+    const record = await runs.dispatch({ teamId: "legion-demo", team: TEAM, worker: instantWorker() });
+    await runs.waitFor(record.runId);
+    const settled = await runs.require(record.runId);
+    expect(settled.status).toBe("completed");
+    expect(settled.acceptedBy).toBe("auto");
+
+    const reopened = await runs.reopenRun(record.runId, "自动确认不放心");
+    expect(reopened.status).toBe("awaiting_acceptance");
+    expect(reopened.acceptedBy).toBeUndefined();
+    expect(reopened.acceptedAt).toBeUndefined();
+    expect(reopened.reopenedAt).toBeTruthy();
+    expect(reopened.events.at(-1)).toMatchObject({ kind: "run_reopened", detail: "自动确认不放心" });
+    // 翻案后仍可人工验收。
+    await expect(runs.acceptRun(record.runId, "human")).resolves.toMatchObject({
+      status: "completed",
+      acceptedBy: "human",
+    });
   });
 });
 

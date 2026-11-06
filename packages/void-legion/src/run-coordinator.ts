@@ -5,6 +5,7 @@ import {
 } from "./contracts.js";
 import { validateTaskPlan, type TaskPlan } from "./planner.js";
 import {
+  LegionRunError,
   RunStore,
   createRunRecord,
   nextRunId,
@@ -16,7 +17,8 @@ import {
 import { DispatchGate, startSchedule, type ScheduleHandle, type ScheduleWorker } from "./scheduler.js";
 import { composeRunRoster } from "./team-repository.js";
 import { runFinishedEvent, type LegionNotificationStore, type LegionRunFinished } from "./notifications.js";
-import type { DelegationTeamMember, DelegationTeamMetadata } from "./team.js";
+import type { AcceptanceMode, DelegationTeamMember, DelegationTeamMetadata } from "./team.js";
+import type { WorktreeManager } from "./worktree.js";
 
 /**
  * 一次派活的收口：**冻结配置 → 校验计划 → 落盘 → 交给调度器 → 立刻返回 runId**。
@@ -29,6 +31,31 @@ import type { DelegationTeamMember, DelegationTeamMetadata } from "./team.js";
  *   持有并跨 run 传递（§15.3「不同 run 也共享该锁/容量约束」）；
  * - 进度**如实报**：当前任务、已结算/总数、最近活动时间、原生子会话 id，没有假百分比。
  */
+
+/**
+ * 一次派活实际要用的名单：手动计划走计划校验，否则走固定名单 + 临时成员。
+ *
+ * 抽出来给「观察」路径复用：observe 不建 run，但必须走**同一套**名单解析与
+ * 授权判断，否则账本里记的「本来会派什么」和真派时不是一回事。
+ */
+export function resolveDispatchRoster(input: {
+  team: DelegationTeamMetadata;
+  plan?: TaskPlan;
+  temporaryMembers?: readonly DelegationTeamMember[];
+}): DelegationTeamMember[] {
+  const schedule = input.team.schedule ?? DEFAULT_TEAM_SCHEDULE;
+  const memberLimit = input.team.memberLimit ?? DEFAULT_MEMBER_LIMIT;
+  const temporaryMembers = input.temporaryMembers ?? [];
+  return input.plan === undefined
+    ? composeRunRoster(teamDocumentOf(input.team), temporaryMembers)
+    : validateTaskPlan({
+        plan: input.plan,
+        schedule,
+        memberLimit,
+        temporaryMembers,
+        fixedRoster: teamDocumentOf(input.team).members,
+      }).roster;
+}
 
 /** 派活请求。 */
 export interface LegionDispatchRequest {
@@ -51,6 +78,11 @@ export interface LegionDispatchRequest {
   authorize?: (roster: readonly DelegationTeamMember[]) => void | Promise<void>;
   /** 本次运行的并发上限；缺省用队伍配置，再缺省用默认 4。 */
   maxConcurrentTasks?: number;
+  /**
+   * 单次 run 的验收模式覆盖（§22.4）。只给可信调用方用；模型工具 `launch_legion`
+   * 故意不暴露它——派活的档案不能自己把闸门关掉。
+   */
+  acceptance?: AcceptanceMode;
 }
 
 /** 进度视图：给工具与面板用，字段都是「已经发生的事实」。 */
@@ -91,6 +123,8 @@ export interface RunCoordinatorOptions {
   onTerminal?: ((event: LegionRunFinished) => void) | undefined;
   gate?: DispatchGate;
   now?: (() => Date) | undefined;
+  /** 独立检出管理器（B6）；没有它时声明 worktree 的 lane 会失败，不会退回共享。 */
+  worktree?: WorktreeManager | undefined;
 }
 
 /** 派活时运行不在本进程里的错误（宿主重启过）。 */
@@ -106,6 +140,7 @@ export class RunCoordinator {
   private readonly notifications: LegionNotificationStore | undefined;
   private readonly onTerminal: ((event: LegionRunFinished) => void) | undefined;
   private readonly gate: DispatchGate;
+  private readonly worktree: WorktreeManager | undefined;
   private readonly now: () => Date;
   private readonly active = new Map<string, ScheduleHandle>();
   private readonly reserved = new Set<string>();
@@ -117,6 +152,7 @@ export class RunCoordinator {
     this.notifications = options.notifications;
     this.onTerminal = options.onTerminal;
     this.gate = options.gate ?? new DispatchGate({});
+    this.worktree = options.worktree;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -167,16 +203,11 @@ export class RunCoordinator {
     // 手动计划那条路要把队伍的固定名单一起给它：计划负责「这一步干什么」，队伍负责
     // 「谁来做」。少了它，模型照提示只写 laneId/title 就会派出一批没有档案 id 的人，
     // 权限检查直接拒（2026-09-23 真机派活撞到过 `派活目标缺少档案 id: lane_front`）。
-    const roster =
-      request.plan === undefined
-        ? composeRunRoster(teamDocumentOf(request.team), temporaryMembers)
-        : validateTaskPlan({
-            plan: request.plan,
-            schedule,
-            memberLimit,
-            temporaryMembers,
-            fixedRoster: teamDocumentOf(request.team).members,
-          }).roster;
+    const roster = resolveDispatchRoster({
+      team: request.team,
+      ...(request.plan === undefined ? {} : { plan: request.plan }),
+      ...(temporaryMembers.length === 0 ? {} : { temporaryMembers }),
+    });
 
     // 权限快照：一个任务都不派之前先过门禁。
     if (request.authorize !== undefined) await request.authorize(roster);
@@ -194,6 +225,7 @@ export class RunCoordinator {
         roster,
         memberLimit,
         maxConcurrentTasks: request.maxConcurrentTasks ?? request.team.maxConcurrentTasks,
+        acceptance: request.acceptance ?? request.team.acceptance ?? "human",
         at,
       });
       await this.save(record);
@@ -203,6 +235,7 @@ export class RunCoordinator {
         worker: request.worker,
         gate: this.gate,
         ...(request.signal === undefined ? {} : { signal: request.signal }),
+        ...(this.worktree === undefined ? {} : { worktree: this.worktree }),
         now: this.now,
         onLaneStart: () => {
           void this.saveDuringRun(record);
@@ -337,6 +370,57 @@ export class RunCoordinator {
     return this.require(runId);
   }
 
+  /**
+   * 人工验收（§22.4）：`awaiting_acceptance` → `completed`。
+   *
+   * 只走这一条路；没有「验收即对外授权」的副作用——推送、合并、发布是另一层。
+   * `expectedRevision` 没有意义：运行记录没有修订号，验收的是**当前这一份**状态。
+   */
+  async acceptRun(runId: string, acceptedBy: "human" | "auto" = "human", note?: string): Promise<RunRecord> {
+    const record = await this.require(runId);
+    if (record.status !== "awaiting_acceptance") {
+      throw new LegionRunError(`这次运行不在待验收状态: ${runId}（当前 ${record.status}）`);
+    }
+    const at = this.now().toISOString();
+    const detail = typeof note === "string" ? note.trim() : "";
+    record.status = "completed";
+    record.acceptedBy = acceptedBy;
+    record.acceptedAt = at;
+    record.events.push({
+      at,
+      kind: "run_accepted",
+      detail: `${acceptedBy === "human" ? "人工验收通过" : "自动确认"}${detail === "" ? "" : `：${detail}`}`,
+    });
+    await this.save(record);
+    return record;
+  }
+
+  /**
+   * 翻案：自动确认的 `completed` 退回 `awaiting_acceptance`。
+   *
+   * 只允许翻**自动确认**的那一类；人工验收本身已经有人负责，不再提供「撤回」。
+   * 翻案不清执行结果、不重跑成员任务，只把验收状态退回去。
+   */
+  async reopenRun(runId: string, reason?: string): Promise<RunRecord> {
+    const record = await this.require(runId);
+    if (record.status !== "completed" || record.acceptedBy !== "auto") {
+      throw new LegionRunError(`只有自动确认的已完成运行可以被翻案: ${runId}`);
+    }
+    const at = this.now().toISOString();
+    record.status = "awaiting_acceptance";
+    record.reopenedAt = at;
+    delete record.acceptedBy;
+    delete record.acceptedAt;
+    const detail = typeof reason === "string" ? reason.trim() : "";
+    record.events.push({
+      at,
+      kind: "run_reopened",
+      detail: detail === "" ? "人工翻案：自动确认改回待验收" : detail,
+    });
+    await this.save(record);
+    return record;
+  }
+
   async progress(runId: string): Promise<LegionRunProgress> {
     const record = await this.require(runId);
     const childSessionIds = record.tasks
@@ -442,7 +526,14 @@ function describeConclusion(record: RunRecord): string {
   if (status === "running") {
     return `还在跑：已结算 ${summary.completed + summary.failed + summary.blocked + summary.cancelled}/${summary.total}，在跑 ${summary.running}，还没轮到 ${summary.pending}`;
   }
-  if (status === "completed") return `全部干完：${summary.completed}/${summary.total}`;
+  if (status === "awaiting_acceptance") {
+    return `跑完了，等你验收：全部完成 ${summary.completed}/${summary.total}（未验收不算完成；超时也不会自动通过）`;
+  }
+  if (status === "completed") {
+    return record.acceptedBy === "auto"
+      ? `全部干完并自动确认：${summary.completed}/${summary.total}（acceptedBy: auto，可人工翻案）`
+      : `全部干完并已验收：${summary.completed}/${summary.total}`;
+  }
   if (status === "interrupted") return `宿主重启，这次没跑完（已结算 ${summary.completed}/${summary.total}），没有自动重跑`;
   if (status === "cancelled") return `已取消（已结算 ${summary.completed}/${summary.total}）`;
   return `有任务没干成：成功 ${summary.completed}，失败 ${summary.failed}，被阻塞 ${summary.blocked}，取消 ${summary.cancelled}`;
