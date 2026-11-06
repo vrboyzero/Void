@@ -233,12 +233,13 @@ dsh plugin --profile web add "E:\project\star-sanctuary\Void\dist\void-void-memo
 **3. 验证**：
 
 ```powershell
-dsh --profile web --dump-config | Select-String "id: void"   # 五包共 16 条 entry 全部命中
+dsh --profile web --dump-config | Select-String "id: void"   # 五包共 17 条 entry 全部命中
 dsh web --no-open --port 3699                                # 打开打印出来的带 token 的地址
 ```
 
-`GET /void/api/panels` 应返回五个业务视图（人格记忆 / 灵魂档案 / 模组库 / 军团队伍 / 军团运行）
+`GET /void/api/panels` 应返回六个业务视图（人格记忆 / 灵魂档案 / 模组库 / 军团队伍 / 军团运行 / 派活名单）
 与两个通知来源 `void-legion:runs`、`void-soul:refusals`；`GET /void/api/detail?view=void-soul:profiles` 应列得出真档案。
+派活名单虽然也在清单里，但客户端把它嵌进了「虚空(Void) Agents」面板的页签，设置页的「业务视图」会按 id 过滤掉它。
 若这里回 `404 无法确定档案位置：需要 profileContext、宿主给的档案目录（ctx.baseUrl），或 DSH_HOME + DSH_PROFILE`，
 说明三条来源一个都没给（正常用 `dsh --profile X` 起的时候宿主会给档案目录，所以一般见不到这条）——
 **界面本身仍然打得开**，这是「没配」与「配错」分开处理的结果。
@@ -466,16 +467,17 @@ firstMeeting: 先自我介绍，再问主人怎么称呼。
 
 **能力**：把一支队伍真的派出去干活——每条 lane 变成一个 dsh 子智能体，按依赖顺序执行；进度、产出、取消与终态通知都能从工具和面板看到。
 
-**模型层工具**（4 个）：
+**模型层工具**（5 个）：
 
 | 工具 | 作用 |
 |---|---|
-| `launch_legion` | 派活：`{ teamId, task?, plan? }`。`plan` 是可选的手工计划 JSON（`{"goal":…,"tasks":[{laneId,title,brief,dependsOn,stage,modelRef}]}`），非法计划在派发前就被拒。**计划只写「这一步干什么」**——没写的身份与调度字段都从队伍那条 lane 继承（见下面「队伍从哪来、计划管什么」）。立即返回 `runId`，运行在后台继续 |
-| `legion_run` | 读运行进度和小产出；超过 256 KiB 的产出返回 `outputRef.bytes` 与预览（`{ runId, wait? }`；`wait: true` 阻塞到终态，仍可取消） |
+| `launch_legion` | 派活：`{ teamId, task?, plan? }`。`plan` 是可选的手工计划 JSON（`{"goal":…,"tasks":[{laneId,title,brief,dependsOn,stage,modelRef}]}`），非法计划在派发前就被拒。**计划只写「这一步干什么」**——没写的身份与调度字段都从队伍那条 lane 继承（见下面「队伍从哪来、计划管什么」）。立即返回 `runId`，运行在后台继续。**不接收 `acceptance` 参数**：验收模式由队伍冻结，派活的档案不能自己关闸（B2）。**来源 observe 时**只记账、不建 run，返回 `observed: true` 且没有 `runId`（B3） |
+| `legion_run` | 读运行进度和小产出；超过 256 KiB 的产出返回 `outputRef.bytes` 与预览（`{ runId, wait? }`；`wait: true` 阻塞到终态，仍可取消）。返回 `status`、`acceptance`、`acceptedBy`、`acceptanceDeadline`/`acceptanceOverdue`；`awaiting_acceptance` 表示跑完了但还没人签收（B2） |
 | `legion_output` | 分片读大产出的原始 UTF-8 JSON：`{ runId, laneId, offset, length? }`，每次最多 16 KiB；按 `nextOffset` 继续，依次 base64 解码并拼接还原完整内容 |
 | `legion_cancel` | 取消整个 run（也可只取消某条 lane） |
+| `legion_policy` | 读/改**派活名单**（B1）：`{ action: "list" \| "add" \| "remove", agentId? }`。读任何绑定档案都能做；`add/remove` 必须持有主人发放的有效授权（`mode: "agent"`、未撤销、未过期、范围 `internal/dispatch`）。它**没有** grant/revoke/mode 动作：Agent 不能给自己授权、不能转授、不能拨开关。返回里 `youCanEdit` 直接说本会话现在能不能改 |
 
-`legion_run`、`legion_output`、`legion_cancel` 每次都重核调用会话的绑定、发起身份与本次冻结名单的指挥权；无发起身份的旧运行记录在模型工具层拒绝读取/取消，面板和服务层的历史记录不删。子代理先绑定自己的档案再进首轮；绑定失败不会借用父身份。
+`legion_run`、`legion_output`、`legion_cancel` 每次都重核调用会话的绑定、发起身份与本次冻结名单的指挥权；无发起身份的旧运行记录在模型工具层拒绝读取/取消，面板和服务层的历史记录不删。子代理先绑定自己的档案再进首轮；绑定失败不会借用父身份。**把某个档案移出派活名单后，它在同一个会话里派不动新活、也不能叫停；但看自己发起的 run 的进度与产出仍按「身份 ∩ 队伍」规则放行**——读不是指挥。名单是「还能不能指挥军团」的门，不是把历史记录一并锁死。
 
 **队伍从哪来**：两个来源，**先内存、后磁盘**——`ctx.voidTeam.defineTeam(...)` 注册在内存里的，以及**保存在磁盘上的**（`<数据根>/legion/teams/<teamId>.json`，也就是**面板里建的那些**）。`launch_legion` 只给 `teamId` 就够了，面板建的队伍照样派得动。（2026-09-23 之前工具层只认内存那一份，面板建的队伍会回「队伍不存在: X」——已修，现在派发前会先 `observe`、再 `loadTeam` 落磁盘。）面板上改的**人数上限 / 并发上限**也是当场落到磁盘上的：点一次保存，两个数各推一格修订，**宿主重启后仍是新值**；把上限改到比名单人数还少会被拒（「队伍人数超出上限: 3 > 2（按档案去重后计数，含指挥者与临时成员；改上限或减人后再派）」），拿改前的修订再保存也会被拒（「队伍配置已被其他保存更新（期望修订 X，实际 Y），请重读后再改」），这两种拒绝都不会碰磁盘。（2026-09-23 真机核对：面板把 8→5、4→2 保存后，换一个进程重启宿主，面板读回仍是「3/5 人 · 修订 7」，磁盘原文逐字未变；再绕过宿主把文件换回改前那一份，面板**当场**读回旧值——面板显示的是磁盘上的真值，不是进程里的快照。）
 
@@ -518,6 +520,62 @@ await ctx.voidTeam.notifications?.list();
 
 **停用的成员在面板上看得见（2026-09-23 起）**：成员被停用之后不用等到派活失败才发现——队伍列表的摘要尾巴多一句「 · N 个成员已停用」，队伍详情在「成员名单」与「运行记录」之间多出一节「停用的成员」，逐条点名 `已停用：lane_front 的 ajia —— 派活会被拒（在灵魂档案面板上「启用这份档案」就恢复，记忆与聊天记录一个字节都没动）`；读不出来的档案单列一行并注明「这一处不算「没停用」」，末尾一句说清名单一个字节都不动。**停用不是把人从名单里去掉**：那张可编辑的成员表一个字节都不动（也不往里加列——整份回写会把算出来的列当成字段写进队伍文件），派活之前才整队拦住：有几个成员取不出身份就一次列几个（`整队不派：N 个成员取不出派活身份——lane … 的派活身份取不出来（<agentId>）：档案已停用，拒绝派活: …`），一个 run 都不会产生。军团自己再读一遍 `agents/*/state.json` 才知道谁被停用，全程只读。（2026-09-23 真机核对：停用「阿甲（ajia）」后列表摘要变 `parallel_subtasks · 并行 · 3/8 人 · 1 个成员已停用`，真模型调 `launch_legion` 拿到 `Error: 整队不派：1 个成员取不出派活身份——lane lane_front 的派活身份取不出来（ajia）：档案已停用，拒绝派活: ajia（在面板上「启用这份档案」就恢复，记忆与聊天记录一个字节都没动）`，`legion/runs/` 一个文件都没多；点「启用这份档案」后标记消失，同一条两条 lane 的计划再派一次正常跑完。）
 
+**派活名单（B1，2026-11-06）**：这是派活的**第三道门**，只收窄、不放宽——派活仍然要同时通过「身份许可 ∩ 队伍 `mayDirect`」，名单里没有的人一定派不动，名单里有的人也不一定能派（另外两道照旧判）。落盘 `<数据根>/legion/dispatch-policy.json`（独立 `schemaVersion: 1`、`revision` 乐观锁、最近 100 条改动留痕）。
+
+- **默认 fail-closed**：没有这份文件、或名单为空，都按「当前没人能派活」处理；面板「派活名单」页签会明说「还没配置 / 名单为空」，不会静默全放行。**装上新版后先在页签里加一个档案并保存**，否则所有派活与运行操作都会被拒。
+- **默认只有主人能改**：`mode: "owner"`。面板（本机主人通道）可以授权一个 Agent 改名单（`grantId`、范围 `internal/dispatch`、可设到期），授权后 Agent 通过 `legion_policy` 真的能改；`mode: "agent"` 但没有有效授权时实际仍只有主人能改。撤销最后一份有效授权会自动回落到 `owner`；收回开关不删授权记录。
+- **留痕**：每次改动记 `owner` 或 `agent:<档案 id>`，Agent 改动同时记 `grantId`，不把 Agent 动作伪装成主人。面板详情里有「改名单授权」与「近期改动」两张表；改动带修订号，面板拿旧修订保存会被 409 挡住。
+- **入口**：在「虚空(Void) Agents」主面板顶部用「Agent / 派活名单」两个页签切换（第一次打开后保持挂载，切页签不会丢草稿）；设置页的「业务视图」不再重复挂 `void-legion:dispatch-policy`。行尾「移除」或把该行档案 id 清空再保存 = 移出名单。**管理视图的写请求要求浏览器 Origin**：无 Origin 的本机脚本会被直接拒绝（这是纵深防御；拿到本机 UI 的 Agent 仍可能伪造，真正的边界是宿主沙箱/工具门禁）。
+- **信任边界**：面板写入按主人通道处理（本机同源 UI + `x-void-request`），没有独立口令；这是权限协议，不是对「已有 shell 的恶意 Agent」的文件系统沙箱。跨进程同时写名单没有分布式锁（与队伍配置同一取舍，部署保持单宿主实例）。
+
+**验收闸门（B2，2026-11-06）**：**跑完 ≠ 验收完成**。执行体停了只说明活干完了，不代表这件事对。
+
+- **默认要人验收**：队伍字段 `acceptance: "human" | "auto"`，缺省 `human`。`human` 跑完停在 `awaiting_acceptance`（面板写「待验收」），人点「验收通过」才转 `completed` 并记 `acceptedBy: "human"`；`auto` 跑完直接 `completed`，但记 `acceptedBy: "auto"`，**绝不伪装成人工验收**。
+- **单次覆盖**：`VoidTeam.dispatch` 支持 `acceptance` 覆盖；模型工具 `launch_legion` **故意不暴露**这个参数——派活的档案不能自己把闸门关掉。队伍默认值在队伍详情的「验收模式」字段里改，只影响之后的派活（已派出的 run 用冻结值）。
+- **失败/取消不进入待验收**：只有全部任务 `completed` 的 run 才走验收层；失败、取消、重启中断保持自己的终态，不拿「待验收」粉饰。
+- **超时只提示，不自动通过**：`human` 模式默认 7 天时限（`ACCEPTANCE_TIMEOUT_MS`），面板与 `legion_run` 会给 `acceptanceDeadline` / `acceptanceOverdue`；超时仍是待验收。
+- **可翻案**：自动确认的 `completed` 可以在运行详情里「翻案」回 `awaiting_acceptance`（记 `reopenedAt` 与事件），不重跑成员任务；人工验收不提供翻案入口。待验收的 run 在列表里优先顶到最前。
+
+**派活来源与观察（B3）· 沉默账本（B5，2026-11-06）**：
+
+- **来源**：`<数据根>/legion/dispatch-source.json`，字段 `enabled`、`mode: "live" | "observe"`、`revision`、按 UTC 日的 `counts`（观察/派发/被拒）和最近 200 条账本。**没配置过 = 默认 live**（沿用既有行为）；要观察必须显式切，切回 live 也是显式动作，不做「观察够了自动放开」。
+- **observe 不建 run**：同一个 `launch_legion` 请求走完名单、身份 ∩ 队伍与来源判断后，只写一条「本来会派什么」的账，**不写 `legion/runs/`、不占 runId、不进通知、不启子代理**；工具返回 `observed: true` 且没有 `runId`，`tasks` 是「本来会派」的 lane 列表。
+- **沉默有账**：每次放行/观察/拒绝都落一条 `observed` / `dispatched` / `filtered`；`filtered` 带原因（名单里没有、队伍不存在、计划非法、来源已停用、来源损坏等）。面板「派活名单」详情里有「派活来源」字段、今日计数与「派活账本（最近 20 条）」；来源动作（切 observe / 切回 live / 停用 / 启用）都在同一页，状态与真实配置一致。
+- **状态机**：`missing / off / error / setup / starting / paused / ready` 七态；内向来源实际用 `ready`（live）、`paused`（observe）、`off`（停用）、`error`（文件损坏，fail-closed）；`missing/setup/starting` 留给 B8 的外部来源。来源文件损坏时面板显示 `配置损坏`，工具拒绝派活，不猜成 live。
+- **B5 的外部字段先留好**：账本条目有 `channel` 与 `droppedKind: "channelGone" | "channelIgnored"` 可选字段；内向来源不用，B8 接 GitHub/飞书时不必再改账本格式。
+
+**健康探针（B4，2026-11-06）**：`scripts/legion-health.mjs` 是**进程外**探针——军团自己的进程挂了，它自己救不了自己，所以它必须由**日常 profile / 操作系统计划任务 / 另一个 dsh profile** 来跑。
+
+```sh
+node scripts/legion-health.mjs --profile web --json
+node scripts/legion-health.mjs --data-dir "C:/Users/…/.dsh/void-data/web" --respect-stop
+```
+
+| 退出码 | 含义 | 人该做什么 |
+|---|---|---|
+| 0 | 正常（或操作者手动停机） | 不用管 |
+| 1 | 重启可以修 | 重启 `dsh web`；军团会把未完成 run 结算成 `interrupted`，**不自动重跑** |
+| 2 | 重启也修不了 | 人工查损坏的 JSON/权限；重启不会修 |
+| 3 | 等 setup | 先装/启用军团、配置数据根 |
+
+- **坏文件优先判 2**：`dispatch-policy.json` / `dispatch-source.json` / `runs/*.json` / `teams/*.json` / `notifications.json` 有坏 JSON 时，先报 2，不让人白重启。
+- **宿主不可达 + 有 `running` 记录判 1**：重启会做重启结算；没有 `running` 记录也判 1（重启可修）。
+- **手动停机**：停机前创建 `<数据根>/runtime/legion-health.stop`，探针带 `--respect-stop` 时判 0；停机结束后删掉标记。
+- **headless profile** 用 `--no-status` 只看文件，不必有 HTTP 端点。
+- **本轮只交付脚本，没有创建计划任务**：创建/修改宿主的 schedule 需要主人明确点头；建议在**日常 profile** 配一个每 5–15 分钟运行的 OS 计划任务，命令照上面第一条。
+
+**独立检出（B6，2026-11-06）**：成员在队伍名单里写 `checkout: "worktree"` 时，派活会给这条 lane 开一个独立 `git worktree`，**不占共享工作区写锁**：
+
+- **默认仍是 `shared`**（共享工作区 + 写锁），`worktree` 必须显式 opt-in。仓库目录由 `void-legion` 插件配置的 `worktreeRepo` 指定（缺省 `process.cwd()`，即 dsh 启动目录）；不是 git 仓库时这条 lane 直接失败，**不会偷偷退回共享目录**。
+- 每个检出在 `<数据根>/legion/worktrees/<runId>/<laneId>`，分支 `agent/<runId>-<laneId>`；子代理的 `cwd` 就是这个目录（宿主 `SubagentStartRequest.cwd`）。lane 结束后删除检出并尝试删分支（**失败的 lane 也一样删**，只留运行记录与事件）；清理失败写一条 `task_worktree_cleanup_failed` 运行事件，不静默留下检出。
+- **从 `HEAD` 建**：主工作区的**未提交改动不会带过去**。要让 lane 看到它们，先把改动提交/放到可引用的 ref，或继续用 `shared`。
+- 宿主被杀留下的残留检出，用 `git worktree prune` 清元数据；面板的队伍详情成员表有「检出」列（`shared` / `worktree`），运行事件里能看到建立/清理记录。
+- **不改变既有默认**：不写 `checkout` 的成员行为与之前完全一样。
+
+**这三条的真机验证（2026-11-06，隔离 profile `web` / 端口 3699 / 宿主 0.2.1-rc.2）**：B4 在活宿主上跑 `legion-health.mjs`，没有军团数据根时 `exit=3`、跑出数据后 `exit=0`（running 0）；B3 用宿主真实 `tools.execute` 调 `launch_legion`，observe 返回 `observed:true`、无 `runId`、`legion/runs/` 不增、账本 `observed` +1，切 live 后同请求产生 run；B6 的真实 `checkout:"worktree"` 派活写出 `checkoutPath` / `checkoutBranch`，子会话的宿主工作目录投影（`workingDirectory.get`）等于该路径、提示词里也写了 `独立检出：<同一路径>`，lane 结束后 worktree 与分支已清理。**限制**：隔离 home 没有账号凭据，子代理首轮停在 `stopReason:"error"`（run 记 `failed`），所以「模型在 worktree 里真的干活」仍未验；面板只核到接口与 bundle，没有做浏览器点击级验证。
+
+**命令 shim（B7，defer）**：这条要等 B8 的外部来源（GitHub/飞书）先落地——现在没有消费者，而写 `PATH` shim、切 `GH_CONFIG_DIR`/`LARKSUITE_CLI_CONFIG_DIR`、剔除 `*KEY*/*PASSWORD*/*SECRET*/*TOKEN*` 环境变量都是**环境级动作**，贸然做没有可验证的真实凭据。记 `defer`，等 B8 的 GitHub 源立项/落地后按「隔离 shell + dry-run shim 目录 → `gh auth status` 指向 Agent 账号 → 环境变量清洗 → `lark-cli config strict-mode bot` → 回滚」的步骤做；**绝不能顺手抄危及其隔离的 `danger-full-access` preset**。
+
 ### 3.5 渠道（void-channel-feishu）
 
 **能力**：渠道注册表 `ctx.voidChannels` + 一个 mock 飞书传输（receive → ingress → reply），证明"收消息 → 路由 → 回消息"的 seam 形状。
@@ -541,8 +599,8 @@ ctx.voidChannels.list();
 
 ### 3.6 组合 bundle（void）
 
-`@void/void` 的 `cordis.patch.yml` 是 **entry + soul + memory + tools + legion 五包 bundle 的并集**，共 16 条 entry
-（entry 1 条、soul 4 条、memory 4 条、tools 2 条、legion 5 条）。它只做「把五包合到一层」，不额外提供业务能力。
+`@void/void` 的 `cordis.patch.yml` 是 **entry + soul + memory + tools + legion 五包 bundle 的并集**，共 17 条 entry
+（entry 1 条、soul 4 条、memory 4 条、tools 2 条、legion 6 条：service / tool / run-tool / policy-tool / detail-view / notification-source）。它只做「把五包合到一层」，不额外提供业务能力。
 
 > **为什么要有 parity 测试**：组合包和「逐个装包」必须是同一套运行形态，少一条 entry 就会出现
 > 「用组合包装的人看不到某个视图」。`packages/void/tests/bundle-parity.spec.ts` 会把组合层与五个包
@@ -563,6 +621,7 @@ ctx.voidChannels.list();
 | `void-memory:memory` | 人格记忆 | void-memory |
 | `void-legion:teams` | 军团队伍 | void-legion |
 | `void-legion:runs` | 军团运行 | void-legion |
+| `void-legion:dispatch-policy` | 派活名单（B1） | void-legion；**嵌在「虚空(Void) Agents」面板的页签里**，设置页的「业务视图」按 id 过滤掉它，不重复挂 |
 
 **面板里的状态一律说中文**（2026-09-23 定案）：队伍详情的「最近的运行」状态列、运行列表的摘要、运行详情的「状态」字段与任务表的状态列，写的都是中文说法——「在跑 / 已跑完 / 有任务失败 / 已取消 / 被宿主重启中断」「还没轮到 / 已完成 / 失败 / 被上游堵住」。运行详情那一格的下面留着一行小字写着磁盘上的原始值（形如 `磁盘上的原始值：interrupted。`），**原始枚举一个都没丢**：`legion_run` 工具返回与 `<数据根>/legion/runs/<runId>.json` 里仍然是 `running`/`blocked` 这些原值，事件流水那一段也照旧写原始 `kind`（它是诊断流水，后面常跟一句中文说明）。状态值是磁盘上的外部输入，面板遇到不认识的值**照原样显示**，不写「未知」也不留空。（2026-09-23 真机核对：在一份真档案上，运行详情的状态格读出来就是「被宿主重启中断」，下面那行小字写着 `磁盘上的原始值：interrupted。`，同一页任务表的状态列也是中文；磁盘上的 JSON 一个字节没动。）
 
@@ -686,7 +745,7 @@ dsh --profile demo "请调用 memory_search 工具搜索 'hello'，然后报告�
 
 ### Q8：模型说「工具 launch_legion 属于管理入口，未开放给 Agent，已拒绝」
 
-**原因**：开了入口门禁（`entryPolicy.enabled: true`）之后，凡是不在只读名单里的工具都按「管理入口」拒——军团工具（`launch_legion`/`legion_run`/`legion_output`/`legion_cancel`）正是管理面：派活会真的拉起子智能体、真的花 token，所以默认不让任何档案随手做。
+**原因**：开了入口门禁（`entryPolicy.enabled: true`）之后，凡是不在只读名单里的工具都按「管理入口」拒——军团工具（`launch_legion`/`legion_run`/`legion_output`/`legion_cancel`）正是管理面：派活会真的拉起子智能体、真的花 token，所以默认不让任何档案随手做。**`legion_policy` 是例外**：它由工具内部逐次核主人发放的有效授权，入口门禁不再按 manage 一刀切拒绝（否则 B1 的授权永远用不上），见下面的说明。
 
 **解决**：给 `void-soul` 那条补 `entryPolicy.allowed`（**同 id 是整块替换 `config`**，`isolation` 等要一起写全）：
 
@@ -699,7 +758,7 @@ dsh --profile demo "请调用 memory_search 工具搜索 'hello'，然后报告�
       allowed: [memory_write, memory_update, memory_retract, launch_legion, legion_run, legion_output, legion_cancel]
 ```
 
-`allowed` 是**整个 profile 一份**的名单，不按档案分开——写进去，所有档案都能派活。不想开这个口子就保持拒绝：门禁的默认姿态是「宁可不让 Agent 自己拉队伍」。
+`allowed` 是**整个 profile 一份**的名单，不按档案分开——写进去，所有档案都能派活。不想开这个口子就保持拒绝：门禁的默认姿态是「宁可不让 Agent 自己拉队伍」。**另注意**：`legion_policy` 不受 manage 一刀切拦截，但 Agent 真要改派活名单，仍必须在面板里持有主人发放的有效授权（B1）；入口门禁与内部授权是两层，不能互相替代。
 
 **顺带认一下别的症状**（都不是配置问题，2026-09-23 真机派活撞出来的，已修）：`队伍不存在: alpha` 是工具层以前只认内存里的队伍（面板建的队伍在磁盘上）；`cannot get property "subagents" without inject` 是军团取子代理 seam 的方式不对；`派活目标缺少档案 id: lane_front` 与 `成员 lane_front 的汇报对象不在名单里: lane_plan` 是手工计划与队伍名单合并的规则问题（见 3.4）。
 
