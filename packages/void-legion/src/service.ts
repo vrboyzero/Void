@@ -114,6 +114,8 @@ export interface ExternalDispatchOptions {
   worker: ScheduleWorker;
   signal?: AbortSignal | undefined;
   maxConcurrentTasks?: number | undefined;
+  /** 逐成员身份预载（可信来源入口仍要保证子代理有自己的身份）。 */
+  authorize?: ((roster: readonly DelegationTeamMember[]) => void | Promise<void>) | undefined;
 }
 
 /**
@@ -495,6 +497,7 @@ export class VoidTeam extends Service {
       ...(input.task === undefined ? {} : { task: input.task }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
       ...(input.maxConcurrentTasks === undefined ? {} : { maxConcurrentTasks: input.maxConcurrentTasks }),
+      ...(input.authorize === undefined ? {} : { authorize: input.authorize }),
       // 外部触发不是主人亲手派的：验收永远默认 human（§22.7.8），来源侧不能覆盖。
       acceptance: "human",
       worker: input.worker,

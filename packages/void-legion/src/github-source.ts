@@ -343,8 +343,10 @@ export function deliveryComment(input: {
     `状态：${input.status}`,
     input.conclusion,
   ];
-  if (input.status === "awaiting_acceptance" || input.acceptance === "human") {
+  if (input.status === "awaiting_acceptance") {
     lines.push("等待人工验收；验收通过前不会标记为完成。");
+  } else if (input.status === "failed") {
+    lines.push("执行未通过；详情见运行记录。");
   }
   return lines.join("\n");
 }

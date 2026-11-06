@@ -902,6 +902,36 @@ describe("launch_legion tool through the Loader", () => {
     expect((await team.runRecord(created.runId)).status).toBe("completed");
   });
 
+  it("外部来源的 run 允许队伍指挥读取，不拿 source:github 对会话绑定", async () => {
+    context = await boot({}, { seedPolicy: false });
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      id: "ext-read",
+      mode: "parallel",
+      managerAgentId: "xiaobei",
+      acceptance: "human",
+      memberRoster: [{ laneId: "lane_a", agentId: "xiaoma" }],
+    });
+    context.provide("voidAuthority", authoritySource({
+      sessionId: "source-parent",
+      actorId: "xiaobei",
+      profiles: managerAndSubordinate,
+    }));
+    const record = await team.dispatchExternal({
+      teamId: "ext-read",
+      task: "外部来源",
+      source: { id: "github", channel: "owner/name#1", requester: "alice" },
+      worker: async () => ({ ok: true }),
+    });
+    await team.waitForRun(record.runId);
+    const result = await context.tools.get("legion_run")!.execute(
+      { runId: record.runId },
+      mockExec({ id: "source-parent" } as Agent),
+    ) as { source?: unknown; status: string };
+    expect(result.status).toBe("awaiting_acceptance");
+    expect(result.source).toEqual(record.source);
+  });
+
   it("pages a large saved lane output only for the authorized caller", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "void-legion-output-"));
     try {

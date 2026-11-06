@@ -155,12 +155,20 @@ export function apply(ctx: Context): void {
     sessionId: string | undefined,
     options: { requireDispatchPolicy: boolean },
   ): Promise<void> => {
-    if (sessionId === undefined || record.initiatedBy === undefined) {
+    if (sessionId === undefined) {
+      throw new Error("运行记录无权访问：缺少执行会话");
+    }
+    if (record.source === undefined && record.initiatedBy === undefined) {
       throw new Error("运行记录无权访问：缺少执行会话或发起者绑定");
     }
     const authority = ctx.get("voidAuthority") as AuthoritySource | undefined;
     const snapshot = await authority?.forSession(sessionId);
-    if (snapshot === undefined || snapshot.actorId !== record.initiatedBy) {
+    if (snapshot === undefined) {
+      throw new Error("运行记录无权访问：会话没有绑定发起者档案");
+    }
+    // 外部触发（B8）没有「发起 Agent」：不拿 source:github 去对会话绑定。
+    // 仍然要求调用方有权威档案，并走下面的身份 ∩ 队伍许可（通常是队伍指挥）。
+    if (record.source === undefined && (record.initiatedBy === undefined || snapshot.actorId !== record.initiatedBy)) {
       throw new Error("运行记录无权访问：会话没有绑定发起者档案");
     }
     const actor = snapshot.profiles.get(snapshot.actorId);
