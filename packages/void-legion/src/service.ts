@@ -6,7 +6,7 @@ import { laneOrder } from "./plan-validator.js";
 import type { TaskPlan } from "./planner.js";
 import { RunCoordinator, type LegionRunProgress } from "./run-coordinator.js";
 import { LEGION_RUN_TERMINAL_EVENT, LegionNotificationStore } from "./notifications.js";
-import { RunStore, type RunRecord, type RunTaskStatus } from "./run-store.js";
+import { RunStore, type ExternalRunSource, type RunRecord, type RunTaskStatus } from "./run-store.js";
 import { DispatchPolicyError, DispatchPolicyRepository, dispatchDenialReason, type DispatchPolicyMode, type DispatchPolicySnapshot } from "./dispatch-policy.js";
 import {
   DispatchSourceError,
@@ -104,6 +104,16 @@ export interface DispatchOptions {
    * 派活的档案不能自己把闸门关掉。
    */
   acceptance?: AcceptanceMode;
+}
+
+/** 外部触发来源的派活输入（B8）。只有来源适配层会构造它。 */
+export interface ExternalDispatchOptions {
+  teamId: string;
+  task?: string | undefined;
+  source: ExternalRunSource;
+  worker: ScheduleWorker;
+  signal?: AbortSignal | undefined;
+  maxConcurrentTasks?: number | undefined;
 }
 
 /**
@@ -463,6 +473,31 @@ export class VoidTeam extends Service {
         : { maxConcurrentTasks: options.maxConcurrentTasks }),
       ...(options.acceptance === undefined ? {} : { acceptance: options.acceptance }),
       worker: options.worker,
+    });
+  }
+
+  /**
+   * 外部触发来源的派活入口（B8）。
+   *
+   * 这是**可信代码路径**：来源适配层已经按自己的 `allowed` / `bots` 判过授权，
+   * 这里不再走 B1 的「Agent 派活名单」门；但队伍解析、计划校验、运行记录、
+   * 工作区锁、验收默认值（强制 `human`）一样不少。模型工具不可达这个入口——
+   * `launch_legion` 仍走 `dispatch`，名单照判。
+   */
+  async dispatchExternal(input: ExternalDispatchOptions): Promise<RunRecord> {
+    const team = await this.resolveTeam(input.teamId);
+    const coordinator = this.requireCoordinator();
+    return coordinator.dispatch({
+      teamId: input.teamId,
+      team,
+      initiatedBy: `source:${input.source.id}`,
+      source: input.source,
+      ...(input.task === undefined ? {} : { task: input.task }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+      ...(input.maxConcurrentTasks === undefined ? {} : { maxConcurrentTasks: input.maxConcurrentTasks }),
+      // 外部触发不是主人亲手派的：验收永远默认 human（§22.7.8），来源侧不能覆盖。
+      acceptance: "human",
+      worker: input.worker,
     });
   }
 

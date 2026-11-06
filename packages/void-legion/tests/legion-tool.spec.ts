@@ -1010,3 +1010,48 @@ describe("launch_legion tool through the Loader", () => {
     expect(context.tools.get("launch_legion")).toBeUndefined();
   });
 });
+describe("dispatchExternal（B8 可信来源入口）", () => {
+  it("跳过 B1 名单但强制 human 验收，并把来源写进运行记录", async () => {
+    context = await boot({}, { seedPolicy: false });
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      id: "ext-demo",
+      mode: "parallel",
+      acceptance: "auto",
+      memberRoster: [{ laneId: "lane_a", agentId: "xiaoma" }],
+    });
+
+    const record = await team.dispatchExternal({
+      teamId: "ext-demo",
+      task: "来自 GitHub 的活",
+      source: {
+        id: "github",
+        channel: "owner/name#1",
+        requester: "alice",
+        eventId: "notif-1",
+        url: "https://github.com/owner/name/issues/1",
+      },
+      worker: async () => ({ ok: true }),
+    });
+    const settled = await team.waitForRun(record.runId);
+
+    expect(settled.initiatedBy).toBe("source:github");
+    expect(settled.source).toEqual(record.source);
+    expect(settled.acceptance).toBe("human");
+    expect(settled.status).toBe("awaiting_acceptance");
+  });
+
+  it("普通 dispatch 没有名单仍然拒绝（外部入口不放松 Agent 的名单门）", async () => {
+    context = await boot({}, { seedPolicy: false });
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      id: "ext-demo-2",
+      mode: "parallel",
+      memberRoster: [{ laneId: "lane_a", agentId: "xiaoma" }],
+    });
+    await expect(team.dispatch("ext-demo-2", {
+      initiatedBy: "xiaoma",
+      worker: async () => ({ ok: true }),
+    })).rejects.toThrow(/派活名单|名单/);
+  });
+});

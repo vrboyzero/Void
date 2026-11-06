@@ -136,6 +136,53 @@ describe("运行记录落盘", () => {
     expect(JSON.parse(text).schemaVersion).toBe(RUN_SCHEMA_VERSION);
   });
 
+  it("外部触发来源随记录落盘，读回还在", () => {
+    const created = record([member("lane_a")], {
+      source: {
+        id: "github",
+        channel: "owner/name#123",
+        requester: "alice",
+        eventId: "notif-1",
+        url: "https://github.com/owner/name/issues/123",
+      },
+    });
+    const parsed = parseRunRecord(serializeRunRecord(created), "runs/a.json");
+    expect(parsed.schemaVersion).toBe(3);
+    expect(parsed.source).toEqual(created.source);
+  });
+
+  it("v2 旧记录没有 source，读成会话内派活而不是猜一个来源", () => {
+    const parsed = parseRunRecord(JSON.stringify({
+      schemaVersion: 2,
+      runId: "legion-demo-20260922120000-01",
+      teamId: "legion-demo",
+      status: "running",
+      tasks: [],
+    }), "runs/a.json");
+    expect(parsed.schemaVersion).toBe(3);
+    expect(parsed.source).toBeUndefined();
+    expect(parsed.acceptance).toBe("human");
+  });
+
+  it("source 形状不对就报路径，不静默丢掉来源", () => {
+    expect(() => parseRunRecord(JSON.stringify({
+      schemaVersion: 3,
+      runId: "r",
+      teamId: "t",
+      status: "running",
+      tasks: [],
+      source: { id: "gitlab", channel: "x" },
+    }), "runs/a.json")).toThrow(/source.id 不认识/);
+    expect(() => parseRunRecord(JSON.stringify({
+      schemaVersion: 3,
+      runId: "r",
+      teamId: "t",
+      status: "running",
+      tasks: [],
+      source: { id: "github" },
+    }), "runs/a.json")).toThrow(/source.channel 必须是非空字符串/);
+  });
+
   it("读不到的 run 报不存在，而不是给个空壳", async () => {
     const { store } = await makeStore();
     expect(await store.load("legion-demo-20260922120000-09")).toBeUndefined();
@@ -146,7 +193,7 @@ describe("运行记录落盘", () => {
 describe("版本与损坏", () => {
   it("版本不认识就明确报错，不兼容解析", () => {
     const text = JSON.stringify({ schemaVersion: 99, runId: "legion-demo-20260922120000-01", teamId: "legion-demo", status: "running", tasks: [] });
-    expect(() => parseRunRecord(text, "x.json")).toThrow(/不支持的运行记录版本: 99（本版本只认 1 \/ 2）/);
+    expect(() => parseRunRecord(text, "x.json")).toThrow(/不支持的运行记录版本: 99（本版本只认 1 \/ 2 \/ 3）/);
   });
 
   it("结构缺件 / 状态不认识都报路径", () => {

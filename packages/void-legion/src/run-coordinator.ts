@@ -11,6 +11,7 @@ import {
   nextRunId,
   runConclusion,
   summarizeRun,
+  type ExternalRunSource,
   type RunRecord,
   type RunSummary,
 } from "./run-store.js";
@@ -62,6 +63,8 @@ export interface LegionDispatchRequest {
   teamId: string;
   team: DelegationTeamMetadata;
   initiatedBy?: string;
+  /** 外部触发来源（B8）；只有 `dispatchExternal` 会填。 */
+  source?: ExternalRunSource;
   /** 本次任务书（团队总目标）。 */
   task?: string;
   /** 手动计划；给了就用它，不给就从名单直接生成逐任务记录。 */
@@ -219,6 +222,7 @@ export class RunCoordinator {
         runId,
         teamId,
         ...(request.initiatedBy === undefined ? {} : { initiatedBy: request.initiatedBy }),
+        ...(request.source === undefined ? {} : { source: request.source }),
         ...(request.team.managerAgentId === undefined ? {} : { managerAgentId: request.team.managerAgentId }),
         task: request.task,
         schedule,

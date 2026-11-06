@@ -23,14 +23,28 @@ import type { AcceptanceMode, DelegationTeamMember, TeamSchedule } from "./team.
 /**
  * 本版本写出的运行记录版本。
  *
- * B2 起新增 `awaiting_acceptance` 状态与 `acceptance` / `acceptedBy` 字段。版本号
- * 往上走，但**仍读得进版本 1 的旧记录**：旧记录没有验收字段，一律按最保守的
- * `human` 处理（§22.4「旧记录缺 acceptance 字段按 human」），不猜自动放行。
+ * B2 起新增 `awaiting_acceptance` 状态与 `acceptance` / `acceptedBy` 字段；
+ * B8 起新增外部触发来源 `source`。版本号往上走，但**仍读得进版本 1 / 2 的旧记录**：
+ * 旧记录没有验收字段，一律按最保守的 `human` 处理（§22.4「旧记录缺 acceptance 字段按 human」），
+ * 没有 `source` 就是会话内派活，不猜自动放行。
  */
-export const RUN_SCHEMA_VERSION = 2;
+export const RUN_SCHEMA_VERSION = 3;
 
 /** 本版本仍能正确读取的旧版本。只做「缺字段补默认」，不改写旧文件。 */
-export const READABLE_RUN_SCHEMA_VERSIONS: readonly number[] = [1, RUN_SCHEMA_VERSION];
+export const READABLE_RUN_SCHEMA_VERSIONS: readonly number[] = [1, 2, RUN_SCHEMA_VERSION];
+
+/**
+ * 外部触发来源（B8）。`id` 是来源类型，`channel` 是可读的渠道标识（如
+ * `owner/repo#123`）；`requester` / `eventId` / `url` 只用于排查与面板展示，
+ * **不存凭据**。内部派活没有这个字段。
+ */
+export interface ExternalRunSource {
+  id: "github" | "feishu";
+  channel: string;
+  requester?: string;
+  eventId?: string;
+  url?: string;
+}
 
 /** run id 直接当文件名用，所以形状比队伍 id 更严（首字符字母/数字，无路径分隔符）。 */
 export const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{2,82}$/;
@@ -218,6 +232,8 @@ export interface RunRecord {
   teamId: string;
   /** 模型工具发起者；旧记录没有此字段时，工具层拒绝读取和取消。 */
   initiatedBy?: string;
+  /** 外部触发来源（B8）；内部派活没有。 */
+  source?: ExternalRunSource;
   managerAgentId?: string;
   task: string;
   schedule: TeamSchedule;
@@ -273,6 +289,8 @@ export interface CreateRunInput {
   runId: string;
   teamId: string;
   initiatedBy?: string;
+  /** 外部触发来源（B8）。只有 `dispatchExternal` 会填。 */
+  source?: ExternalRunSource;
   managerAgentId?: string;
   task?: string | undefined;
   schedule: TeamSchedule;
@@ -290,6 +308,7 @@ export function createRunRecord(input: CreateRunInput): RunRecord {
     runId: assertRunId(input.runId),
     teamId: input.teamId,
     ...(input.initiatedBy === undefined ? {} : { initiatedBy: input.initiatedBy }),
+    ...(input.source === undefined ? {} : { source: structuredClone(input.source) }),
     ...(input.managerAgentId === undefined ? {} : { managerAgentId: input.managerAgentId }),
     task: input.task ?? "",
     schedule: input.schedule,
@@ -437,6 +456,24 @@ export function parseRunRecord(text: string, source: string): RunRecord {
   for (const key of ["acceptedAt", "reopenedAt"] as const) {
     if (value[key] !== undefined && typeof value[key] !== "string") {
       throw new LegionRunSchemaError(`运行记录损坏: ${source}（${key} 必须是时间字符串）`);
+    }
+  }
+  const rawSource = value.source;
+  if (rawSource !== undefined) {
+    if (typeof rawSource !== "object" || rawSource === null || Array.isArray(rawSource)) {
+      throw new LegionRunSchemaError(`运行记录损坏: ${source}（source 必须是对象）`);
+    }
+    const item = rawSource as Record<string, unknown>;
+    if (item.id !== "github" && item.id !== "feishu") {
+      throw new LegionRunSchemaError(`运行记录损坏: ${source}（source.id 不认识: ${String(item.id)}）`);
+    }
+    if (typeof item.channel !== "string" || item.channel.trim() === "") {
+      throw new LegionRunSchemaError(`运行记录损坏: ${source}（source.channel 必须是非空字符串）`);
+    }
+    for (const key of ["requester", "eventId", "url"] as const) {
+      if (item[key] !== undefined && typeof item[key] !== "string") {
+        throw new LegionRunSchemaError(`运行记录损坏: ${source}（source.${key} 必须是字符串）`);
+      }
     }
   }
   const record = value as unknown as RunRecord;

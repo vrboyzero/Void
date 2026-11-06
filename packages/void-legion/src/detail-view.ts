@@ -681,6 +681,15 @@ async function runBody(host: LegionViewHost, runId: string): Promise<ViewBody> {
         readOnly: true,
         help: `磁盘上的原始值：${record.status}。`,
       },
+      ...(record.source === undefined
+        ? []
+        : [{
+            key: "source",
+            label: "来源",
+            value: `${record.source.id} · ${record.source.channel}${record.source.requester === undefined ? "" : ` · ${record.source.requester}`}`,
+            readOnly: true,
+            help: "外部触发（B8）；没有这一格就是会话内派活。来源不改验收模式：外部 run 一律 human。",
+          }]),
       {
         key: "acceptance",
         label: "验收模式",
