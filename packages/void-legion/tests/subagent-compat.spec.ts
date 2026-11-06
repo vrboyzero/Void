@@ -129,6 +129,52 @@ describe("startSubagent（统一句柄）", () => {
     expect((spec.request as Record<string, unknown>).parent).toBe(parent);
   });
 
+  it("独立检出的 cwd 原样传给新宿主与旧宿主（B6）", async () => {
+    const cwd = "C:/tmp/legion-worktrees/run/lane_a";
+    const specs: Array<Record<string, unknown>> = [];
+    const newRuntime = {
+      async startActivation(spec: Record<string, unknown>) {
+        specs.push(spec);
+        return {
+          childId: "child-1",
+          result: Promise.resolve({ output: [], stopReason: "completed" }),
+          async dispose() {},
+        };
+      },
+    };
+    const parent = { id: "parent" } as Agent;
+    await startSubagent(newRuntime as never, {
+      provider: "spawn",
+      label: "lane_a",
+      parent,
+      prompt: [{ type: "text", text: "干活" }],
+      signal: new AbortController().signal,
+      cwd,
+    });
+    expect((specs[0]!.request as Record<string, unknown>).cwd).toBe(cwd);
+
+    let legacyRequest: Record<string, unknown> | undefined;
+    const oldRuntime = {
+      async start(_name: string, request: Record<string, unknown>) {
+        legacyRequest = request;
+        return {
+          id: "child-2",
+          result: Promise.resolve({ output: [], stopReason: "completed" }),
+          async dispose() {},
+        };
+      },
+    };
+    await startSubagent(oldRuntime as never, {
+      provider: "spawn",
+      label: "lane_a",
+      parent,
+      prompt: [{ type: "text", text: "干活" }],
+      signal: new AbortController().signal,
+      cwd,
+    });
+    expect(legacyRequest?.cwd).toBe(cwd);
+  });
+
   it("旧宿主回退 start：id 保持字符串化，persona 走 request", async () => {
     let legacyRequest: Record<string, unknown> | undefined;
     const runtime = {

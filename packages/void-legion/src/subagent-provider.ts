@@ -61,6 +61,8 @@ export interface LaneBrief {
   modelRef?: string | undefined;
   workspace: string;
   writes: boolean;
+  /** 独立检出（B6）的绝对路径；shared 成员没有。 */
+  checkoutPath?: string | undefined;
 }
 
 /** 把调度器的任务上下文翻译成说明书素材。 */
@@ -77,6 +79,7 @@ export function laneBriefFromContext(context: TaskRunContext): LaneBrief {
     modelRef: context.modelRef,
     workspace: context.workspace,
     writes: context.writesWorkspace,
+    ...(context.checkoutPath === undefined ? {} : { checkoutPath: context.checkoutPath }),
   };
 }
 
@@ -94,9 +97,16 @@ export function renderLanePrompt(brief: LaneBrief): ContentBlock[] {
     `你这一次的活：${brief.brief}`,
   ];
   if (brief.member.role !== undefined) lines.push(`队伍模式：${brief.member.role}。`);
+  if (brief.checkoutPath !== undefined) {
+    lines.push(
+      `独立检出：${brief.checkoutPath}（这是你的工作目录；只改这个检出里的文件，不要切回主工作区或别的检出）。`,
+    );
+  }
   if (brief.writes) {
     lines.push(
-      `工作区：${brief.workspace}（本次要改文件；同一工作区的写任务由宿主串行派发，不会有人和你同时写）。`,
+      brief.checkoutPath === undefined
+        ? `工作区：${brief.workspace}（本次要改文件；同一工作区的写任务由宿主串行派发，不会有人和你同时写）。`
+        : `所属工作区：${brief.workspace}（本 lane 使用独立检出，不占共享写锁；只改上面那个检出）。`,
     );
   } else {
     lines.push(`工作区：${brief.workspace}（本次只读，不要改文件）。`);
@@ -332,6 +342,7 @@ export function createScheduledWorker(
       signal: context.signal,
       ...(agentOptions === undefined ? {} : { agentOptions }),
       ...(!activationApi && persona !== undefined ? { persona } : {}),
+      ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
     });
     const run = options.bindChildSession === undefined
       ? await start()

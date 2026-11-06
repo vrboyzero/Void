@@ -59,6 +59,8 @@ export interface StartSubagentOptions {
   readonly persona?: string;
   /** 新宿主上换子代理组合 preset 的入口。 */
   readonly agentPreset?: string;
+  /** 独立检出的绝对路径（B6）；宿主用它当子代理的 cwd。 */
+  readonly cwd?: string;
 }
 
 /** 新旧 API 的统一运行句柄。 */
@@ -86,6 +88,7 @@ interface LegacyStartRequest {
   readonly signal: AbortSignal;
   readonly agentOptions?: SubagentModelOptions;
   readonly persona?: string;
+  readonly cwd?: string;
 }
 
 interface LegacySubagentRuntime {
@@ -100,6 +103,7 @@ export interface ActivationStartRequest {
   readonly prompt: ContentBlock[];
   readonly agentOptions?: SubagentModelOptions;
   readonly agentPreset?: string;
+  readonly cwd?: string;
 }
 
 /** `startActivation` 的入参。 */
@@ -155,7 +159,7 @@ export function withPersonaInstructions(prompt: ContentBlock[], persona: string)
  * @throws SubagentDispatchError 宿主两个 API 都没有时。
  */
 export async function startSubagent(runtime: SubagentRuntime, options: StartSubagentOptions): Promise<StartedSubagent> {
-  const { provider, label, parent, prompt, signal, agentOptions, persona, agentPreset } = options;
+  const { provider, label, parent, prompt, signal, agentOptions, persona, agentPreset, cwd } = options;
   if (usesActivationApi(runtime)) {
     const activation = await runtime.startActivation({
       provider,
@@ -165,6 +169,7 @@ export async function startSubagent(runtime: SubagentRuntime, options: StartSuba
         prompt,
         ...(agentOptions === undefined ? {} : { agentOptions }),
         ...(agentPreset === undefined ? {} : { agentPreset }),
+        ...(cwd === undefined ? {} : { cwd }),
       },
       signal,
       // 军团自己消费并记录每个 lane 的终态（run 记录 + 通知源），
@@ -190,6 +195,7 @@ export async function startSubagent(runtime: SubagentRuntime, options: StartSuba
     signal,
     ...(agentOptions === undefined ? {} : { agentOptions }),
     ...(persona === undefined ? {} : { persona }),
+    ...(cwd === undefined ? {} : { cwd }),
   });
   return { id: String(run.id), result: run.result, dispose: () => run.dispose() };
 }
