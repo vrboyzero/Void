@@ -616,7 +616,7 @@ node scripts/legion-health.mjs --data-dir "C:/Users/…/.dsh/void-data/web" --re
 ```
 
 - **凭据**：用独立的 `gh` 配置目录以 Agent 账号登录（`GH_CONFIG_DIR`），或把 token 放进 `tokenEnv` 指向的环境变量；token 值不进配置文件、不进日志、不进运行记录。setup 会校验账号对仓库有没有 push 权限。
-- **面板**：设置 → 业务视图 →「外部来源」**一个页签**里同时列 **GitHub**（上）与 **飞书**（下）两行，点哪行看哪行。详情里的状态、mode、今日计数、最近 20 条账本、最近错误是只读；**配置项直接在详情里改**（仓库/队伍/轮询间隔/允许名单/bots/gh 配置目录/token 变量名/工作区，飞书侧是 appId/appSecret 变量名/队伍/名单/bots/群规则/私聊规则/工作区/domain），点「保存」走 revision CAS，服务侧用同一份 fail-closed 解析器复核。`status=off` 时保存只写文件，不启动轮询、不认证。动作有停用/启用、切 observe/live、立即轮询、测试账号。写动作要求同源 `Origin` + `x-void-request` + JSON。
+- **面板**：设置 → 业务视图 →「外部来源」**一个页签**里同时列 **GitHub**（上）与 **飞书**（下）两行，点哪行看哪行。详情里的状态、mode、今日计数、最近 20 条账本、最近错误是只读；**配置项直接在详情里改**（仓库/队伍/轮询间隔/允许名单/bots/gh 配置目录/token 变量名/工作区，飞书侧是 appId/appSecret 变量名/队伍/名单/bots/群规则/私聊规则/工作区/domain），点「保存」走 revision CAS，服务侧用同一份 fail-closed 解析器复核。`status=off` 时保存只写文件，不启动轮询、不认证。动作有停用/启用、切 observe/live、立即轮询、测试账号。写动作要求同源 `Origin` + `x-void-request` + JSON。**全新 profile 没有 `github.json` 时这一行显示「还没配置」**，点开填好后保存即创建（status=off，等你再点「启用来源」）。
 - **回原对话**：run 落定后向原 Issue/PR 发一条评论（runId、状态、已结算数、待验收提示）；发送失败只记在来源状态里，不改 run 结果；**不标记通知已读**（人还要看）。
 - **健康探针**：`legion-health` 会把 sources 坏 JSON 判 2、setup 未完成判 3、连续失败/超过 3×interval 没成功轮询判 1。
 - **第一期不做**：全仓 API 扫描（`receive` 只放大通知流类别）、PR 创建/合并、B7 的 PATH shim。真实 gh 账号/评论回写/rate limit 还没真机验。
@@ -649,7 +649,7 @@ node scripts/legion-health.mjs --data-dir "C:/Users/…/.dsh/void-data/web" --re
 
 - **群/私聊规则**：`mentions`（必须 @ 机器人）、`all`（该会话所有消息）、`none`（不接）。
 - **凭据**：自建应用 + 机器人能力，发布版本并授予「接收消息 / 读群成员」权限；`appIdEnv`/`appSecretEnv` 指向宿主环境变量。凭据值不进文件、不进日志。
-- **面板**：同样在设置 → 业务视图 →「外部来源」页签的**飞书**行（在 GitHub 下面）；状态、今日计数、最近 20 条账本只读，**配置项直接改**（appId/appSecret 变量名、队伍、允许名单、bots、群规则 `chat_id=rule` 逗号分隔、私聊规则、工作区、domain），点「保存」走 revision CAS。动作：停用/启用、切 observe/live、从群同步允许名单、测试机器人。写动作要求同源 Origin + `x-void-request` + revision CAS。
+- **面板**：同样在设置 → 业务视图 →「外部来源」页签的**飞书**行（在 GitHub 下面）；状态、今日计数、最近 20 条账本只读，**配置项直接改**（appId/appSecret 变量名、队伍、允许名单、bots、群规则 `chat_id=rule` 逗号分隔、私聊规则、工作区、domain），点「保存」走 revision CAS。动作：停用/启用、切 observe/live、从群同步允许名单、测试机器人。写动作要求同源 Origin + `x-void-request` + revision CAS。**没有 `feishu.json` 时行显示「还没配置」**，填好保存即创建（status=off，不会自动连 WS）。
 - **回原对话**：run 落定后主动发一条文本消息（runId、状态、已结算数、待验收提示）；发送失败只记在来源状态里。
 - **第一期不做**：全群扫描、真实凭据验证。WS 连接与真实事件/群成员同步/回写限流都还没真机验；需要用户提供自建应用凭据。配置已在面板里改，不必再手改文件（手改仍有效，保存时会重新解析）。
 - **依赖**：`void-legion` 新增 `@larksuiteoapi/node-sdk`（与 `void-channel-feishu` 同版本）；打包时 lockfile 要一起更新。
