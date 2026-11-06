@@ -1,5 +1,5 @@
 /**
- * 军团的业务详情视图（§16.1）：队伍详情与任务详情。
+ * 军团的业务详情视图（§16.1）：队伍详情、任务详情与派活名单（B1）。
  *
  * 这两块归军团自己实现：组织图、人数上限、运行进度、取消都只有军团知道语义，入口只
  * 负责转发与渲染。契约按**结构**重述，不 import 入口包——军团在 headless 组合里也要
@@ -19,14 +19,38 @@ import {
   TEAM_SCHEDULES,
   type TeamDocument,
 } from "./contracts.js";
+import {
+  DISPATCH_POLICY_ITEM_ID,
+  activePolicyGrants,
+  normalizeDispatchPolicyAllowlist,
+  type DispatchPolicyGrant,
+  type DispatchPolicyMode,
+  type DispatchPolicySnapshot,
+} from "./dispatch-policy.js";
+import type {
+  DispatchSourceEntry,
+  DispatchSourceMode,
+  DispatchSourceSnapshot,
+  DispatchSourceState,
+} from "./dispatch-source.js";
 import type { LegionRunProgress } from "./run-coordinator.js";
 import { hasSuspensionNews, loadSuspensionIndex, memberSuspensions, type SuspensionIndex } from "./suspensions.js";
-import { TERMINAL_TASK_STATUSES, type RunRecord, type RunStatus, type RunTaskRecord, type RunTaskStatus } from "./run-store.js";
+import {
+  TERMINAL_TASK_STATUSES,
+  acceptanceDeadline,
+  acceptanceOverdue,
+  type RunRecord,
+  type RunStatus,
+  type RunTaskRecord,
+  type RunTaskStatus,
+} from "./run-store.js";
 
 /** 队伍详情视图 id。 */
 export const TEAM_VIEW_ID = "void-legion:teams";
 /** 任务详情视图 id。 */
 export const RUN_VIEW_ID = "void-legion:runs";
+/** 派活名单视图 id（B1：面板里的运营维度，全档案共用一份）。 */
+export const POLICY_VIEW_ID = "void-legion:dispatch-policy";
 
 /** 与入口 `VoidDetailSource` 同形的视图契约（结构性重述，避免跨包类型依赖）。 */
 export interface ViewProfile {
@@ -78,6 +102,8 @@ export interface ViewRowsSection {
   rows: ReadonlyArray<Readonly<Record<string, unknown>>>;
   key?: string;
   editable?: boolean;
+  /** 行级「移除」按钮；只给空行可忽略的名单用（见入口契约的同名字段）。 */
+  removable?: boolean;
   addLabel?: string;
   help?: string;
 }
@@ -118,6 +144,8 @@ export interface ViewBody {
 export interface ViewSource {
   id: string;
   title: string;
+  /** 管理视图：写请求必须来自浏览器面板（入口契约同名字段）。 */
+  requireOrigin?: boolean;
   viewActions?: readonly ViewAction[];
   list(input: ViewProfile): Promise<readonly ViewItem[]>;
   detail(input: ViewProfile & { itemId: string }): Promise<ViewBody>;
@@ -158,6 +186,36 @@ export interface LegionViewHost {
   runProgress(runId: string): Promise<LegionRunProgress>;
   cancelRun(runId: string, reason?: string): Promise<RunRecord>;
   cancelLane(runId: string, laneId: string, reason?: string): Promise<RunRecord>;
+  /** 人工验收（B2）：待验收 → 已完成。 */
+  acceptRun(runId: string, acceptedBy: "human" | "auto", note?: string): Promise<RunRecord>;
+  /** 翻案（B2）：自动确认的已完成 → 待验收。 */
+  reopenRun(runId: string, reason?: string): Promise<RunRecord>;
+  /** 派活来源与账本（B3/B5）。 */
+  readDispatchSource(): Promise<DispatchSourceSnapshot>;
+  setDispatchSourceMode(input: {
+    mode: DispatchSourceMode;
+    expectedRevision: number;
+  }): Promise<DispatchSourceSnapshot>;
+  setDispatchSourceEnabled(input: {
+    enabled: boolean;
+    expectedRevision: number;
+  }): Promise<DispatchSourceSnapshot>;
+  /** 派活名单（B1）。面板是主人通道，所以这里的写操作一律按 owner 记。 */
+  readDispatchPolicy(): Promise<DispatchPolicySnapshot>;
+  saveDispatchPolicy(input: {
+    allowlist: readonly string[];
+    expectedRevision: number;
+  }): Promise<DispatchPolicySnapshot>;
+  grantDispatchPolicyEdit(input: {
+    agentId: string;
+    expiresAt?: string | undefined;
+    expectedRevision: number;
+  }): Promise<DispatchPolicySnapshot>;
+  revokeDispatchPolicyEdit(input: { grantId: string; expectedRevision: number }): Promise<DispatchPolicySnapshot>;
+  setDispatchPolicyMode(input: {
+    mode: DispatchPolicyMode;
+    expectedRevision: number;
+  }): Promise<DispatchPolicySnapshot>;
 }
 
 const SCHEDULE_LABELS: Record<string, string> = {
@@ -179,6 +237,7 @@ function scheduleLabel(schedule: string): string {
  */
 const RUN_STATUS_LABELS: Record<string, string> = {
   running: "在跑",
+  awaiting_acceptance: "待验收",
   completed: "已跑完",
   failed: "有任务失败",
   cancelled: "已取消",
@@ -201,6 +260,13 @@ function runStatusLabel(status: RunStatus): string {
 
 function taskStatusLabel(status: RunTaskStatus): string {
   return TASK_STATUS_LABELS[status] ?? status;
+}
+
+/** 验收模式/签收来源的中文说法。自动确认绝不写成「人工验收」。 */
+function acceptanceLabel(value: string): string {
+  if (value === "human") return "人工验收";
+  if (value === "auto") return "自动确认";
+  return value;
 }
 
 function settledCount(record: RunRecord): number {
@@ -308,6 +374,7 @@ const MEMBER_COLUMNS: readonly ViewColumn[] = [
   { key: "handoffTo", label: "交接", type: "list" },
   { key: "modelRef", label: "模型" },
   { key: "workspace", label: "工作区" },
+  { key: "checkout", label: "检出" },
   { key: "writes", label: "写文件", type: "boolean" },
 ];
 
@@ -352,6 +419,7 @@ const STRUCTURAL_TEAM_KEYS: readonly string[] = [
   "managerIdentityLabel",
   "mode",
   "schedule",
+  "acceptance",
 ];
 
 /**
@@ -476,7 +544,7 @@ function teamBody(host: LegionViewHost, teamId: string): Promise<ViewBody> {
           key: "members",
           editable: true,
           addLabel: "加一个成员",
-          help: "改完点保存：整份名单一次交上去，汇报与可指挥写成员 id，多个用逗号分开。",
+          help: "改完点保存：整份名单一次交上去，汇报与可指挥写成员 id，多个用逗号分开。检出写 shared（默认，共享工作区写锁）或 worktree（独立 git 检出，需军团配置的仓库目录是 git 仓库）。",
           columns: MEMBER_COLUMNS,
           rows: document.members.map(memberCells),
         },
@@ -507,6 +575,12 @@ function teamBody(host: LegionViewHost, teamId: string): Promise<ViewBody> {
           label: "调度",
           value: document.schedule,
           help: `只认 ${TEAM_SCHEDULES.join(" / ")}；调度不从模式推出来，得自己写。`,
+        },
+        {
+          key: "acceptance",
+          label: "验收模式",
+          value: document.acceptance ?? "human",
+          help: "human = 跑完只到「待验收」，人点确认才算完成；auto = 跑完自动确认（记 acceptedBy: auto，可被翻案）。缺省 human，改这里只影响之后的派活。",
         },
         {
           key: "managerIdentityLabel",
@@ -607,6 +681,37 @@ async function runBody(host: LegionViewHost, runId: string): Promise<ViewBody> {
         readOnly: true,
         help: `磁盘上的原始值：${record.status}。`,
       },
+      {
+        key: "acceptance",
+        label: "验收模式",
+        value: acceptanceLabel(record.acceptance),
+        readOnly: true,
+        help: "队伍设置的默认值，派活时冻结进本次 run；改队伍只影响之后的派活。",
+      },
+      ...(record.acceptedBy === undefined
+        ? []
+        : [{
+            key: "acceptedBy",
+            label: "签收来源",
+            value: acceptanceLabel(record.acceptedBy),
+            readOnly: true,
+            help: "自动确认不会伪装成人工验收。",
+          }]),
+      ...(record.acceptedAt === undefined
+        ? []
+        : [{ key: "acceptedAt", label: "签收时间", value: record.acceptedAt, readOnly: true }]),
+      ...(record.reopenedAt === undefined
+        ? []
+        : [{ key: "reopenedAt", label: "最近翻案", value: record.reopenedAt, readOnly: true }]),
+      ...(record.status === "awaiting_acceptance"
+        ? [{
+            key: "acceptanceDeadline",
+            label: "验收时限",
+            value: acceptanceDeadline(record) ?? "—",
+            readOnly: true,
+            help: `超时只提示、**不会自动通过**${acceptanceOverdue(record) ? "；当前已逾期" : ""}。`,
+          }]
+        : []),
       { key: "schedule", label: "调度", value: scheduleLabel(record.schedule), readOnly: true },
       { key: "memberLimit", label: "人数上限", value: record.memberLimit, readOnly: true },
       { key: "maxConcurrentTasks", label: "并发上限", value: record.maxConcurrentTasks, readOnly: true },
@@ -616,31 +721,357 @@ async function runBody(host: LegionViewHost, runId: string): Promise<ViewBody> {
     ],
     // 运行记录不是可编辑对象（没有 revision 栅），所以只给动作，不给字段编辑。
     actions: [
-      {
-        id: "cancel-lane",
-        label: "停一个任务",
-        hint: "只停这一个；它下游还没派发的任务会被记成「被取消带走」，不会假装成功。",
-        args: [
-          { key: "laneId", label: "任务 lane", value: null },
-          { key: "reason", label: "原因", value: null },
-        ],
-      },
-      {
-        id: "cancel-run",
-        label: "停全队",
-        hint: "本次运行里还没派发的任务都不会再派。已经跑起来的会收到取消信号。",
-        danger: true,
-        args: [{ key: "reason", label: "原因", value: null }],
-      },
+      // 执行体还在跑时才能取消；终态上的取消按钮点了也只会报「不在本进程里跑」。
+      ...(record.status === "running"
+        ? [
+            {
+              id: "cancel-lane",
+              label: "停一个任务",
+              hint: "只停这一个；它下游还没派发的任务会被记成「被取消带走」，不会假装成功。",
+              args: [
+                { key: "laneId", label: "任务 lane", value: null },
+                { key: "reason", label: "原因", value: null },
+              ],
+            } satisfies ViewAction,
+            {
+              id: "cancel-run",
+              label: "停全队",
+              hint: "本次运行里还没派发的任务都不会再派。已经跑起来的会收到取消信号。",
+              danger: true,
+              args: [{ key: "reason", label: "原因", value: null }],
+            } satisfies ViewAction,
+          ]
+        : []),
+      ...(record.status === "awaiting_acceptance"
+        ? [{
+            id: "accept-run",
+            label: "验收通过（人工）",
+            hint: "只把本地状态转成已完成，并记下是人工签收；不代表可以推送、合并或发布。",
+            args: [{ key: "note", label: "备注（可空）", value: null }],
+          } satisfies ViewAction]
+        : []),
+      ...(record.status === "completed" && record.acceptedBy === "auto"
+        ? [{
+            id: "reopen-run",
+            label: "翻案：退回待验收",
+            hint: "自动确认的 run 可以被人推回待验收；不重跑成员任务，也不改执行结果。",
+            danger: true,
+            args: [{ key: "reason", label: "原因（可空）", value: null }],
+          } satisfies ViewAction]
+        : []),
     ],
   };
+}
+
+// ── 派活名单（B1） ─────────────────────────────────────────────────────────
+
+const POLICY_ACTION_LABELS: Record<string, string> = {
+  save: "改名单",
+  grant: "授权",
+  revoke: "撤销授权",
+  mode: "拨开关",
+};
+
+function policySummary(policy: DispatchPolicySnapshot): string {
+  if (!policy.configured) return "还没配置：当前没人能派活";
+  if (policy.allowlist.length === 0) return "名单为空：当前没人能派活";
+  return `${policy.allowlist.length} 个档案可以派活`;
+}
+
+function policyModeLabel(policy: DispatchPolicySnapshot): string {
+  if (policy.mode === "owner") return "只有主人（面板）";
+  const active = activePolicyGrants(policy).length;
+  return active === 0
+    ? "已放开，但当前没有有效授权（实际仍只有主人能改）"
+    : `主人 + ${active} 个已授权的 Agent`;
+}
+
+function policyActorLabel(actor: string): string {
+  if (actor === "owner") return "主人（面板）";
+  if (actor.startsWith("agent:")) return `Agent：${actor.slice("agent:".length)}`;
+  return actor;
+}
+
+function policyGrantStatus(grant: DispatchPolicyGrant, mode: DispatchPolicyMode, now: Date): string {
+  if (grant.revokedAt !== undefined) return "已撤销";
+  if (grant.expiresAt !== undefined) {
+    const expires = Date.parse(grant.expiresAt);
+    if (Number.isNaN(expires)) return "到期时间读不懂";
+    if (expires <= now.getTime()) return "已过期";
+  }
+  if (grant.scope.source !== "internal" || !grant.scope.lists.includes("dispatch")) return "范围不匹配";
+  return mode === "agent" ? "有效" : "有效（开关已收回，暂不生效）";
+}
+
+const SOURCE_OUTCOME_LABELS: Record<string, string> = {
+  observed: "观察",
+  dispatched: "已派发",
+  filtered: "被拒",
+};
+
+/** 来源状态的中文说法。七态都在，内向来源实际只会出现 ready/paused/off/error。 */
+function sourceStateLabel(state: DispatchSourceState): string {
+  switch (state) {
+    case "missing":
+      return "还没配置";
+    case "off":
+      return "已停用";
+    case "error":
+      return "配置损坏";
+    case "setup":
+      return "还没 setup";
+    case "starting":
+      return "启动中";
+    case "paused":
+      return "观察中（observe）";
+    case "ready":
+      return "执行中（live）";
+  }
+}
+
+function sourceModeLabel(mode: DispatchSourceMode): string {
+  return mode === "observe" ? "观察中（只记账，不执行）" : "执行中（live，正常派发）";
+}
+
+function sourceEntryLine(entry: DispatchSourceEntry): string {
+  const prefix = entry.channel === undefined ? "" : `${entry.channel} · `;
+  const dropped =
+    entry.droppedKind === "channelGone"
+      ? "渠道没了"
+      : entry.droppedKind === "channelIgnored"
+        ? "渠道不在接收范围"
+        : undefined;
+  const text =
+    entry.reason !== undefined && entry.reason !== ""
+      ? entry.reason
+      : entry.detail !== undefined && entry.detail !== ""
+        ? entry.detail
+        : entry.taskPreview ?? "—";
+  return `${prefix}${dropped === undefined ? "" : `[${dropped}] `}${text}`;
+}
+
+/**
+ * 名单详情。面板按这些结构化数据渲染，不额外解释业务语义。
+ *
+ * 名单没有单独的「添加/删除」动作：行表格本来就是整组替换，点行尾的「移除」或把
+ * 这一行清空再保存就是移掉它。这样导入、批量改、清空都是同一条保存路径，也天然带修订锁。
+ *
+ * 来源（B3/B5）也挂在这张详情里：派活名单与「这次接不接、为什么没接」是同一件事的
+ * 两面，分成两个面板只会让人来回找。来源动作的 CAS 用来源自己的 revision（面板打开
+ * 时读到的那个），不复用名单的修订号——两份文件的修订号互不相干。
+ */
+function policyBody(policy: DispatchPolicySnapshot, source: DispatchSourceSnapshot): ViewBody {
+  const now = new Date();
+  const grants = [...policy.grants].reverse();
+  const history = policy.history.slice(-20).reverse();
+  const modeAction: ViewAction =
+    policy.mode === "owner"
+      ? {
+          id: "mode-agent",
+          label: "放开：已授权的 Agent 也能改名单",
+          hint: "要先有至少一份有效授权；放开之后 Agent 真的能自己改，不是代主人伸手。",
+        }
+      : {
+          id: "mode-owner",
+          label: "收回：只有主人能改名单",
+          hint: "立即生效；授权记录保留，但 Agent 改不了名单，重新放开不需要再授权一次。",
+        };
+  const sourceActions: ViewAction[] = [];
+  if (source.state === "ready") {
+    sourceActions.push({
+      id: "source-observe",
+      label: "切到观察（只记账，不执行）",
+      hint: "同一个派活请求只写一条「本来会派什么」，不建 run、不启子代理；切回 live 是显式动作。",
+    });
+  }
+  if (source.state === "paused") {
+    sourceActions.push({
+      id: "source-live",
+      label: "切回执行（live）",
+      hint: "观察档显式退出；之后同样的请求会正常派发。",
+    });
+  }
+  if (source.state === "off") {
+    sourceActions.push({
+      id: "source-on",
+      label: "启用派活来源",
+      hint: "启用后请求按 live/observe 当前模式处理。",
+    });
+  }
+  if (source.state === "ready" || source.state === "paused") {
+    sourceActions.push({
+      id: "source-off",
+      label: "停用派活来源",
+      hint: "停用后请求只记账、不执行；已派出的 run 不受影响。",
+      danger: true,
+    });
+  }
+  return {
+    title: "派活名单",
+    markdown:
+      "名单只能收窄，不能扩大：派活仍要同时通过「身份许可 ∩ 队伍许可」。\n\n未配置或名单为空都按「当前没人能派活」处理，不会静默全放行。",
+    revision: policy.revision,
+    sections: [
+      {
+        id: "allowlist",
+        title: "可派活的档案",
+        kind: "rows",
+        key: "allowlist",
+        editable: true,
+        removable: true,
+        addLabel: "加一个档案",
+        columns: [{ key: "agentId", label: "档案 id" }],
+        rows: policy.allowlist.map((agentId) => ({ agentId })),
+        help: "写 SOUL.md front matter 里的 id，不是显示名。点行尾「移除」或把这一行清空再保存 = 移掉它；整份名单留空 = 当前没人能派活。",
+      },
+      {
+        id: "grants",
+        title: "改名单授权",
+        kind: "rows",
+        columns: [
+          { key: "grantId", label: "授权" },
+          { key: "agentId", label: "档案" },
+          { key: "scope", label: "范围" },
+          { key: "expiresAt", label: "到期" },
+          { key: "status", label: "状态" },
+        ],
+        rows: grants.map((grant) => ({
+          grantId: grant.grantId,
+          agentId: grant.agentId,
+          scope: `${grant.scope.source}/${grant.scope.lists.join(",")}`,
+          expiresAt: grant.expiresAt ?? "不过期",
+          status: policyGrantStatus(grant, policy.mode, now),
+        })),
+      },
+      {
+        id: "history",
+        title: "近期改动（最近 20 条）",
+        kind: "rows",
+        columns: [
+          { key: "at", label: "时间" },
+          { key: "action", label: "动作" },
+          { key: "actor", label: "来源" },
+          { key: "grantId", label: "授权" },
+          { key: "detail", label: "说明" },
+        ],
+        rows: history.map((event) => ({
+          at: event.at,
+          action: POLICY_ACTION_LABELS[event.action] ?? event.action,
+          actor: policyActorLabel(event.actor),
+          grantId: event.grantId ?? "—",
+          detail: event.detail,
+        })),
+      },
+      {
+        id: "source-ledger",
+        title: "派活账本（最近 20 条）",
+        kind: "rows",
+        columns: [
+          { key: "at", label: "时间" },
+          { key: "outcome", label: "结果" },
+          { key: "teamId", label: "队伍" },
+          { key: "detail", label: "说明" },
+        ],
+        rows: source.entries.slice(-20).reverse().map((entry) => ({
+          at: entry.at,
+          outcome: SOURCE_OUTCOME_LABELS[entry.outcome] ?? entry.outcome,
+          teamId: entry.teamId ?? "—",
+          detail: sourceEntryLine(entry),
+        })),
+      },
+    ],
+    fields: [
+      {
+        key: "sourceState",
+        label: "派活来源",
+        value: sourceStateLabel(source.state),
+        readOnly: true,
+        help: source.reason,
+      },
+      {
+        key: "sourceMode",
+        label: "来源模式",
+        value: sourceModeLabel(source.mode),
+        readOnly: true,
+        help: "observe 是显式校准档：只记账不执行；切回 live 也是显式动作，不会自动放开。",
+      },
+      {
+        key: "sourceToday",
+        label: "今天",
+        value: `观察 ${source.today.observed} / 派发 ${source.today.dispatched} / 被拒 ${source.today.filtered}`,
+        readOnly: true,
+      },
+      {
+        key: "mode",
+        label: "谁能改名单",
+        value: policyModeLabel(policy),
+        readOnly: true,
+        help: "默认只有主人；主人可以授权 Agent，但这个开关本身只有主人能拨。",
+      },
+      { key: "summary", label: "当前状态", value: policySummary(policy), readOnly: true },
+      { key: "revision", label: "修订", value: policy.revision, readOnly: true },
+      { key: "updatedAt", label: "最后修改", value: policy.updatedAt ?? "（还没保存过）", readOnly: true },
+      {
+        key: "updatedBy",
+        label: "最后修改来源",
+        value: policy.updatedBy === undefined ? "—" : policyActorLabel(policy.updatedBy),
+        readOnly: true,
+      },
+    ],
+    actions: [
+      ...sourceActions,
+      {
+        id: "grant-edit",
+        label: "授权一个 Agent 改名单",
+        hint: "授权的范围是「内向派活名单」；到期时间可留空（不过期）。授权本身只有主人能拨。",
+        args: [
+          { key: "agentId", label: "要授权的档案 id", value: null },
+          { key: "expiresAt", label: "到期（可空，ISO 时间）", value: null },
+        ],
+      },
+      ...(policy.grants.length === 0
+        ? []
+        : [
+            {
+              id: "revoke-edit",
+              label: "撤销一份授权",
+              hint: "撤销记录保留；没有有效授权时开关自动回落到「只有主人」。",
+              args: [{ key: "grantId", label: "授权 id（见上表）", value: null }],
+            } satisfies ViewAction,
+          ]),
+      modeAction,
+    ],
+  };
+}
+
+/** 面板提交的 allowlist 行 → 档案 id 列表。清空的行按「移掉」处理。 */
+function readPolicyAllowlist(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Error("派活名单必须是一组行");
+  const values: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      throw new Error("派活名单的每一行必须是对象");
+    }
+    const record = item as Record<string, unknown>;
+    const agentId = record.agentId;
+    if (agentId === undefined) continue;
+    if (typeof agentId !== "string") throw new Error("派活名单的档案 id 必须是文本");
+    if (agentId.trim() === "") continue;
+    values.push(agentId);
+  }
+  return normalizeDispatchPolicyAllowlist(values);
+}
+
+function readPolicyRevision(value: number | string | undefined): number {
+  if (value === undefined) throw new Error("派活名单动作缺少修订号：请重新打开这一条再试");
+  return readRevision(value);
 }
 
 /**
  * 造出军团的业务视图。
  *
  * @param host - 取军团服务；服务还没起来时返回 undefined（视图会如实报错，不是给空表）。
- * @returns 两个视图来源：队伍与运行。
+ * @returns 三个视图来源：队伍、运行与派活名单。
  */
 export function createLegionViews(host: () => LegionViewHost | undefined): readonly ViewSource[] {
   const requireHost = (): LegionViewHost => {
@@ -707,6 +1138,7 @@ export function createLegionViews(host: () => LegionViewHost | undefined): reado
         "managerIdentityLabel",
         "mode",
         "schedule",
+        "acceptance",
         "memberLimit",
         "maxConcurrentTasks",
       ];
@@ -737,6 +1169,13 @@ export function createLegionViews(host: () => LegionViewHost | undefined): reado
           const label = clearableText(input.changes.managerIdentityLabel, "负责人称呼");
           if (label === undefined) delete next.managerIdentityLabel;
           else next.managerIdentityLabel = label;
+        }
+        if (input.changes.acceptance !== undefined) {
+          const acceptance = readString(input.changes.acceptance, "验收模式");
+          if (acceptance !== "human" && acceptance !== "auto") {
+            throw new Error(`验收模式只认 human / auto: ${acceptance}`);
+          }
+          next.acceptance = acceptance;
         }
         const saved = await service.saveTeam(next, { expectedRevision: revision });
         revision = saved.revision;
@@ -788,6 +1227,8 @@ export function createLegionViews(host: () => LegionViewHost | undefined): reado
         members: [{ laneId: readString(input.args.laneId, "第一个成员的 lane"), ...(agentId === undefined ? {} : { agentId }) }],
         memberLimit: DEFAULT_MEMBER_LIMIT,
         maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
+        // 新队伍默认要人验收（§22.4）；要放开再在详情里改。
+        acceptance: "human",
         // 修订与更新时间由仓库在写盘时定：这里填的只是占位，传 0 表示「我认为这是新队伍」。
         revision: 0,
         updatedAt: new Date(0).toISOString(),
@@ -803,13 +1244,15 @@ export function createLegionViews(host: () => LegionViewHost | undefined): reado
     async list(profile) {
       const service = checked(profile);
       const records = await service.listRuns();
+      // §22.4：待验收优先顶到最前；同为待验收再按最近活动排。
+      const rank = (record: RunRecord): number => (record.status === "awaiting_acceptance" ? 0 : 1);
       return records
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .sort((a, b) => rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt))
         .slice(0, 50)
         .map((record) => ({
           id: record.runId,
           title: `${record.teamId} · ${scheduleLabel(record.schedule)}`,
-          summary: `${runStatusLabel(record.status)} · ${settledLine(record)}`,
+          summary: `${runStatusLabel(record.status)}${record.status === "awaiting_acceptance" && acceptanceOverdue(record) ? "（已逾期）" : ""} · ${settledLine(record)}`,
           meta: `更新 ${record.updatedAt}`,
         }));
     },
@@ -827,11 +1270,100 @@ export function createLegionViews(host: () => LegionViewHost | undefined): reado
         const record = await service.cancelRun(input.itemId, readOptionalString(input.args.reason));
         return runBody(service, record.runId);
       }
+      if (input.actionId === "accept-run") {
+        const record = await service.acceptRun(input.itemId, "human", readOptionalString(input.args.note));
+        return runBody(service, record.runId);
+      }
+      if (input.actionId === "reopen-run") {
+        const record = await service.reopenRun(input.itemId, readOptionalString(input.args.reason));
+        return runBody(service, record.runId);
+      }
       throw new Error(`运行详情不认识这个动作: ${input.actionId}`);
     },
   };
 
-  return [teams, runs];
+  const policy: ViewSource = {
+    id: POLICY_VIEW_ID,
+    title: "派活名单",
+    // 改名单/授权是管理动作：入口会拒绝无 Origin 的本机脚本写请求。
+    requireOrigin: true,
+    async list(profile) {
+      const service = checked(profile);
+      const snapshot = await service.readDispatchPolicy();
+      return [
+        {
+          id: DISPATCH_POLICY_ITEM_ID,
+          title: "派活名单",
+          summary: policySummary(snapshot),
+          meta: `修订 ${snapshot.revision}`,
+        },
+      ];
+    },
+    async detail(input) {
+      const service = checked(input);
+      if (input.itemId !== DISPATCH_POLICY_ITEM_ID) throw new Error(`派活名单没有这个条目: ${input.itemId}`);
+      return policyBody(await service.readDispatchPolicy(), await service.readDispatchSource());
+    },
+    async save(input) {
+      const service = checked(input);
+      const keys = Object.keys(input.changes);
+      if (keys.length === 0) throw new Error("没有要保存的改动");
+      for (const key of keys) {
+        if (key !== "allowlist") throw new Error(`派活名单不接受这个改动: ${key}`);
+      }
+      const snapshot = await service.saveDispatchPolicy({
+        allowlist: readPolicyAllowlist(input.changes.allowlist),
+        expectedRevision: readPolicyRevision(input.expectedRevision),
+      });
+      return policyBody(snapshot, await service.readDispatchSource());
+    },
+    async act(input) {
+      const service = checked(input);
+      const expectedRevision = readPolicyRevision(input.expectedRevision);
+      if (input.actionId === "source-observe" || input.actionId === "source-live") {
+        // 来源动作的 CAS 用来源自己的 revision；名单的修订号与它无关。
+        const current = await service.readDispatchSource();
+        const source = await service.setDispatchSourceMode({
+          mode: input.actionId === "source-observe" ? "observe" : "live",
+          expectedRevision: current.revision,
+        });
+        return policyBody(await service.readDispatchPolicy(), source);
+      }
+      if (input.actionId === "source-off" || input.actionId === "source-on") {
+        const current = await service.readDispatchSource();
+        const source = await service.setDispatchSourceEnabled({
+          enabled: input.actionId === "source-on",
+          expectedRevision: current.revision,
+        });
+        return policyBody(await service.readDispatchPolicy(), source);
+      }
+      if (input.actionId === "grant-edit") {
+        const agentId = readString(input.args.agentId, "要授权的档案 id");
+        const expiresAt = readOptionalString(input.args.expiresAt);
+        const snapshot = await service.grantDispatchPolicyEdit({
+          agentId,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+          expectedRevision,
+        });
+        return policyBody(snapshot, await service.readDispatchSource());
+      }
+      if (input.actionId === "revoke-edit") {
+        const grantId = readString(input.args.grantId, "授权 id");
+        const snapshot = await service.revokeDispatchPolicyEdit({ grantId, expectedRevision });
+        return policyBody(snapshot, await service.readDispatchSource());
+      }
+      if (input.actionId === "mode-owner" || input.actionId === "mode-agent") {
+        const snapshot = await service.setDispatchPolicyMode({
+          mode: input.actionId === "mode-owner" ? "owner" : "agent",
+          expectedRevision,
+        });
+        return policyBody(snapshot, await service.readDispatchSource());
+      }
+      throw new Error(`派活名单不认识这个动作: ${input.actionId}`);
+    },
+  };
+
+  return [teams, runs, policy];
 }
 
 /** 入口 `VoidSuite.registerDetail` 的结构契约（重述，避免跨包类型依赖）。 */
@@ -843,7 +1375,7 @@ export const name = "void-legion-detail";
 export const inject = ["voidSuite", "voidTeam"];
 
 /**
- * 把两个视图登记进入口。
+ * 把三个视图登记进入口。
  *
  * 只在 web 组合里生效：headless 组合没有 `voidSuite`，这个 entry 的回调就永不执行，
  * 军团本身照常工作（§16.2 最后一条）。

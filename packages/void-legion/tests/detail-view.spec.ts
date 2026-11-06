@@ -3,8 +3,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { resolveVoidDataRoot } from "@void/void-soul";
-import { RUN_VIEW_ID, TEAM_VIEW_ID, apply, createLegionViews, type LegionViewHost } from "../src/detail-view.js";
+import {
+  POLICY_VIEW_ID,
+  RUN_VIEW_ID,
+  TEAM_VIEW_ID,
+  apply,
+  createLegionViews,
+  type LegionViewHost,
+} from "../src/detail-view.js";
 import type { TeamDocument } from "../src/contracts.js";
+import type { DispatchPolicySnapshot } from "../src/dispatch-policy.js";
+import type { DispatchSourceSnapshot } from "../src/dispatch-source.js";
 import type { LegionRunProgress } from "../src/run-coordinator.js";
 import type { RunRecord } from "../src/run-store.js";
 
@@ -74,12 +83,13 @@ const TEAM: TeamDocument = {
 const OTHER_TEAM: TeamDocument = { ...TEAM, id: "alpha-team", managerIdentityLabel: undefined, revision: 1, members: [] };
 
 const RUN: RunRecord = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   runId: "demo-team-1",
   teamId: "demo-team",
   task: "改登录接口",
   schedule: "parallel",
   status: "running",
+  acceptance: "human",
   createdAt: "2026-09-22T10:00:00.000Z",
   updatedAt: "2026-09-22T10:00:05.000Z",
   frozenRoster: TEAM.members,
@@ -103,6 +113,47 @@ const RUN: RunRecord = {
 };
 
 const OLD_RUN: RunRecord = { ...RUN, runId: "demo-team-0", status: "completed", updatedAt: "2026-09-22T09:00:00.000Z" };
+
+const SOURCE: DispatchSourceSnapshot = {
+  configured: false,
+  state: "ready",
+  reason: "还没配置派活来源，默认执行（live）。",
+  enabled: true,
+  mode: "live",
+  revision: 0,
+  today: { observed: 0, dispatched: 0, filtered: 0 },
+  counts: {},
+  entries: [],
+};
+
+const POLICY: DispatchPolicySnapshot = {
+  configured: true,
+  revision: 4,
+  updatedAt: "2026-09-22T10:00:00.000Z",
+  updatedBy: "owner",
+  mode: "agent",
+  allowlist: ["xiaobei", "xiaoma"],
+  grants: [
+    {
+      grantId: "grant-1",
+      grantedBy: "owner",
+      agentId: "xiaobei",
+      scope: { source: "internal", lists: ["dispatch"] },
+      createdAt: "2026-09-22T09:00:00.000Z",
+      // 远未来：这组用例不该因为跑得晚而「授权过期」。
+      expiresAt: "2099-12-31T23:59:59.000Z",
+    },
+  ],
+  history: [
+    {
+      at: "2026-09-22T10:00:00.000Z",
+      action: "save",
+      actor: "agent:xiaobei",
+      grantId: "grant-1",
+      detail: "加入 xiaoma",
+    },
+  ],
+};
 
 const PROGRESS: LegionRunProgress = {
   runId: RUN.runId,
@@ -163,6 +214,78 @@ function fakeHost(overrides: Partial<LegionViewHost> = {}): LegionViewHost & { c
       calls.push({ kind: "cancelLane", args: [runId, laneId, reason] });
       return { ...RUN, status: "running" };
     },
+    async acceptRun(runId, acceptedBy, note) {
+      calls.push({ kind: "acceptRun", args: [runId, acceptedBy, note] });
+      return { ...RUN, status: "completed", acceptedBy, acceptedAt: "2026-09-22T10:01:00.000Z" };
+    },
+    async reopenRun(runId, reason) {
+      calls.push({ kind: "reopenRun", args: [runId, reason] });
+      return { ...RUN, status: "awaiting_acceptance", reopenedAt: "2026-09-22T10:02:00.000Z" };
+    },
+    async readDispatchSource() {
+      return SOURCE;
+    },
+    async setDispatchSourceMode(input) {
+      calls.push({ kind: "setDispatchSourceMode", args: [input] });
+      return {
+        ...SOURCE,
+        configured: true,
+        revision: input.expectedRevision + 1,
+        mode: input.mode,
+        state: input.mode === "observe" ? "paused" : "ready",
+      };
+    },
+    async setDispatchSourceEnabled(input) {
+      calls.push({ kind: "setDispatchSourceEnabled", args: [input] });
+      return {
+        ...SOURCE,
+        configured: true,
+        revision: input.expectedRevision + 1,
+        enabled: input.enabled,
+        state: input.enabled ? "ready" : "off",
+      };
+    },
+    async readDispatchPolicy() {
+      return POLICY;
+    },
+    async saveDispatchPolicy(input) {
+      calls.push({ kind: "saveDispatchPolicy", args: [input] });
+      return { ...POLICY, revision: input.expectedRevision + 1, allowlist: [...input.allowlist] };
+    },
+    async grantDispatchPolicyEdit(input) {
+      calls.push({ kind: "grantDispatchPolicyEdit", args: [input] });
+      return {
+        ...POLICY,
+        revision: input.expectedRevision + 1,
+        mode: "agent",
+        grants: [
+          ...POLICY.grants,
+          {
+            grantId: "grant-2",
+            grantedBy: "owner",
+            agentId: input.agentId,
+            scope: { source: "internal", lists: ["dispatch"] },
+            createdAt: "2026-09-22T10:00:00.000Z",
+            ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+          },
+        ],
+      };
+    },
+    async revokeDispatchPolicyEdit(input) {
+      calls.push({ kind: "revokeDispatchPolicyEdit", args: [input] });
+      return {
+        ...POLICY,
+        revision: input.expectedRevision + 1,
+        mode: "owner",
+        grants: POLICY.grants.map((grant) =>
+          grant.grantId === input.grantId ? { ...grant, revokedAt: "2026-09-22T10:00:00.000Z" } : grant,
+        ),
+      };
+    },
+    async setDispatchPolicyMode(input) {
+      calls.push({ kind: "setDispatchPolicyMode", args: [input] });
+      return { ...POLICY, revision: input.expectedRevision + 1, mode: input.mode };
+    },
     ...overrides,
   };
   return Object.assign(host, { calls });
@@ -172,7 +295,8 @@ function viewsOf(host: LegionViewHost | undefined) {
   const views = createLegionViews(() => host);
   const teams = views.find((view) => view.id === TEAM_VIEW_ID)!;
   const runs = views.find((view) => view.id === RUN_VIEW_ID)!;
-  return { teams, runs };
+  const policy = views.find((view) => view.id === POLICY_VIEW_ID)!;
+  return { teams, runs, policy };
 }
 
 function sectionOf(body: { sections: readonly { id: string }[] }, id: string): never {
@@ -182,10 +306,10 @@ function sectionOf(body: { sections: readonly { id: string }[] }, id: string): n
 }
 
 describe("void-legion detail views", () => {
-  it("registers exactly the two business views", () => {
+  it("registers exactly the three business views", () => {
     const views = createLegionViews(() => fakeHost());
-    expect(views.map((view) => view.id)).toEqual([TEAM_VIEW_ID, RUN_VIEW_ID]);
-    expect(views.map((view) => view.title)).toEqual(["军团队伍", "军团运行"]);
+    expect(views.map((view) => view.id)).toEqual([TEAM_VIEW_ID, RUN_VIEW_ID, POLICY_VIEW_ID]);
+    expect(views.map((view) => view.title)).toEqual(["军团队伍", "军团运行", "派活名单"]);
   });
 
   it("lists teams sorted by id with the member count and revision", async () => {
@@ -245,8 +369,11 @@ describe("void-legion detail views", () => {
       "handoffTo",
       "modelRef",
       "workspace",
+      "checkout",
       "writes",
     ]);
+    expect(members.columns.find((column) => column.key === "checkout")!.type).toBeUndefined();
+    expect(members.help).toContain("worktree");
     expect(members.columns.find((column) => column.key === "writes")!.type).toBe("boolean");
     expect(members.columns.find((column) => column.key === "reportsTo")!.type).toBe("list");
     expect(members.rows).toEqual([
@@ -266,6 +393,7 @@ describe("void-legion detail views", () => {
       "sharedGoal",
       "mode",
       "schedule",
+      "acceptance",
       "managerIdentityLabel",
       "memberLimit",
       "maxConcurrentTasks",
@@ -340,6 +468,114 @@ describe("void-legion detail views", () => {
     expect(items.map((item) => item.id)).toEqual(["demo-team-1", "demo-team-0"]);
     expect(items[0]!.summary).toBe("在跑 · 已结算 1/2");
     expect(items[0]!.summary).not.toContain("%");
+  });
+
+  it("puts awaiting-acceptance runs before completed ones, even when they are older", async () => {
+    const awaiting: RunRecord = {
+      ...RUN,
+      runId: "demo-team-2",
+      status: "awaiting_acceptance",
+      endedAt: "2099-01-01T00:00:00.000Z",
+      updatedAt: "2026-09-22T09:00:00.000Z",
+      tasks: RUN.tasks.map((task) => ({ ...task, status: "completed" as const })),
+    };
+    const host = fakeHost({
+      async listRuns() {
+        return [RUN, OLD_RUN, awaiting];
+      },
+    });
+    const { runs } = viewsOf(host);
+    const items = await runs.list(PROFILE);
+    expect(items.map((item) => item.id)).toEqual(["demo-team-2", "demo-team-1", "demo-team-0"]);
+    expect(items[0]!.summary).toContain("待验收");
+  });
+
+  it("marks an overdue awaiting run without changing its status", async () => {
+    const overdue: RunRecord = {
+      ...RUN,
+      status: "awaiting_acceptance",
+      endedAt: "2026-09-22T10:00:00.000Z",
+      tasks: RUN.tasks.map((task) => ({ ...task, status: "completed" as const })),
+    };
+    const host = fakeHost({
+      async listRuns() { return [overdue]; },
+    });
+    const { runs } = viewsOf(host);
+    const items = await runs.list(PROFILE);
+    expect(items[0]!.summary).toContain("待验收（已逾期）");
+    expect(overdue.status).toBe("awaiting_acceptance");
+  });
+
+  it("offers human acceptance on awaiting runs and never a fake cancel button", async () => {
+    const awaiting: RunRecord = {
+      ...RUN,
+      status: "awaiting_acceptance",
+      endedAt: "2099-01-01T00:00:00.000Z",
+      tasks: RUN.tasks.map((task) => ({ ...task, status: "completed" as const })),
+    };
+    const host = fakeHost({
+      async runRecord() { return awaiting; },
+      async runProgress() {
+        return {
+          ...PROGRESS,
+          status: "awaiting_acceptance",
+          summary: { ...PROGRESS.summary, running: 0 },
+          running: [],
+          pending: [],
+          conclusion: "跑完了，等你验收：全部完成 2/2（未验收不算完成；超时也不会自动通过）",
+        };
+      },
+    });
+    const { runs } = viewsOf(host);
+    const body = await runs.detail({ ...PROFILE, itemId: "demo-team-1" });
+    const actions = body.actions!.map((action) => action.id);
+    expect(actions).toContain("accept-run");
+    expect(actions).not.toContain("cancel-run");
+    expect(actions).not.toContain("reopen-run");
+    const fields = new Map((body.fields ?? []).map((field) => [field.key, field.value]));
+    expect(fields.get("acceptance")).toBe("人工验收");
+    expect(fields.get("acceptanceDeadline")).toBeTruthy();
+
+    await runs.act!({
+      ...PROFILE,
+      itemId: "demo-team-1",
+      actionId: "accept-run",
+      args: { note: "看过产出，接受" },
+      expectedRevision: undefined,
+    });
+    expect(host.calls.find((call) => call.kind === "acceptRun")?.args).toEqual([
+      "demo-team-1",
+      "human",
+      "看过产出，接受",
+    ]);
+  });
+
+  it("offers reopen only on auto-accepted completed runs", async () => {
+    const auto: RunRecord = {
+      ...RUN,
+      status: "completed",
+      acceptedBy: "auto",
+      acceptedAt: "2026-09-22T10:00:06.000Z",
+      endedAt: "2026-09-22T10:00:05.000Z",
+    };
+    const host = fakeHost({
+      async runRecord() { return auto; },
+    });
+    const { runs } = viewsOf(host);
+    const body = await runs.detail({ ...PROFILE, itemId: "demo-team-1" });
+    const actions = body.actions!.map((action) => action.id);
+    expect(actions).toEqual(["reopen-run"]);
+    const fields = new Map((body.fields ?? []).map((field) => [field.key, field.value]));
+    expect(fields.get("acceptedBy")).toBe("自动确认");
+
+    await runs.act!({
+      ...PROFILE,
+      itemId: "demo-team-1",
+      actionId: "reopen-run",
+      args: { reason: "不放心" },
+      expectedRevision: undefined,
+    });
+    expect(host.calls.find((call) => call.kind === "reopenRun")?.args).toEqual(["demo-team-1", "不放心"]);
   });
 
   it("shows the authoritative conclusion, the tasks with their child sessions and the events", async () => {
@@ -629,7 +865,7 @@ describe("void-legion detail views", () => {
     await expect(runs.act!({ ...other, itemId: "demo-team-1", actionId: "cancel-run", args: {} })).rejects.toThrow(mismatch);
   });
 
-  it("registers both views into the suite and takes them back on dispose", () => {
+  it("registers all views into the suite and takes them back on dispose", () => {
     const registered: string[] = [];
     const suite = {
       registerDetail(source: { id: string }) {
@@ -652,9 +888,187 @@ describe("void-legion detail views", () => {
     };
 
     apply(fakeCtx as never);
-    expect(registered).toEqual([TEAM_VIEW_ID, RUN_VIEW_ID]);
+    expect(registered).toEqual([TEAM_VIEW_ID, RUN_VIEW_ID, POLICY_VIEW_ID]);
     for (const dispose of disposers) dispose();
     expect(registered).toEqual([]);
+  });
+});
+
+describe("派活名单视图（B1）", () => {
+  it("列表说清「几人可派活 / 空名单 / 没配置」三种状态", async () => {
+    const { policy } = viewsOf(fakeHost());
+    expect(await policy.list(PROFILE)).toEqual([
+      { id: "dispatch", title: "派活名单", summary: "2 个档案可以派活", meta: "修订 4" },
+    ]);
+
+    const empty = viewsOf(fakeHost({ readDispatchPolicy: async () => ({ ...POLICY, allowlist: [] }) }));
+    expect((await empty.policy.list(PROFILE))[0]?.summary).toBe("名单为空：当前没人能派活");
+
+    const missing = viewsOf(fakeHost({
+      readDispatchPolicy: async () => ({ ...POLICY, configured: false, allowlist: [], revision: 0 }),
+    }));
+    expect((await missing.policy.list(PROFILE))[0]?.summary).toBe("还没配置：当前没人能派活");
+  });
+
+  it("详情给出可编辑的名单、授权状态、动作与留痕", async () => {
+    const { policy } = viewsOf(fakeHost());
+    const body = await policy.detail({ ...PROFILE, itemId: "dispatch" });
+
+    expect(body.title).toBe("派活名单");
+    expect(body.revision).toBe(4);
+    const allowlist = sectionOf(body, "allowlist") as {
+      kind: string;
+      editable?: boolean;
+      key?: string;
+      rows: Array<Record<string, unknown>>;
+    };
+    expect(allowlist).toMatchObject({ kind: "rows", editable: true, key: "allowlist" });
+    expect(allowlist.rows).toEqual([{ agentId: "xiaobei" }, { agentId: "xiaoma" }]);
+
+    const grants = sectionOf(body, "grants") as { rows: Array<Record<string, unknown>> };
+    expect(grants.rows[0]).toMatchObject({ grantId: "grant-1", agentId: "xiaobei", status: "有效" });
+
+    const history = sectionOf(body, "history") as { rows: Array<Record<string, unknown>> };
+    expect(history.rows[0]).toMatchObject({ actor: "Agent：xiaobei", grantId: "grant-1", detail: "加入 xiaoma" });
+
+    const fields = new Map((body.fields ?? []).map((field) => [field.key, field.value]));
+    expect(fields.get("mode")).toBe("主人 + 1 个已授权的 Agent");
+    expect(fields.get("summary")).toBe("2 个档案可以派活");
+
+    expect((body.actions ?? []).map((action) => action.id)).toEqual([
+      "source-observe",
+      "source-off",
+      "grant-edit",
+      "revoke-edit",
+      "mode-owner",
+    ]);
+  });
+
+  it("shows source state, today's counts, the ledger and the explicit observe exit", async () => {
+    const observing: DispatchSourceSnapshot = {
+      configured: true,
+      state: "paused",
+      reason: "观察中（observe）：只记录，不执行。",
+      enabled: true,
+      mode: "observe",
+      revision: 3,
+      today: { observed: 2, dispatched: 1, filtered: 1 },
+      counts: {},
+      entries: [
+        { at: "2026-11-06T10:00:00.000Z", outcome: "observed", teamId: "demo-team", lanes: ["lane_code"], detail: "本来会派 1 个任务" },
+        { at: "2026-11-06T10:01:00.000Z", outcome: "filtered", teamId: "demo-team", reason: "派活名单里没有 dagon" },
+      ],
+    };
+    const host = fakeHost({ readDispatchSource: async () => observing });
+    const { policy } = viewsOf(host);
+    const body = await policy.detail({ ...PROFILE, itemId: "dispatch" });
+    const fields = new Map((body.fields ?? []).map((field) => [field.key, field.value]));
+    expect(fields.get("sourceState")).toBe("观察中（observe）");
+    expect(String(fields.get("sourceMode"))).toContain("观察中");
+    expect(fields.get("sourceToday")).toBe("观察 2 / 派发 1 / 被拒 1");
+    const ledger = sectionOf(body, "source-ledger") as { rows: Array<Record<string, unknown>> };
+    expect(ledger.rows[0]).toMatchObject({ outcome: "被拒", detail: "派活名单里没有 dagon" });
+    expect((body.actions ?? []).map((action) => action.id)).toEqual([
+      "source-live",
+      "source-off",
+      "grant-edit",
+      "revoke-edit",
+      "mode-owner",
+    ]);
+
+    await policy.act!({
+      ...PROFILE,
+      itemId: "dispatch",
+      actionId: "source-live",
+      args: {},
+      expectedRevision: 4,
+    });
+    // 来源动作使用来源自己的修订号（3），不复用名单的修订号。
+    expect(host.calls.find((call) => call.kind === "setDispatchSourceMode")?.args[0]).toEqual({
+      mode: "live",
+      expectedRevision: 3,
+    });
+  });
+
+  it("保存名单：清空的行按移掉处理，带修订号交上去", async () => {
+    const host = fakeHost();
+    const { policy } = viewsOf(host);
+    const body = await policy.save!({
+      ...PROFILE,
+      itemId: "dispatch",
+      expectedRevision: 4,
+      changes: { allowlist: [{ agentId: "xiaohong" }, { agentId: "   " }, {}] },
+    });
+    const call = host.calls.find((entry) => entry.kind === "saveDispatchPolicy");
+    expect(call?.args[0]).toEqual({ allowlist: ["xiaohong"], expectedRevision: 4 });
+    expect(body.revision).toBe(5);
+    expect((sectionOf(body, "allowlist") as { rows: unknown[] }).rows).toEqual([{ agentId: "xiaohong" }]);
+  });
+
+  it("保存只认 allowlist；动作要带修订号，未知动作被拒", async () => {
+    const { policy } = viewsOf(fakeHost());
+    await expect(policy.save!({
+      ...PROFILE,
+      itemId: "dispatch",
+      expectedRevision: 4,
+      changes: { mode: "agent" },
+    })).rejects.toThrow(/不接受这个改动: mode/);
+    await expect(policy.act!({
+      ...PROFILE,
+      itemId: "dispatch",
+      actionId: "mode-owner",
+      args: {},
+    })).rejects.toThrow(/缺少修订号/);
+    await expect(policy.act!({
+      ...PROFILE,
+      itemId: "dispatch",
+      actionId: "nope",
+      args: {},
+      expectedRevision: 4,
+    })).rejects.toThrow(/不认识这个动作/);
+  });
+
+  it("授权 / 撤销 / 拨开关都走服务，并回读新状态", async () => {
+    const host = fakeHost();
+    const { policy } = viewsOf(host);
+
+    const granted = await policy.act!({
+      ...PROFILE,
+      itemId: "dispatch",
+      actionId: "grant-edit",
+      args: { agentId: "xiaohong", expiresAt: "2099-12-31T23:59:59.000Z" },
+      expectedRevision: 4,
+    });
+    expect(host.calls.find((entry) => entry.kind === "grantDispatchPolicyEdit")?.args[0]).toEqual({
+      agentId: "xiaohong",
+      expiresAt: "2099-12-31T23:59:59.000Z",
+      expectedRevision: 4,
+    });
+    expect(granted.revision).toBe(5);
+
+    await policy.act!({
+      ...PROFILE,
+      itemId: "dispatch",
+      actionId: "revoke-edit",
+      args: { grantId: "grant-1" },
+      expectedRevision: 4,
+    });
+    expect(host.calls.find((entry) => entry.kind === "revokeDispatchPolicyEdit")?.args[0]).toEqual({
+      grantId: "grant-1",
+      expectedRevision: 4,
+    });
+
+    await policy.act!({
+      ...PROFILE,
+      itemId: "dispatch",
+      actionId: "mode-owner",
+      args: {},
+      expectedRevision: 4,
+    });
+    expect(host.calls.find((entry) => entry.kind === "setDispatchPolicyMode")?.args[0]).toEqual({
+      mode: "owner",
+      expectedRevision: 4,
+    });
   });
 });
 

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import { profileLocationFromBaseUrl, readProfileDirectory } from "@void/void-soul";
 import { teamDocumentOf, teamMetadataOf, type TeamDocument } from "./contracts.js";
@@ -6,9 +7,19 @@ import type { TaskPlan } from "./planner.js";
 import { RunCoordinator, type LegionRunProgress } from "./run-coordinator.js";
 import { LEGION_RUN_TERMINAL_EVENT, LegionNotificationStore } from "./notifications.js";
 import { RunStore, type RunRecord, type RunTaskStatus } from "./run-store.js";
+import { DispatchPolicyError, DispatchPolicyRepository, dispatchDenialReason, type DispatchPolicyMode, type DispatchPolicySnapshot } from "./dispatch-policy.js";
+import {
+  DispatchSourceError,
+  DispatchSourceRepository,
+  sourceStateReason,
+  type DispatchSourceEntry,
+  type DispatchSourceMode,
+  type DispatchSourceSnapshot,
+} from "./dispatch-source.js";
 import { DispatchGate, type ScheduleWorker } from "./scheduler.js";
 import { TeamRepository, resolveLegionDataDir } from "./team-repository.js";
-import type { DelegationTeamMember, DelegationTeamMetadata } from "./team.js";
+import type { AcceptanceMode, DelegationTeamMember, DelegationTeamMetadata } from "./team.js";
+import { WorktreeManager } from "./worktree.js";
 
 declare module "@deepseek-ai/cordis" {
   interface Context {
@@ -68,6 +79,10 @@ export interface VoidTeamConfig {
   now?: (() => Date) | undefined;
   /** 全服务并发槽位（§15.3 第二个量）；缺省 4，可按队伍覆盖。 */
   maxConcurrentTasks?: number | undefined;
+  /** 独立检出（B6）的仓库目录；默认 process.cwd()。相对路径按进程目录解析。 */
+  worktreeRepo?: string | undefined;
+  /** 关掉独立检出能力；默认开（成员仍要显式 `checkout: "worktree"` 才用）。 */
+  worktree?: boolean | undefined;
 }
 
 /** P5 派活选项：**立刻返回 runId**，执行在后台继续。 */
@@ -84,6 +99,11 @@ export interface DispatchOptions {
   /** 权限快照校验，在派出任何任务之前跑（P4 门禁）。 */
   authorize?: (roster: readonly DelegationTeamMember[]) => void | Promise<void>;
   maxConcurrentTasks?: number;
+  /**
+   * 单次 run 的验收模式覆盖（§22.4）。可信调用方用；`launch_legion` 不暴露它，
+   * 派活的档案不能自己把闸门关掉。
+   */
+  acceptance?: AcceptanceMode;
 }
 
 /**
@@ -100,6 +120,12 @@ export class VoidTeam extends Service {
   private readonly teams = new Map<string, DelegationTeamMetadata>();
   private readonly checkpoints = new Map<string, Map<string, LaneStatus>>();
   private readonly repository: TeamRepository | undefined;
+  /** 派活名单仓库。与队伍仓库同根，独立文件、独立修订号。 */
+  private readonly policy: DispatchPolicyRepository | undefined;
+  /** 派活来源与沉默账本（B3/B5）。与队伍仓库同根。 */
+  private readonly source: DispatchSourceRepository | undefined;
+  /** 独立检出（B6）；没有数据根或显式关掉时为 undefined。 */
+  private readonly worktree: WorktreeManager | undefined;
   private readonly runs: RunCoordinator | undefined;
   private readonly notices: LegionNotificationStore | undefined;
   private readonly now: () => Date;
@@ -110,6 +136,21 @@ export class VoidTeam extends Service {
     super(ctx, "voidTeam");
     this.now = config.now ?? (() => new Date());
     this.repository = buildRepository(config, ctx);
+    this.policy =
+      this.repository === undefined
+        ? undefined
+        : new DispatchPolicyRepository({ dataDir: this.repository.dataDirPath, now: this.now });
+    this.source =
+      this.repository === undefined
+        ? undefined
+        : new DispatchSourceRepository({ dataDir: this.repository.dataDirPath, now: this.now });
+    this.worktree =
+      this.repository === undefined || config.worktree === false
+        ? undefined
+        : new WorktreeManager({
+            repoDir: path.resolve(config.worktreeRepo ?? process.cwd()),
+            rootDir: path.join(this.repository.dataDirPath, "legion", "worktrees"),
+          });
     // 终态通知与运行记录同根：有数据根才有通知（没有数据根就没有「重连补读」可言）。
     this.notices =
       this.repository === undefined
@@ -129,6 +170,7 @@ export class VoidTeam extends Service {
             }),
           }),
       ...(this.notices === undefined ? {} : { notifications: this.notices }),
+      ...(this.worktree === undefined ? {} : { worktree: this.worktree }),
       // 终态事件：谁在听谁投递（P6g 的 control 适配）。没装 control 时只是没人听。
       onTerminal: (event) => {
         this.ctx.emit(LEGION_RUN_TERMINAL_EVENT, event);
@@ -146,6 +188,130 @@ export class VoidTeam extends Service {
   /** 队伍配置仓库；数据根没配好时为 undefined（此时只有内存队伍可用）。 */
   get teamRepository(): TeamRepository | undefined {
     return this.repository;
+  }
+
+  /** 派活名单仓库；数据根没配好时为 undefined（此时派活按 fail-closed 拒绝）。 */
+  get dispatchPolicyRepository(): DispatchPolicyRepository | undefined {
+    return this.policy;
+  }
+
+  /** 派活来源仓库；数据根没配好时为 undefined（此时按 fail-closed 拒绝派活）。 */
+  get dispatchSourceRepository(): DispatchSourceRepository | undefined {
+    return this.source;
+  }
+
+  /** 独立检出管理器（B6）；没有数据根或显式关掉时为 undefined。 */
+  get worktreeManager(): WorktreeManager | undefined {
+    return this.worktree;
+  }
+
+  private requireSourceRepository(): DispatchSourceRepository {
+    if (this.source === undefined) {
+      throw new DispatchSourceError("军团没有数据根，无法核对派活来源：需要配置 dataDir，或提供 profile（DSH_PROFILE）");
+    }
+    return this.source;
+  }
+
+  /** 面板读来源：损坏时返回 state:error，不把整块面板打崩。 */
+  async readDispatchSource(): Promise<DispatchSourceSnapshot> {
+    return this.requireSourceRepository().trySnapshot();
+  }
+
+  /**
+   * 派活前读来源；来源不可用（off/error/setup/starting/missing）就抛。
+   *
+   * `paused`（observe）**不抛**：调用方要拿它走观察路径。
+   */
+  async requireDispatchSourceReady(): Promise<DispatchSourceSnapshot> {
+    const snapshot = await this.requireSourceRepository().snapshot();
+    if (snapshot.state === "ready" || snapshot.state === "paused") return snapshot;
+    const reason = sourceStateReason(snapshot.state, snapshot.mode);
+    throw new DispatchSourceError(`${reason}（来源状态: ${snapshot.state}）`);
+  }
+
+  /** 面板切 live/observe。observe 是显式动作；从 observe 切回 live 同样是显式动作。 */
+  async setDispatchSourceMode(input: {
+    mode: DispatchSourceMode;
+    expectedRevision: number;
+  }): Promise<DispatchSourceSnapshot> {
+    return this.requireSourceRepository().setMode(input);
+  }
+
+  /** 面板停用/启用来源。停用后请求只记账、不执行。 */
+  async setDispatchSourceEnabled(input: {
+    enabled: boolean;
+    expectedRevision: number;
+  }): Promise<DispatchSourceSnapshot> {
+    return this.requireSourceRepository().setEnabled(input);
+  }
+
+  /** 记一条来源账。失败时由调用方决定是「观察没写成」还是「拒绝原因已经报出去了」。 */
+  async recordDispatchSource(entry: Omit<DispatchSourceEntry, "at">): Promise<DispatchSourceSnapshot> {
+    return this.requireSourceRepository().record(entry);
+  }
+
+  private requirePolicyRepository(): DispatchPolicyRepository {
+    if (this.policy === undefined) {
+      throw new DispatchPolicyError("军团没有数据根，无法核对派活名单：需要配置 dataDir，或提供 profile（DSH_PROFILE）");
+    }
+    return this.policy;
+  }
+
+  /** 读派活名单的有效视图。没配置过时 `configured: false`，不是「全放行」。 */
+  async readDispatchPolicy(): Promise<DispatchPolicySnapshot> {
+    return this.requirePolicyRepository().snapshot();
+  }
+
+  /**
+   * 派活与运行操作的第三道门：名单里没有这个人就拒绝。
+   *
+   * 每次调用重读磁盘——主人刚在面板里移掉一个账号，下一次派活当场生效，不重启。
+   * 这里只判名单；身份许可 ∩ 队伍许可仍由 `authority.ts` 照旧判。
+   */
+  async assertActorMayDispatch(actorId: string): Promise<void> {
+    const policy = await this.readDispatchPolicy();
+    const reason = dispatchDenialReason({ policy, actorId, now: this.now() });
+    if (reason !== undefined) throw new DispatchPolicyError(reason);
+  }
+
+  /** 面板保存名单（主人通道）。 */
+  async saveDispatchPolicy(input: {
+    allowlist: readonly string[];
+    expectedRevision: number;
+    detail?: string | undefined;
+  }): Promise<DispatchPolicySnapshot> {
+    return this.requirePolicyRepository().saveAllowlist(input);
+  }
+
+  /** 面板授权一个 Agent 改名单（主人通道；Agent 工具没有这个动作）。 */
+  async grantDispatchPolicyEdit(input: {
+    agentId: string;
+    expiresAt?: string | undefined;
+    expectedRevision: number;
+  }): Promise<DispatchPolicySnapshot> {
+    return this.requirePolicyRepository().grant(input);
+  }
+
+  /** 面板撤销一份授权。 */
+  async revokeDispatchPolicyEdit(input: { grantId: string; expectedRevision: number }): Promise<DispatchPolicySnapshot> {
+    return this.requirePolicyRepository().revoke(input);
+  }
+
+  /** 面板拨开/收回 Agent 改名单的开关（不删授权记录）。 */
+  async setDispatchPolicyMode(input: {
+    mode: DispatchPolicyMode;
+    expectedRevision: number;
+  }): Promise<DispatchPolicySnapshot> {
+    return this.requirePolicyRepository().setMode(input);
+  }
+
+  /** Agent 经 `legion_policy` 工具改名单；仓库里再核一次有效授权并留痕。 */
+  async mutateDispatchPolicyAsAgent(input: {
+    actorId: string;
+    action: "add" | "remove";
+    agentId: string;
+  }): Promise<{ snapshot: DispatchPolicySnapshot; changed: boolean; grantId: string }> {
+    return this.requirePolicyRepository().mutateAsAgent(input);
   }
 
   /**
@@ -277,6 +443,10 @@ export class VoidTeam extends Service {
    * 也看不到跑到哪；而且没有运行记录，重启就全丢。
    */
   async dispatch(teamId: string, options: DispatchOptions): Promise<RunRecord> {
+    // 名单是派活路径的第三道门。模型工具一定带 `initiatedBy`，所以工具层之外
+    // 的代码调用只要声明了发起者也同样受管；**没有发起者的是可信代码路径**
+    // （宿主内部的 `launch` 兼容层、测试），不能凭空安一个身份去判。
+    if (options.initiatedBy !== undefined) await this.assertActorMayDispatch(options.initiatedBy);
     const team = await this.resolveTeam(teamId);
     const coordinator = this.requireCoordinator();
     return coordinator.dispatch({
@@ -291,6 +461,7 @@ export class VoidTeam extends Service {
       ...(options.maxConcurrentTasks === undefined
         ? {}
         : { maxConcurrentTasks: options.maxConcurrentTasks }),
+      ...(options.acceptance === undefined ? {} : { acceptance: options.acceptance }),
       worker: options.worker,
     });
   }
@@ -331,6 +502,16 @@ export class VoidTeam extends Service {
   /** 全队取消。 */
   async cancelRun(runId: string, reason?: string): Promise<RunRecord> {
     return this.requireCoordinator().cancelRun(runId, reason);
+  }
+
+  /** 人工验收：待验收 → 已完成（§22.4）。 */
+  async acceptRun(runId: string, acceptedBy: "human" | "auto" = "human", note?: string): Promise<RunRecord> {
+    return this.requireCoordinator().acceptRun(runId, acceptedBy, note);
+  }
+
+  /** 翻案：自动确认的已完成 → 待验收。 */
+  async reopenRun(runId: string, reason?: string): Promise<RunRecord> {
+    return this.requireCoordinator().reopenRun(runId, reason);
   }
 
   /** 改全服务并发槽位（L13）。 */

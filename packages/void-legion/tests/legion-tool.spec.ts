@@ -11,6 +11,7 @@ import { createTeamDocument } from "../src/contracts.js";
 import * as VoidLegionService from "../src/service.js";
 import * as VoidLegionTool from "../src/tool.js";
 import * as VoidLegionRunTool from "../src/run-tool.js";
+import * as VoidLegionPolicyTool from "../src/policy-tool.js";
 import type { VoidTeam } from "../src/service.js";
 import type { DelegationTeamMetadata } from "../src/team.js";
 
@@ -31,6 +32,9 @@ afterEach(async () => {
 const threeLaneTeam: DelegationTeamMetadata = {
   id: "legion-tool-demo",
   mode: "plan_execute_verify",
+  // 这组用例多数在验派发闭环；用 auto 保持「跑完即 completed」的旧断言，
+  // 验收闸门另有专门的 human 用例。
+  acceptance: "auto",
   sharedGoal: "prove launch_legion closes the real-subagent loop",
   memberRoster: [
     { laneId: "lane_plan", role: "researcher", authorityRelationToManager: "peer" },
@@ -107,7 +111,14 @@ const managerAndSubordinate: Array<[string, { id: string; superiors: readonly st
   ["xiaoma", { id: "xiaoma", superiors: ["xiaobei"], subordinates: [] }],
 ];
 
-async function boot(config: Record<string, unknown> = {}): Promise<Context> {
+/**
+ * `seedPolicy: false` 用来复现「还没配置名单」的 fail-closed 场景；其余用例默认把
+ * 测试里用到的两个档案放进名单——B1 之后派活必须过名单这一关，不放行就没有旧例子。
+ */
+async function boot(
+  config: Record<string, unknown> = {},
+  options: { seedPolicy?: boolean } = {},
+): Promise<Context> {
   // 没显式给 `dataDir` 的用例也必须有自己的数据根：军团服务缺它时会按 `DSH_PROFILE` /
   // `DSH_HOME` 回落到**开发者真实的数据根**，把运行记录与通知写进去（2026-09-26 实测：
   // 跑一次本文件就往 `~/.dsh/void-data/web` 落 9 条）。显式传了的那几个用例自己清目录。
@@ -123,6 +134,7 @@ async function boot(config: Record<string, unknown> = {}): Promise<Context> {
     ["@void/void-legion/service", VoidLegionService],
     ["@void/void-legion/tool", VoidLegionTool],
     ["@void/void-legion/run-tool", VoidLegionRunTool],
+    ["@void/void-legion/policy-tool", VoidLegionPolicyTool],
   ]);
   ctx.loader.internal = {
     version: "v2",
@@ -136,7 +148,14 @@ async function boot(config: Record<string, unknown> = {}): Promise<Context> {
   await ctx.loader.create({ name: "@void/void-legion/service", config });
   await ctx.loader.create({ name: "@void/void-legion/tool" });
   await ctx.loader.create({ name: "@void/void-legion/run-tool" });
+  await ctx.loader.create({ name: "@void/void-legion/policy-tool" });
   await ctx.loader.await();
+  if (options.seedPolicy !== false) {
+    await (ctx.get("voidTeam") as VoidTeam).saveDispatchPolicy({
+      allowlist: ["xiaobei", "xiaoma"],
+      expectedRevision: 0,
+    });
+  }
   return ctx;
 }
 
@@ -158,6 +177,267 @@ describe("launch_legion tool through the Loader", () => {
     context = await boot();
     expect(context.tools.get("launch_legion")).toBeDefined();
     expect(context.tools.schemas().some((s) => s.name === "launch_legion")).toBe(true);
+    expect(context.tools.get("legion_policy")).toBeDefined();
+  });
+
+  it("refuses dispatch when the allowlist was never configured (fail-closed)", async () => {
+    context = await boot({}, { seedPolicy: false });
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      ...threeLaneTeam,
+      managerAgentId: "xiaobei",
+      memberRoster: [{ laneId: "lane_plan", agentId: "xiaoma" }],
+    });
+    context.provide("voidAuthority", authoritySource({
+      sessionId: "parent-session-1",
+      actorId: "xiaobei",
+      profiles: managerAndSubordinate,
+    }));
+    const started: string[] = [];
+    context.provide("subagents", fakeSubagents(started));
+    await expect(context.tools.get("launch_legion")!.execute(
+      { teamId: threeLaneTeam.id },
+      mockExec({ id: "parent-session-1" } as Agent),
+    )).rejects.toThrow(/派活名单还没配置/);
+    expect(started).toEqual([]);
+  });
+
+  it("rejects a removed actor on the same session, naming the actor", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      ...threeLaneTeam,
+      managerAgentId: "xiaobei",
+      memberRoster: [{ laneId: "lane_plan", agentId: "xiaoma" }],
+    });
+    context.provide("voidAuthority", authoritySource({
+      sessionId: "parent-session-1",
+      actorId: "xiaobei",
+      profiles: managerAndSubordinate,
+    }));
+    const started: string[] = [];
+    context.provide("subagents", fakeSubagents(started));
+    // 名单里只剩 xiaoma；xiaobei 的会话立刻派不动，理由点名 xiaobei。
+    await team.saveDispatchPolicy({ allowlist: ["xiaoma"], expectedRevision: 1 });
+    await expect(context.tools.get("launch_legion")!.execute(
+      { teamId: threeLaneTeam.id },
+      mockExec({ id: "parent-session-1" } as Agent),
+    )).rejects.toThrow(/派活名单里没有 xiaobei/);
+    expect(started).toEqual([]);
+  });
+
+  it("service-level dispatch also gates a declared initiator (no tool-only bypass)", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      ...threeLaneTeam,
+      managerAgentId: "xiaobei",
+      memberRoster: [{ laneId: "lane_plan", agentId: "xiaoma" }],
+    });
+    await expect(team.dispatch(threeLaneTeam.id, {
+      initiatedBy: "dagon",
+      worker: async () => undefined,
+    })).rejects.toThrow(/派活名单里没有 dagon/);
+  });
+
+  it("lets a granted agent edit the allowlist and records actor + grant", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    context.provide("voidAuthority", authoritySource({
+      sessionId: "parent-session-1",
+      actorId: "xiaobei",
+      profiles: managerAndSubordinate,
+    }));
+    const exec = mockExec({ id: "parent-session-1" } as Agent);
+    const tool = context.tools.get("legion_policy")!;
+
+    // 读：没有授权也能看名单与自己的授权。
+    const listed = await tool.execute({ action: "list" }, exec) as {
+      allowlist: string[];
+      yourGrants: unknown[];
+      youCanEdit: boolean;
+    };
+    expect(listed.allowlist).toEqual(["xiaobei", "xiaoma"]);
+    expect(listed.yourGrants).toEqual([]);
+    expect(listed.youCanEdit).toBe(false);
+
+    // 写：没有授权时拒绝，且不产生任何改动。
+    await expect(tool.execute({ action: "add", agentId: "dagon" }, exec))
+      .rejects.toThrow(/只有主人|没有有效的改名单授权/);
+    expect((await team.readDispatchPolicy()).revision).toBe(1);
+
+    // 主人授权之后，Agent 真的能改；留痕写明动作来源与依据的授权。
+    const granted = await team.grantDispatchPolicyEdit({ agentId: "xiaobei", expectedRevision: 1 });
+    expect(granted.mode).toBe("agent");
+    const grantId = granted.grants[0]?.grantId;
+    expect(grantId).toMatch(/^grant-/);
+
+    const added = await tool.execute({ action: "add", agentId: "dagon" }, exec) as {
+      changed: boolean;
+      allowlist: string[];
+      yourGrants: Array<{ grantId: string }>;
+      youCanEdit: boolean;
+    };
+    expect(added.changed).toBe(true);
+    expect(added.allowlist).toContain("dagon");
+    expect(added.yourGrants.map((grant) => grant.grantId)).toEqual([grantId]);
+    expect(added.youCanEdit).toBe(true);
+    const after = await team.readDispatchPolicy();
+    expect(after.history.at(-1)).toMatchObject({ actor: "agent:xiaobei", grantId });
+
+    // Agent 没有 grant/revoke/mode 动作：不能给自己授权，也不能转授。
+    // 工具参数层就只认 list / add / remove，grant/revoke/mode 根本到不了执行体。
+    await expect(tool.execute({ action: "grant", agentId: "xiaobei" }, exec))
+      .rejects.toThrow(/must be one of|不认识这个动作/);
+
+    const removed = await tool.execute({ action: "remove", agentId: "dagon" }, exec) as {
+      changed: boolean;
+      allowlist: string[];
+    };
+    expect(removed.changed).toBe(true);
+    expect(removed.allowlist).not.toContain("dagon");
+  });
+
+  it("observe: records what would be dispatched, starts nothing, and only exits explicitly", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      ...threeLaneTeam,
+      managerAgentId: "xiaobei",
+      memberRoster: [{ laneId: "lane_plan", agentId: "xiaoma" }],
+    });
+    context.provide("voidAuthority", authoritySource({
+      sessionId: "parent-session-1",
+      actorId: "xiaobei",
+      profiles: managerAndSubordinate,
+    }));
+    const started: string[] = [];
+    context.provide("subagents", fakeSubagents(started));
+    await team.setDispatchSourceMode({ mode: "observe", expectedRevision: 0 });
+
+    const parent = { id: "parent-session-1" } as Agent;
+    const launch = context.tools.get("launch_legion")!;
+    const observed = await launch.execute(
+      { teamId: "legion-tool-demo", task: "先看看会不会派" },
+      mockExec(parent),
+    ) as { observed: boolean; runId?: string; status: string; tasks: Array<{ laneId: string; status: string }> };
+
+    expect(observed.observed).toBe(true);
+    expect(observed.runId).toBeUndefined();
+    expect(observed.status).toBe("observed");
+    expect(observed.tasks.map((task) => task.laneId)).toEqual(["lane_plan"]);
+    expect(started).toEqual([]);
+    expect(await team.listRunsByTeam("legion-tool-demo")).toEqual([]);
+    const observing = await team.readDispatchSource();
+    expect(observing.mode).toBe("observe");
+    expect(observing.entries.at(-1)).toMatchObject({
+      outcome: "observed",
+      teamId: "legion-tool-demo",
+      lanes: ["lane_plan"],
+    });
+
+    // 观察档必须显式退出：切回 live 之后同一个请求才真派。
+    await team.setDispatchSourceMode({ mode: "live", expectedRevision: observing.revision });
+    const dispatched = await launch.execute(
+      { teamId: "legion-tool-demo", task: "这次真派" },
+      mockExec(parent),
+    ) as { observed: boolean; runId?: string };
+    expect(dispatched.observed).toBe(false);
+    expect(dispatched.runId).toMatch(/^legion-tool-demo-/);
+    expect(started.length).toBeGreaterThan(0);
+    const live = await team.readDispatchSource();
+    expect(live.entries.at(-1)).toMatchObject({ outcome: "dispatched", runId: dispatched.runId });
+  });
+
+  it("records filtered requests with the reason and creates no run (B5)", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      ...threeLaneTeam,
+      managerAgentId: "xiaobei",
+      memberRoster: [{ laneId: "lane_plan", agentId: "xiaoma" }],
+    });
+    context.provide("voidAuthority", authoritySource({
+      sessionId: "parent-session-1",
+      actorId: "xiaobei",
+      profiles: managerAndSubordinate,
+    }));
+    const started: string[] = [];
+    context.provide("subagents", fakeSubagents(started));
+    await team.saveDispatchPolicy({ allowlist: ["xiaoma"], expectedRevision: 1 });
+
+    await expect(context.tools.get("launch_legion")!.execute(
+      { teamId: "legion-tool-demo", task: "不该派出去的活" },
+      mockExec({ id: "parent-session-1" } as Agent),
+    )).rejects.toThrow(/派活名单里没有 xiaobei/);
+    expect(started).toEqual([]);
+    expect(await team.listRunsByTeam("legion-tool-demo")).toEqual([]);
+    const source = await team.readDispatchSource();
+    expect(source.entries.at(-1)).toMatchObject({ outcome: "filtered", teamId: "legion-tool-demo" });
+    expect(source.entries.at(-1)?.reason).toContain("派活名单里没有 xiaobei");
+  });
+
+  it("records a filtered request when the source is disabled, without dispatching", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      ...threeLaneTeam,
+      managerAgentId: "xiaobei",
+      memberRoster: [{ laneId: "lane_plan", agentId: "xiaoma" }],
+    });
+    context.provide("voidAuthority", authoritySource({
+      sessionId: "parent-session-1",
+      actorId: "xiaobei",
+      profiles: managerAndSubordinate,
+    }));
+    const started: string[] = [];
+    context.provide("subagents", fakeSubagents(started));
+    await team.setDispatchSourceEnabled({ enabled: false, expectedRevision: 0 });
+
+    await expect(context.tools.get("launch_legion")!.execute(
+      { teamId: "legion-tool-demo" },
+      mockExec({ id: "parent-session-1" } as Agent),
+    )).rejects.toThrow(/派活来源已停用/);
+    expect(started).toEqual([]);
+    const source = await team.readDispatchSource();
+    expect(source.state).toBe("off");
+    expect(source.entries.at(-1)?.reason).toContain("派活来源已停用");
+  });
+
+  it("lets a removed actor read its own run but not cancel it", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      ...threeLaneTeam,
+      managerAgentId: "xiaobei",
+      memberRoster: [{ laneId: "lane_plan", agentId: "xiaoma" }],
+    });
+    context.provide("voidAuthority", authoritySource({
+      sessionId: "parent-session-1",
+      actorId: "xiaobei",
+      profiles: managerAndSubordinate,
+    }));
+    const started: string[] = [];
+    context.provide("subagents", fakeSubagents(started));
+    const parent = { id: "parent-session-1" } as Agent;
+    const dispatched = await context.tools.get("launch_legion")!.execute(
+      { teamId: threeLaneTeam.id },
+      mockExec(parent),
+    ) as { runId: string };
+    await team.saveDispatchPolicy({ allowlist: ["xiaoma"], expectedRevision: 1 });
+
+    // 读自己发起的 run 仍按既有身份∩队伍规则放行：名单管的是「指挥」，不是「回看」。
+    const read = await context.tools.get("legion_run")!.execute(
+      { runId: dispatched.runId, wait: false },
+      mockExec(parent),
+    ) as { runId: string };
+    expect(read.runId).toBe(dispatched.runId);
+
+    // 叫停会改别人的工作，必须仍在可派活名单里。
+    await expect(context.tools.get("legion_cancel")!.execute(
+      { runId: dispatched.runId },
+      mockExec(parent),
+    )).rejects.toThrow(/派活名单里没有 xiaobei/);
   });
 
   it("rejects an unauthorized roster before starting a subagent", async () => {
@@ -248,6 +528,37 @@ describe("launch_legion tool through the Loader", () => {
     expect(settled.tasks.map((item) => item.laneId)).toEqual(["lane_plan", "lane_code", "lane_verify"]);
     // 原生 child session 链接：界面能从运行记录跳回真正干活的会话（§15.2）。
     expect(settled.tasks.map((item) => item.childSessionId)).toEqual(["child-1", "child-2", "child-3"]);
+  });
+
+  it("human team: legion_run reports awaiting_acceptance instead of completed", async () => {
+    context = await boot();
+    const team = context.get("voidTeam") as VoidTeam;
+    team.defineTeam({
+      ...threeLaneTeam,
+      acceptance: "human",
+      managerAgentId: "xiaobei",
+      memberRoster: [{ laneId: "lane_plan", agentId: "xiaoma" }],
+    });
+    context.provide("voidAuthority", authoritySource({
+      sessionId: "parent-session-1",
+      actorId: "xiaobei",
+      profiles: managerAndSubordinate,
+    }));
+    const started: string[] = [];
+    context.provide("subagents", fakeSubagents(started));
+    const parent = { id: "parent-session-1" } as Agent;
+    const dispatched = await context.tools.get("launch_legion")!.execute(
+      { teamId: "legion-tool-demo" },
+      mockExec(parent),
+    ) as { runId: string };
+    const settled = await context.tools.get("legion_run")!.execute(
+      { runId: dispatched.runId, wait: true },
+      mockExec(parent),
+    ) as { status: string; acceptance: string; acceptedBy?: string; acceptanceDeadline?: string };
+    expect(settled.status).toBe("awaiting_acceptance");
+    expect(settled.acceptance).toBe("human");
+    expect(settled.acceptedBy).toBeUndefined();
+    expect(settled.acceptanceDeadline).toBeTruthy();
   });
 
   // 2026-09-23 真机派活撞到的缺陷：面板（P6c）建的队伍只落在磁盘上，工具层却只查内存，
