@@ -343,3 +343,31 @@ React 的 value tracker 吃掉，需要时用真实键盘输入）。
 | Web 客户端规范 | `packages/client/AGENTS.md` |
 | 客户端模块系统 | `packages/client/modules/README.md` |
 | 平台模块表 | `packages/client/web/src/platform.ts` |
+
+## 10. 灵魂与模组装配契约
+
+三句话：**模组每轮读；绑定只在装配起点读；已起步会话只有走「加载模组」那条路径才会被补注入。**
+证据在 [`docs/灵魂记忆与军团.md` §20.6](docs/灵魂记忆与军团.md)，本节只写动手时要守的规则。
+
+**① 模组选择是每轮读，写盘即生效——不要为「热切换」额外加刷新。**
+`POST /void/api/facet-selection` 只改 `agents/<id>/state.json` 的 `activeFacetId` 与
+`selectionRevision`；装配侧下一轮自然读到新模组（2026-09-26 `linghunaidou → zuijiapaidang`、
+2026-10-25 `zuijiapaidang → kaixinguo` 两次真机，同一会话下一轮系统提示词里的模组段即换）。
+
+**② 绑定是会话起点读；「点卡片」≠「选模组」。**
+点卡片只往 `runtime/session-bindings.json` 追加 `{sessionId, agentId}`，**不动 `state.json`、
+不动 `selectionRevision`**。新会话在装配起点读绑定，并**继承该档案当前模组**——同一张卡点下去，
+装进来的是「这份档案现在是什么样」，不是「某个默认模组」（2026-10-25 实测：绑定 30 → 31 条、
+`selectionRevision` 仍为 13、新会话里正确注入 `开心果`）。
+→ 不要把卡片点击接到 `facet-selection` 上「顺手换模组」，那会毁掉 `expectedRevision` 乐观锁的语义。
+
+**③ 已起步会话点「加载模组」＝刷新补注入，会连灵魂段一起补。**
+已起步、且此前从未注入过的会话，一次模组切换之后，下一轮系统提示词里会**同时**出现
+`# SOUL.md - Agent基础协议` 与新的 `【FACET | 模组 | …】`（2026-10-25，`session-6e76444c…`）。
+→ 因此 `createFrozenRefresh` 的重算路径**必须重读绑定**：否则未绑定会话切一次模组就凭空获得身份，
+这比「切了不生效」更危险。**这条归因尚未分辨**（是刷新重读绑定，还是面板顺带重绑），
+动 `refresh` 之前先按 `docs/灵魂记忆与军团.md` §20.6 约定的实验把两者分开。
+
+**改本节的前提**：三条都是真机观测出来的装配语义。改之前先在 `docs/灵魂记忆与军团.md` §20.6
+留一条带日期的证据（会话 id、`state.json` 修订号变化、绑定条数变化、系统提示词里看到的段与锚点哈希），
+再来改这里；没有证据的措辞调整一律按 `defer` 记。
